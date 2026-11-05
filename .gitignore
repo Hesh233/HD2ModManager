@@ -415,3 +415,6 @@ tools/python-runtime-cache/
 
 # [Rr]eleases/ 全局规则会误伤 mod 工程的归档目录；注释约定 releases 是有意入库的
 !projects/*/releases/
+
+# 嵌套的本仓库克隆副本（独立仓库，不随原仓库上传）
+HD2ModManager_main/
