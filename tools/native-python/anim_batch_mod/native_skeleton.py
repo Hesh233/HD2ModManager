@@ -753,6 +753,31 @@ def apply_attachment_swap(animation, bones, unit, manifest, swap, times):
     }}
 
 
+def calibrate_weapon_animation(animation,bones,unit,manifest,times):
+    """Place original Source weapon channels on accurate grips BEFORE world-path swap."""
+    info=manifest.get('weaponGripCalibration')
+    if not info:return None
+    graph=_swap_graph(bones,unit,manifest);graph['_unit_transforms']=unit.transforms;tracks=_build_tracks(animation)
+    channels={graph['count']+row['manifestIndex'] for row in info['rows']}
+    updates={c:[] for c in channels}
+    for time in times:
+        cache={}
+        for row in info['rows']:
+            hand=_swap_world(graph,tracks,graph['offset']+row['handIndex'],time,cache)
+            ni=row['nativeIndex'];channel=graph['channel_by_nid'][ni]
+            p,q=(tracks[k][channel].evaluate(time) for k in (0,1))
+            basis=quat_multiply(hand.rotation,row['axes'])
+            desired=WorldTransform(vec_add(hand.position,quat_rotate(basis,p)),quat_multiply(basis,q),[1.,1.,1.])
+            node=graph['offset']+row['manifestIndex'];parent=_swap_world(graph,tracks,graph['parents'][node],time,cache)
+            local_position=_swap_local_position(parent,desired.position);local_rotation=quat_multiply(quat_inverse(parent.rotation),desired.rotation)
+            updates[graph['count']+row['manifestIndex']].append((time,local_position,local_rotation))
+    animation.entries=[e for e in animation.entries if not (e.bone in channels and (e.is_position or e.is_rotation))]
+    for channel,rows in updates.items():
+        animation.initial_bone_states[channel].position=list(rows[0][1]);animation.initial_bone_states[channel].rotation=list(rows[0][2])
+        for time,p,q in rows[1:]:animation.entries.extend([AnimationEntry(0,4,channel,time,p),AnimationEntry(0,5,channel,time,q)])
+    return dict(version=info['version'],bones=len(info['rows']),stage='accurate_grips_before_swap')
+
+
 def finalize_native_animation(animation,bones,unit,manifest,options,times,arm_reference_data=None):
     """Finalize Source ancestors BEFORE swapping world paths; preserve raw references.
 
@@ -770,6 +795,9 @@ def finalize_native_animation(animation,bones,unit,manifest,options,times,arm_re
         metrics.update(arm_metrics)
     final=AnimationData.parse(data)
     swap_times=sorted(set(times)|{e.time for e in final.entries if e.is_position or e.is_rotation or e.is_scale})
+    if not final.is_additive:
+        calibration=calibrate_weapon_animation(final,bones,unit,manifest,swap_times)
+        if calibration:metrics['weapon_grip_calibration']=calibration
     swap_metrics=apply_attachment_swap(final,bones,unit,manifest,options.get('attachment_swap_config'),swap_times)
     if swap_metrics is not None:
         metrics.update(swap_metrics)
@@ -885,18 +913,21 @@ def load_avatar_template(path, original):
     return entry
 
 
-def build_project(manifest_path, config_path, game_data, output):
+def build_project(manifest_path, config_path, game_data, output, sample_count=None):
     manifest_path, config_path, output = map(Path, (manifest_path, config_path, output))
     manifest = load_manifest(manifest_path)
-    config_document = tomllib.loads(config_path.read_text(encoding='utf-8-sig'))
+    from .native_config import resolve_native_config
+    config_document=resolve_native_config(config_path,manifest)
     options = config_document.get('native_skeleton', {})
+    if options.get('calibrate_weapon_bones') and not manifest.get('weaponGripCalibration'):
+        raise ValueError('Prepare the converted model weapon bones before attachment swap; run prepare-native-model first')
     fps = options.get('fps', 30)
     if isinstance(fps, bool) or not isinstance(fps, int) or not 1 <= fps <= 120:
         raise ValueError('[native_skeleton].fps must be an integer between 1 and 120')
     workers = options.get('workers', 4)
     if isinstance(workers, bool) or not isinstance(workers, int) or not 1 <= workers <= 16:
         raise ValueError('[native_skeleton].workers must be an integer between 1 and 16')
-    allowed = {'fps', 'workers', 'apply_driver_config', 'rotate_multipliers', 'rotation_compensation', 'ik_correction', 'model_scale', 'align_standard_grips', 'align_standard_feet','grip_target','stable_grip_pole','grip_soft_distance','foot_y_degrees','avatar_template','arm_reference_archive','preserve_arm_reference_clavicles','attachment_swap'}
+    allowed = {'fps', 'workers', 'apply_driver_config', 'rotate_multipliers', 'rotation_compensation', 'ik_correction', 'model_scale', 'align_standard_grips', 'align_standard_feet','grip_target','stable_grip_pole','grip_soft_distance','foot_y_degrees','avatar_template','arm_reference_archive','preserve_arm_reference_clavicles','attachment_swap','calibration_preset','runtime_policy','calibrate_weapon_bones','use_model_preset'}
     if set(options) - allowed:
         raise ValueError(f'Unknown native_skeleton settings: {sorted(set(options)-allowed)}')
     if not isinstance(options.get('stable_grip_pole',False),bool):
@@ -920,12 +951,12 @@ def build_project(manifest_path, config_path, game_data, output):
     arm_reference_archive = options.get('arm_reference_archive')
     if arm_reference_archive is not None and (not isinstance(arm_reference_archive, str) or not arm_reference_archive.strip()):
         raise ValueError('native_skeleton.arm_reference_archive must be a nonempty path')
-    for key in allowed - {'fps', 'workers', 'model_scale','grip_target','grip_soft_distance','foot_y_degrees','avatar_template','arm_reference_archive'}:
+    for key in allowed - {'fps', 'workers', 'model_scale','grip_target','grip_soft_distance','foot_y_degrees','avatar_template','arm_reference_archive','calibration_preset','runtime_policy'}:
         if key in options and not isinstance(options[key], bool):
             raise ValueError(f'native_skeleton.{key} must be true or false')
     # 挂点对调（B22）：[attachment_swap] 表驱动「动画侧节点级互换」；开关在
     # [native_skeleton].attachment_swap。注入 options 供 convert_clip 使用。
-    swap_config=attachment_swap_plan(options.get('attachment_swap_config') or tomllib.loads(config_path.read_text(encoding='utf-8-sig')).get('attachment_swap',{}),
+    swap_config=attachment_swap_plan(options.get('attachment_swap_config') or config_document.get('attachment_swap',{}),
         options.get('attachment_swap',False))
     options = dict(options)
     options['attachment_swap_config'] = swap_config
@@ -968,6 +999,12 @@ def build_project(manifest_path, config_path, game_data, output):
         animation_ids = sorted(set(parse_state_machine_animation_ids(state.toc_data)))
         if not animation_ids:
             raise ValueError('Reference avatar has no animations')
+        report['available_animations']=len(animation_ids)
+        if sample_count is not None:
+            if not 1<=sample_count<=32:raise ValueError('Diagnostic sample count must be 1..32')
+            animation_ids=[animation_ids[round(i*(len(animation_ids)-1)/max(1,sample_count-1))] for i in range(sample_count)]
+            report['diagnosticSample']=True
+        else:report['diagnosticSample']=False
         arm_reference = None
         if arm_reference_archive is not None:
             from .native_arm_reference import AnimationReference
@@ -1074,9 +1111,10 @@ def main(argv=None):
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--game-data', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--sample-count',type=int,help='Diagnostic only: select 1..32 clips, never production default')
     args = parser.parse_args(argv)
     try:
-        report = build_project(args.manifest, args.config, args.game_data, args.output)
+        report = build_project(args.manifest, args.config, args.game_data, args.output,args.sample_count)
         print(json.dumps({'status': report['status'], 'animations': len(report['animations']), 'output': str(args.output)}, ensure_ascii=False))
         return 0
     except Exception as error:

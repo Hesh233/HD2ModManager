@@ -17,8 +17,20 @@ if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notl
 }
 # Isolated stdlib plus the sibling source directory; main.py adds the package parent.
 "python311.zip`n.`n..`n" | Set-Content -LiteralPath (Join-Path $pythonDirectory 'python311._pth') -Encoding ascii
-$names = @('__init__.py','main.py','cli.py','native_skeleton.py','native_animation.py','native_arm_reference.py','attachment_skeleton.py','motion_skeleton.py','archive.py','batch.py','binary.py','constants.py','formats.py','math3d.py','processor.py','weapon_grip_targets.json','config.toml')
+$names = @('__init__.py','main.py','cli.py','native_skeleton.py','native_animation.py','native_arm_reference.py','attachment_skeleton.py','native_config.py','motion_skeleton.py','archive.py','batch.py','binary.py','constants.py','formats.py','math3d.py','processor.py','weapon_grip_targets.json','config.toml')
 foreach ($name in $names) { Copy-Item -LiteralPath (Join-Path $animationRoot $name) -Destination $runtime -Force }
+# Complete native calibration inputs. They are runtime dependencies, not generated animation duplicates.
+$preset = Join-Path $runtime 'presets\native-v15'
+New-Item -ItemType Directory -Force -Path $preset | Out-Null
+$referenceSource = Join-Path $managerRoot 'outputs\native-manual-20261103\project\refs\arm-reference.patch_0'
+if (Test-Path -LiteralPath $referenceSource) { Copy-Item -LiteralPath $referenceSource -Destination (Join-Path $preset 'arm-reference.patch_0') -Force }
+foreach ($suffix in @('', '.gpu_resources', '.stream')) {
+    $templateSource = Join-Path $managerRoot ('outputs\native-manual-20261103\project\animations\avatar-template\9ba626afa44a3aa3.patch_0' + $suffix)
+    if (Test-Path -LiteralPath $templateSource) { Copy-Item -LiteralPath $templateSource -Destination (Join-Path $preset ('avatar-template.patch_0' + $suffix)) -Force }
+}
+foreach ($required in @('preset.json','runtime-policy.json','arm-reference.patch_0','avatar-template.patch_0','avatar-template.patch_0.gpu_resources','avatar-template.patch_0.stream')) {
+    if (!(Test-Path -LiteralPath (Join-Path $preset $required))) { throw "Missing required native preset: $required" }
+}
 $vendor = Join-Path (Split-Path -Parent $animationRoot) 'utils\lz4_311'
 foreach ($relative in @('__init__.py','version.py','LICENSE.txt','_version.cp311-win_amd64.pyd','block\__init__.py','block\_block.cp311-win_amd64.pyd')) {
     $target = Join-Path $runtime ('utils\lz4_311\' + $relative)
@@ -29,6 +41,7 @@ foreach ($relative in @('__init__.py','version.py','LICENSE.txt','_version.cp311
 if ($LASTEXITCODE -ne 0) { throw 'Official Python + source entry point failed.' }
 $manifest = [ordered]@{ builtUtc=[DateTime]::UtcNow.ToString('o'); runtime='Official CPython 3.11.9 embeddable x64';
     archiveSha256=(Get-FileHash -LiteralPath $PythonArchive -Algorithm SHA256).Hash;
-    signer=$signature.SignerCertificate.Subject;
+    signer=$signature.SignerCertificate.Subject; pipelineVersion='1.0.9'; runtimePolicy='b23-1.0.8';
+    presetFiles=@(Get-ChildItem -LiteralPath $preset -File | ForEach-Object { @{name=('presets/native-v15/'+$_.Name);sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash} });
     files=@($names | ForEach-Object { @{name=$_;sha256=(Get-FileHash -LiteralPath (Join-Path $runtime $_) -Algorithm SHA256).Hash} }) }
 $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $runtime 'build-info.json') -Encoding utf8

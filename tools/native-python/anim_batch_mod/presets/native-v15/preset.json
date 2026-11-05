@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "pipelineVersion": "1.0.9",
+  "armReference": "arm-reference.patch_0",
+  "avatarTemplate": "avatar-template.patch_0",
+  "models": {
+    "hd2n_4e4fb4fa303d": {
+      "foot_y_degrees": {
+        "l_foot": 20.0,
+        "r_foot": -20.0
+      }
+    },
+    "hd2n_cc1724c9799e": {
+      "foot_y_degrees": {
+        "l_foot": 0.0,
+        "r_foot": 0.0
+      }
+    }
+  }
+}

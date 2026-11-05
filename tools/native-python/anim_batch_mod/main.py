@@ -20,4 +20,10 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "attachment-runtime":
         from anim_batch_mod.attachment_skeleton import main as attachment_main
         raise SystemExit(attachment_main(sys.argv[2:]))
+    if len(sys.argv)>1 and sys.argv[1]=='prepare-config':
+        from anim_batch_mod.native_config import main as config_main
+        raise SystemExit(config_main(sys.argv[2:]))
+    if len(sys.argv)>1 and sys.argv[1]=='prepare-native-model':
+        from anim_batch_mod.attachment_skeleton import model_main
+        raise SystemExit(model_main(sys.argv[2:]))
     raise SystemExit(main())

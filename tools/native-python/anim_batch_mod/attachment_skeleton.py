@@ -425,6 +425,137 @@ def runtime_outputs(avatar_raw, bone_raw, manifest, by_native_name):
         originalNativeHierarchyPreserved=True,bindWorldsPreserved=True)
 
 
+def _local_under(parent,child):
+    from .math3d import quat_inverse_rotate
+    p=quat_inverse_rotate(parent.rotation,vec_sub(child.position,parent.position))
+    return WorldTransform([v/scale for v,scale in zip(p,parent.scale)],
+        quat_multiply(quat_inverse(parent.rotation),child.rotation),[a/b for a,b in zip(child.scale,parent.scale)])
+
+
+def calibrate_weapon_manifest(manifest,model_unit):
+    """Re-place only the two original Source weapon bones at converter/native grips.
+
+    All other bind worlds (including weapon children) remain fixed. Old weapon
+    world positions are diagnostic only and never a calibration target.
+    """
+    from . import native_skeleton as native
+    from .motion_skeleton import source_local,matrix
+    from .math3d import quat_inverse_rotate
+    drivers={n['driver'] for n in manifest['bones'] if n['driver']}
+    hashes=manifest['driverHashes']
+    names={name:hashes.index(native.bone_name_hash(name)) for name in drivers|{'root','boss','attach_hand_r','attach_hand_l'}}
+    # Body Unit node order differs from Avatar. Never slice a model's first 107
+    # nodes as if they were the Avatar; use the exported original driver bind.
+    bind=[native.row_pose(row['values']) for row in manifest['driverWorld']]
+    source_bind=[native.local_pose(source_local(n,i,manifest)) for i,n in enumerate(manifest['bones'])]
+    refs,_=native._reference_rotations(manifest['bones'],source_bind,[native.row_pose(n['world']) for n in manifest['bones']],bind,names,manifest)
+    by_driver={n['driver']:i for i,n in enumerate(manifest['bones']) if n['driver']}
+    old_world=[native.row_pose(n['world']) for n in manifest['bones']];desired={};rows=[]
+    for hand,source_name,mount in [('r_hand','ValveBiped.weapon_bone','attach_hand_r'),('l_hand','ValveBiped.L_weapon_bone','attach_hand_l')]:
+        matches=[i for i,n in enumerate(manifest['bones']) if (n.get('sourceName') or '').lower()==source_name.lower()]
+        if not matches:continue
+        if len(matches)!=1:raise ValueError('Ambiguous original weapon bone: '+source_name)
+        i=matches[0];h=by_driver[hand];axes=quat_multiply(quat_inverse(refs[h]),bind[names[hand]].rotation)
+        original=_local_under(bind[names[hand]],bind[names[mount]])
+        q=quat_multiply(old_world[h].rotation,axes)
+        wanted=WorldTransform([a+b for a,b in zip(old_world[h].position,quat_rotate(q,original.position))],
+            quat_multiply(q,original.rotation),list(old_world[i].scale))
+        desired[i]=wanted
+        rows.append(dict(sourceName=source_name,manifestIndex=i,originalSourceIndex=manifest['bones'][i]['sourceIndex'],handIndex=h,native=mount,
+            nativeIndex=names[mount],axes=axes,originalWorld=list(old_world[i].position),targetWorld=list(wanted.position)))
+    if not rows:raise ValueError('No original Source weapon bones to calibrate')
+    changed=set(desired)
+    for i,node in enumerate(manifest['bones']):
+        if i not in desired and node['parent'] in desired:changed.add(i)
+    for i in changed:
+        node=manifest['bones'][i];parent=node['parent']
+        parent_world=bind[0] if parent is None else desired.get(parent,old_world[parent])
+        world=desired.get(i,old_world[i]);local=_local_under(parent_world,world)
+        node['local']=dict(position=local.position,rotation=matrix(local)[:9],scale=local.scale)
+        node['world']=matrix(world,True)
+        if str(i) in manifest.get('motionLocalOverrides',{}):manifest['motionLocalOverrides'][str(i)]=node['local']
+    manifest['weaponGripCalibration']=dict(version='converter-native-grip-v1',rows=rows,changedSourceIndices=sorted(changed),
+        targetPolicy='converter_hand_axes_times_original_native_mount',otherBindWorldsPreserved=True)
+    return manifest['weaponGripCalibration']
+
+
+def _rewrite_model_weapon_binds(raw,manifest):
+    from . import native_skeleton as native
+    from .motion_skeleton import matrix
+    unit=UnitData.parse(raw);count=len(unit.parents);local=copy.deepcopy(unit.transforms)
+    for i in manifest['weaponGripCalibration']['changedSourceIndices']:
+        node=manifest['bones'][i];index=unit.name_hashes.index(node['hash']);local[index]=native.local_pose(node['local'])
+    world=_calculate_world_transforms(local,unit.parents)
+    at=struct.unpack_from('<I',raw,52)[0];block=bytearray(raw[at:at+16+136*count])
+    changed={unit.name_hashes.index(manifest['bones'][i]['hash']) for i in manifest['weaponGripCalibration']['changedSourceIndices']}
+    for index in changed:
+        block[16+64*index:16+64*(index+1)]=struct.pack('<16f',*matrix(local[index]))
+        pos=16+64*count+64*index;block[pos:pos+64]=struct.pack('<16f',*matrix(world[index],True))
+    revised=bytearray(raw);revised.extend(bytes(-len(revised)%16));struct.pack_into('<I',revised,52,len(revised));revised.extend(block)
+    checked=UnitData.parse(revised);after=_calculate_world_transforms(checked.transforms,checked.parents)
+    before=_calculate_world_transforms(unit.transforms,unit.parents)
+    weapon_nodes={unit.name_hashes.index(manifest['bones'][row['manifestIndex']]['hash']) for row in manifest['weaponGripCalibration']['rows']}
+    for i,(a,b) in enumerate(zip(before,after)):
+        if i not in weapon_nodes:
+            assert max(abs(x-y) for x,y in zip(a.position,b.position))<1e-4,'non-weapon bind position changed'
+            assert abs(sum(x*y for x,y in zip(a.rotation,b.rotation)))>1-1e-5,'non-weapon bind rotation changed'
+    prefix=bytearray(revised[:len(raw)]);prefix[52:56]=raw[52:56]
+    assert prefix==raw,'model mesh/UV/weights bytes changed outside transform pointer'
+    for row in manifest['weaponGripCalibration']['rows']:
+        index=checked.name_hashes.index(manifest['bones'][row['manifestIndex']]['hash'])
+        assert max(abs(a-b) for a,b in zip(after[index].position,row['targetWorld']))<1e-4,'weapon bind readback mismatch'
+    return bytes(revised)
+
+
+def prepare_native_model(manifest_path,model_directory,config_path):
+    import json,hashlib,os
+    from pathlib import Path
+    from .archive import TocArchive,InlinePatchWriter
+    from .constants import UNIT_TYPE_ID
+    from .native_config import resolve_native_config
+    manifest_path=Path(manifest_path);folder=Path(model_directory);manifest=json.loads(manifest_path.read_text(encoding='utf-8-sig'))
+    cfg=resolve_native_config(config_path,manifest)
+    if not cfg['native_skeleton'].get('calibrate_weapon_bones',False):return dict(status='skipped',reason='explicit calibration disabled')
+    if manifest.get('weaponGripCalibration'):
+        return dict(status='complete',alreadyCalibrated=True,calibration=manifest['weaponGripCalibration'])
+    paths=[p for p in sorted(folder.glob('*.patch_*')) if p.suffix.rsplit('_',1)[-1].isdigit()]
+    archives=[];sample=None
+    for path in paths:
+        side=lambda suffix:Path(str(path)+suffix).read_bytes() if Path(str(path)+suffix).exists() else b''
+        archive=TocArchive.parse_parts(path.read_bytes(),side('.gpu_resources'),side('.stream'));archives.append((path,archive))
+        for e in archive.entries.values():
+            if e.type_id==UNIT_TYPE_ID and sample is None:sample=UnitData.parse(e.toc_data)
+    if sample is None:raise ValueError('No converted model Units')
+    calibration=calibrate_weapon_manifest(manifest,sample);files=[]
+    for path,archive in archives:
+        external={key:(bytes(e.gpu_data),bytes(e.stream_data)) for key,e in archive.entries.items()}
+        for e in archive.entries.values():
+            if e.type_id==UNIT_TYPE_ID:e.toc_data=bytearray(_rewrite_model_weapon_binds(e.toc_data,manifest))
+        counts={}
+        for e in archive.entries.values():counts[e.type_id]=counts.get(e.type_id,0)+1
+        temp=Path(str(path)+'.calibrated');writer=InlinePatchWriter(archive,temp,counts,standalone=True)
+        try:
+            for e in archive.entries.values():writer.append(e)
+            rebuilt=writer.finish()
+        finally:writer.close()
+        for source,suffix in zip(rebuilt,['','.gpu_resources','.stream']):
+            os.replace(source,Path(str(path)+suffix))
+        completed=TocArchive.parse_parts(path.read_bytes(),Path(str(path)+'.gpu_resources').read_bytes(),Path(str(path)+'.stream').read_bytes())
+        assert all((bytes(completed.entries[key].gpu_data),bytes(completed.entries[key].stream_data))==value for key,value in external.items()),'external mesh payload changed'
+        files.append(dict(path=str(path),sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
+    manifest_path.write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
+    report=dict(status='complete',pipelineVersion='1.0.9',calibration=calibration,files=files,
+        meshNormalsUvWeightsUnchanged=True,sourceVpkUnmodified=True)
+    (folder/'weapon-grip-calibration.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+    return report
+
+
+def model_main(argv=None):
+    import argparse,json
+    p=argparse.ArgumentParser();p.add_argument('--manifest',required=True);p.add_argument('--model-directory',required=True);p.add_argument('--config',required=True)
+    a=p.parse_args(argv);print(json.dumps(prepare_native_model(a.manifest,a.model_directory,a.config)));return 0
+
+
 def build_transfer_package(manifest_path, model_directory, game_data, output, config_path=None):
     """Build a model-specific profile and its required Avatar/Bones companion for the GUI."""
     import json,hashlib,tomllib
@@ -436,7 +567,8 @@ def build_transfer_package(manifest_path, model_directory, game_data, output, co
     if output.exists() and any(output.iterdir()):raise FileExistsError('Choose an empty attachment output directory')
     output.mkdir(parents=True,exist_ok=True)
     manifest=native.load_manifest(Path(manifest_path));model_directory=Path(model_directory)
-    config=tomllib.loads(Path(config_path).read_text(encoding='utf-8-sig')) if config_path else {}
+    from .native_config import resolve_native_config,apply_runtime_policy
+    config=resolve_native_config(config_path,manifest) if config_path else {}
     sections=json.loads((model_directory/'sections.json').read_text(encoding='utf-8-sig'))
     body_ids={int(row['fileId'],16) for row in sections['units'] if row['slot']!='Helmet'}
     model_units={}
@@ -460,6 +592,9 @@ def build_transfer_package(manifest_path, model_directory, game_data, output, co
         targets=json.loads((Path(__file__).parent/'weapon_grip_targets.json').read_text(encoding='utf8'))['targets']
         profile,avatar,bones,rig=transfer_profile(unit_entry.toc_data,bone_entry.toc_data,manifest,model_units,targets,
             config.get('native_skeleton',{}).get('grip_soft_distance',.008))
+        if config.get('native_skeleton',{}).get('runtime_policy'):
+            apply_runtime_policy(profile,config['native_skeleton']['runtime_policy'])
+            profile['variant']=manifest['boneNamespace']+'-B23-1.0.8-calibrated-v1'
         contract=validate_attachment_transfer_contract(profile,UnitData.parse(avatar),BonesData.parse(bones),manifest,
             config.get('attachment_swap') if config.get('native_skeleton',{}).get('attachment_swap') else None)
         (output/'source-skeleton.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf8')

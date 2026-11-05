@@ -303,7 +303,7 @@ namespace HD2ModManager.Services
                 }
 
                 // 「原比例」路线的后半程：模型已入库，先问要不要替换哪件甲（候选与详情页下拉同源），
-                // 再按意愿全量构建骨架动画并作为 [原比例动画] Mod 入库。
+                // 再按意愿全量构建骨架动画并作为 [原比例混合动画] Mod 入库。
                 // 动画失败/取消 → 整批回滚本批导入的 Mod（用户定的策略：不留半套原比例产物）。
                 var nativePackages = produced
                     .Where(package => package.NativeModelDirectory is not null)
@@ -331,7 +331,7 @@ namespace HD2ModManager.Services
                                 .ConfigureAwait(false);
 
                             // 挂点对调（2026-11-05）：选择「制作原骨架护甲」后，同时产出
-                            // [骨骼挂点修正] 独立 lua 包并作为独立 Mod 入库（与 [原比例动画]
+                            // [骨骼挂点修正] 独立 lua 包并作为独立 Mod 入库（与 [原比例混合动画]
                             // 同一套命名/回滚语义）。它对应的是原骨架模型本身，不依赖是否
                             // 生成骨架动画。配置与 Avatar/Bones 补丁按本模型生成，复用 B23 运行时。
                             var modelBaseName = Path.GetFileName(modDirectory);
@@ -369,15 +369,12 @@ namespace HD2ModManager.Services
                                 (phase, done, total, text) =>
                                     _onProgress?.Invoke(text, total == 0 ? null : (double)done / total),
                                 ct).ConfigureAwait(false);
-                            var animationPackageDirectory = Path.Combine(
-                                Path.GetDirectoryName(animationRuntime)!, "package");
+                            var animationName = VpkImportService.NativeAnimationName(modelBaseName);
+                            var animationPackageDirectory = Path.Combine(Path.GetDirectoryName(animationRuntime)!, animationName);
                             Directory.CreateDirectory(animationPackageDirectory);
                             foreach (var file in Directory.EnumerateFiles(animationRuntime))
                                 File.Copy(file, Path.Combine(animationPackageDirectory, Path.GetFileName(file)), overwrite: true);
-                            var animationName = VpkImportService.NativeAnimationPrefix
-                                + (modelBaseName.StartsWith(VpkImportService.NativeModelPrefix, StringComparison.Ordinal)
-                                    ? modelBaseName[VpkImportService.NativeModelPrefix.Length..]
-                                    : modelBaseName);
+                            VpkAnimationBuildService.WriteAnimationIdentity(animationPackageDirectory, modelBaseName);
                             var animationGuids = await ImportPathAsync(
                                 animationPackageDirectory,
                                 ct,

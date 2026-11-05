@@ -87,6 +87,8 @@ print(scale)
             var manifests = Directory.GetFiles(Path.Combine(project, "models"), "source-skeleton.json", SearchOption.AllDirectories);
             if (manifests.Length != 1) throw new InvalidDataException("一个原生骨架工程必须恰好有一个角色模型；请分别转换多个角色。");
             var modelDirectory = Path.GetDirectoryName(manifests[0])!;
+            await VpkAnimationBuildService.WriteConfigSnapshotAsync(snapshot, modelScale, modelDirectory, cancellationToken, config);
+            await VpkAnimationBuildService.PrepareNativeModelAsync(modelDirectory, snapshot, cancellationToken);
             var physics = await Hd2ModProcess.RunAsync(cli, ["physbone", "embed-mod", modelDirectory, "--json"], cancellationToken);
             await File.WriteAllTextAsync(Path.Combine(project, "physics.json"), physics.Output, cancellationToken);
             if (physics.ExitCode != 0) throw new InvalidDataException(Hd2ModProcess.Explain(physics, "物理参数封包"));
@@ -113,6 +115,7 @@ print(scale)
                     || root.GetProperty("animations").GetArrayLength() != root.GetProperty("expected_animations").GetInt32())
                     throw new InvalidDataException("配套动画报告不完整，工程不能用于测试。");
             }
+            VpkAnimationBuildService.WriteAnimationIdentity(Path.Combine(project, "animations", "runtime"), Path.GetFileNameWithoutExtension(sources[0]));
             // Retain the original material options as separate choices; avoid merging conflicting variants.
             var materialDirectories = materials.Select(Path.GetDirectoryName).Where(d => d is not null)
                 .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
@@ -142,7 +145,7 @@ print(scale)
             stage("正在打包模型与全部配套动画");
             cancellationToken.ThrowIfCancellationRequested();
             ZipFile.CreateFromDirectory(Path.Combine(project, "models"), Path.Combine(project, "模型材质.zip"), CompressionLevel.Fastest, false);
-            ZipFile.CreateFromDirectory(Path.Combine(project, "animations", "runtime"), Path.Combine(project, "配套动画.zip"), CompressionLevel.Fastest, false);
+            ZipFile.CreateFromDirectory(Path.Combine(project, "animations", "runtime"), Path.Combine(project, VpkImportService.NativeAnimationName(Path.GetFileNameWithoutExtension(sources[0])) + ".zip"), CompressionLevel.Fastest, false);
             cancellationToken.ThrowIfCancellationRequested();
             await File.WriteAllTextAsync(Path.Combine(project, "project.json"), JsonSerializer.Serialize(new
                 { status = "complete", source = modDirectory, targetArchive, config, gameTested = false },

@@ -133,7 +133,13 @@ public sealed class VpkImportService
 	/// <summary>原骨架路线的产物命名前缀：模型包用 <c>[原比例模型]</c>，它的动画包用 <c>[原比例动画]</c>，
 	/// 挂点修正包用 <c>[骨骼挂点修正]</c>（2026-11-05 挂点对调拆分新增）。</summary>
 	public const string NativeModelPrefix = "[原比例模型]";
-	public const string NativeAnimationPrefix = "[原比例动画]";
+	public const string NativeAnimationPrefix = "[原比例混合动画]";
+    public static string NativeAnimationName(string modelName)
+    {
+        var name = modelName.StartsWith(NativeModelPrefix, StringComparison.Ordinal) ? modelName[NativeModelPrefix.Length..] : modelName;
+        if (name.EndsWith(".vpk", StringComparison.OrdinalIgnoreCase)) name = Path.GetFileNameWithoutExtension(name);
+        return NativeAnimationPrefix + "(" + name + ")";
+    }
 	public const string NativeGripFixPrefix = "[骨骼挂点修正]";
 
 	private readonly StoragePaths _paths;

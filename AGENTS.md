@@ -7,3 +7,7 @@
 - 当前 test01 1.0.8 用户反馈“暂无发现明显问题”，仅记本轮观察通过。规范工程唯一入口 projects/test01-native-grip/（build.ps1 一键打包）；配置/小型输入/共享源码/不可变发布包/临时构建分离，详见记忆第十四节。ADS仍为姿态代判定，预览为小世界隔离，不扩大为全武器验收或手指根因彻底修复。
 
 - 挂点代码共用 attachment_swap_plan 与 validate_attachment_transfer_contract：未来生成顺序为最终手臂参考后互换，正确逆父级缩放并拒绝歧义/重叠/错参考。已观察1.0.8和B22动作不重烘不改字节；后续重烘另记待测。19个哈希确认动作副本已清理（12.950GiB），ZIP/当前动作/原生参考/基线保留；记录见 outputs/project-archive-cleanup-20261105/。
+
+- 2026-11-06 manager-1.0.7重生成核查：随包源码已与当前/staging一致并含v2，但通用TOML缺test01参考手臂/模板校准；GUI transfer_profile仍B23-1.0.7默认策略（1.0.8 intent/performance/previewGuard未启用）。新1.1/183通道/205节点组不等价于原1.08/238/260观察组。仅换config不足、不能拷旧模型地址；修正说明与诊断示例见 outputs/manager-107-config-audit-20261106/修正说明.md。尚未修改或发布目标管理器。
+
+- 2026-11-06 GUI生成链已修至1.0.9并更新指定manager-1.0.7兼容路径：managed v15模板/参考、旧config补项、公共1.0.8策略、两根原武器骨准确握点重算后互换、真实动画manifest名称[原比例混合动画](VPK名字)/描述[全量动作文件]。实际目标DLL/CLI按test01后test02各6条模拟通过，详情记忆十六/outputs/gui-native-pipeline-fixed-20261106/修复交付说明.md。仅抽样、未部署未游戏验收；旧生成组需重建整套，原1.0.8冻结组不改。

@@ -35,7 +35,8 @@ internal static class VpkAnimationBuildService
             throw new InvalidOperationException("请先配置 HD2 游戏 data 目录。");
         Directory.CreateDirectory(outputRoot);
         var snapshot = configPath ?? Path.Combine(outputRoot, "config.toml");
-        if (configPath is null) WriteConfigSnapshot(snapshot, ReadManifestScale(manifest), modDirectory);
+        if (configPath is null) await WriteConfigSnapshotAsync(snapshot, ReadManifestScale(manifest), modDirectory, cancellationToken);
+        await PrepareNativeModelAsync(modDirectory, snapshot, cancellationToken);
         var calibration = Path.Combine(outputRoot, "calibration");
         var result = await Hd2ModProcess.RunAsync(runner,
             ["-X", "utf8", script, "attachment-runtime", "--manifest", manifest,
@@ -68,7 +69,7 @@ internal static class VpkAnimationBuildService
         string modDirectory,
         string outputRoot,
         Action<string, int, int, string>? onProgress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, int? sampleCount = null)
     {
         var manifest = FindManifest(modDirectory);
         var runner = Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "runtime", "python.exe");
@@ -83,9 +84,11 @@ internal static class VpkAnimationBuildService
         Directory.CreateDirectory(working);
         try
         {
-            if (Directory.Exists(outputRoot)) Directory.Delete(outputRoot, recursive: true);
+            if (Directory.Exists(outputRoot) && Directory.EnumerateFileSystemEntries(outputRoot).Any())
+                throw new IOException("动画输出目录必须为空，不覆盖已有工程。");
             var snapshot = Path.Combine(working, "config.toml");
-            WriteConfigSnapshot(snapshot, ReadManifestScale(manifest), modDirectory);
+            await WriteConfigSnapshotAsync(snapshot, ReadManifestScale(manifest), modDirectory, cancellationToken);
+            await PrepareNativeModelAsync(modDirectory, snapshot, cancellationToken);
             var arguments = new List<string>
             {
                 "-X", "utf8", script, "native-project",
@@ -94,11 +97,17 @@ internal static class VpkAnimationBuildService
                 "--game-data", gameData,
                 "--output", outputRoot,
             };
+            if (sampleCount is not null) arguments.AddRange(["--sample-count", sampleCount.Value.ToString(CultureInfo.InvariantCulture)]);
             var result = await Hd2ModProcess.RunAsync(runner, arguments, cancellationToken, onProgress)
                 .ConfigureAwait(false);
             if (result.ExitCode != 0)
                 throw new InvalidOperationException(Hd2ModProcess.Explain(result, "骨架动画生成"));
             VerifyReport(Path.Combine(outputRoot, "build-report.json"));
+            var runtimeDirectory = Path.Combine(outputRoot, "runtime");
+            WriteAnimationIdentity(runtimeDirectory, Path.GetFileName(modDirectory));
+            File.Copy(snapshot, Path.Combine(runtimeDirectory, "config.toml"), true);
+            File.Copy(Path.ChangeExtension(snapshot, ".provenance.json"), Path.Combine(runtimeDirectory, "config.provenance.json"), true);
+            File.Copy(Path.Combine(outputRoot, "build-report.json"), Path.Combine(runtimeDirectory, "build-report.json"), true);
             return Path.Combine(outputRoot, "runtime");
         }
         finally
@@ -142,23 +151,37 @@ internal static class VpkAnimationBuildService
     /// <c>attachment_swap</c> 缺键时强制补 true：ResolveConfig 优先读 Mod 目录自带的旧快照，
     /// 缺键会静默跳过挂点骨骼交换，让原比例模型与同步动作的挂点行为分叉；显式 false 仍然尊重。
     /// </summary>
-    private static void WriteConfigSnapshot(string snapshotPath, double modelScale, string modDirectory)
+    internal static async Task WriteConfigSnapshotAsync(string snapshotPath, double modelScale, string modDirectory,
+        CancellationToken cancellationToken, string? sourceConfig = null)
     {
-        var config = NativeSkeletonProjectService.ResolveConfig(modDirectory);
-        var text = File.ReadAllText(config, Encoding.UTF8);
-        var scaleText = modelScale.ToString("R", CultureInfo.InvariantCulture);
-        var replaced = Regex.Replace(text, @"(?m)^\s*model_scale\s*=.*$", "model_scale = " + scaleText);
-        if (replaced == text && !Regex.IsMatch(text, @"(?m)^\s*model_scale\s*="))
+        var source = sourceConfig ?? NativeSkeletonProjectService.ResolveConfig(modDirectory);
+        var runner = Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "runtime", "python.exe");
+        var script = Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "main.py");
+        var result = await Hd2ModProcess.RunAsync(runner,
+            ["-X", "utf8", script, "prepare-config", "--config", source, "--output", snapshotPath,
+             "--model-scale", modelScale.ToString("R", CultureInfo.InvariantCulture), "--manifest", FindManifest(modDirectory)], cancellationToken);
+        if (result.ExitCode != 0) throw new InvalidDataException(Hd2ModProcess.Explain(result, "校准配置快照"));
+    }
+
+    internal static async Task PrepareNativeModelAsync(string modDirectory, string configPath, CancellationToken cancellationToken)
+    {
+        var manifest = FindManifest(modDirectory);
+        var runner = Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "runtime", "python.exe");
+        var script = Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "main.py");
+        var result = await Hd2ModProcess.RunAsync(runner,
+            ["-X", "utf8", script, "prepare-native-model", "--manifest", manifest,
+             "--model-directory", Path.GetDirectoryName(manifest)!, "--config", configPath], cancellationToken);
+        if (result.ExitCode != 0) throw new InvalidDataException(Hd2ModProcess.Explain(result, "原武器骨准确握点重算"));
+    }
+
+    internal static void WriteAnimationIdentity(string directory, string modelName)
+    {
+        var name = VpkImportService.NativeAnimationName(modelName);
+        var guid = new Guid(System.Security.Cryptography.MD5.HashData(Encoding.UTF8.GetBytes("native-animation:" + name)));
+        File.WriteAllText(Path.Combine(directory, "manifest.json"), JsonSerializer.Serialize(new
         {
-            var header = Regex.Match(text, @"^\s*\[native_skeleton\][^\n]*$", RegexOptions.Multiline);
-            // 不能写 `text.Remove(pos)`：单参数 Remove 会删掉 pos 之后的**全部**内容，
-            // 快照只剩 `[native_skeleton]` 头，[bone_offsets]/[ik_chains] 全丢，
-            // Python 侧随即报 "Config must contain at least one bone offset..."。
-            replaced = header.Success
-                ? text.Insert(header.Index + header.Length, "\nmodel_scale = " + scaleText)
-                : text + "\n[native_skeleton]\nmodel_scale = " + scaleText + "\n";
-        }
-        File.WriteAllText(snapshotPath, EnsureAttachmentSwapDefault(replaced), new UTF8Encoding(false));
+            Version = 1, Guid = guid.ToString(), Name = name, Description = "[全量动作文件]"
+        }, new JsonSerializerOptions { WriteIndented = true }), new UTF8Encoding(false));
     }
 
     internal static string EnsureAttachmentSwapDefault(string text)

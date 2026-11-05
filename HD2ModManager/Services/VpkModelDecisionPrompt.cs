@@ -42,7 +42,7 @@ internal static class VpkModelDecisionPrompt
             "生成骨架动画",
             $"模型「{model}」是否需要生成骨架动画？\n"
             + "需要：转换完成后会全量转换游戏第三人称动画（约数千条，耗时较长），"
-            + "产出一个以 [原比例动画] 命名的独立动画 Mod。",
+            + "产出一个以 [原比例混合动画](VPK名字) 命名的独立动画 Mod。",
             "需要生成动画",
             "不需要",
             cancellationToken).ConfigureAwait(false);
