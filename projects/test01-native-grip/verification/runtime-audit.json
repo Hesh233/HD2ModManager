@@ -1,0 +1,56 @@
+{
+  "baselineChecks": 206807,
+  "status": "PASS_PENDING_GAME_TEST",
+  "fixed": {
+    "sidearmHysteresis": true,
+    "a955c4ea6f6d4203": {
+      "reentryApplied": true,
+      "contactApplied": true,
+      "freeHandPreserved": true
+    },
+    "73d84eaae8c75342": {
+      "reentryApplied": true,
+      "contactApplied": true,
+      "freeHandPreserved": true
+    },
+    "previewSmallWorldBypassed": true,
+    "gp20OtherMount": true,
+    "9eb160830321bfd6": {
+      "reentryApplied": true,
+      "contactApplied": true,
+      "freeHandPreserved": true
+    },
+    "52ff81fcba0c059d": {
+      "engineRelinkPreserved": true,
+      "recognized": true,
+      "localPosePreserved": true,
+      "refreshed": true
+    },
+    "performance": {
+      "optimized": {
+        "recognized": 0,
+        "engineCalls": 863,
+        "refreshed": 0
+      },
+      "legacy": {
+        "recognized": 32,
+        "engineCalls": 3588,
+        "refreshed": 96
+      }
+    },
+    "9f80d67a12a7e40f": {
+      "reentryApplied": true,
+      "contactApplied": true,
+      "freeHandPreserved": true
+    },
+    "invalidThresholdsRejected": true,
+    "9c22a90da9c79de3": {
+      "engineRelinkPreserved": true,
+      "recognized": true,
+      "localPosePreserved": true,
+      "refreshed": true
+    }
+  },
+  "gameTested": false,
+  "checks": 215958
+}

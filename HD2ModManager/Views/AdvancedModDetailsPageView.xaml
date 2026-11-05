@@ -1,0 +1,74 @@
+<UserControl x:Class="HD2ModManager.Views.AdvancedModDetailsPageView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid Background="Transparent" Loaded="OnLoaded">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+            <Border Style="{StaticResource DataTableCard}" Margin="{StaticResource CardStackMargin}">
+                <Border Style="{StaticResource DataTableToolbar}">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="{Binding AdvancedAssetState}" Style="{StaticResource AppSupportingText}" VerticalAlignment="Center"/>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBox Style="{StaticResource AppSearchBox}" Width="220" Text="{Binding AdvancedAssetQuery, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" ToolTip="搜索类型、AssetKey、名称或目标"/>
+                            <CheckBox Style="{StaticResource AppCheckBox}" Content="仅异常" IsChecked="{Binding AdvancedOnlyIssues, Mode=TwoWay}" VerticalAlignment="Center" Margin="10,0,0,0"/>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </Border>
+
+            <Border Grid.Row="1" Style="{StaticResource DataTableCard}" Margin="0,0,0,12">
+                <DataGrid Style="{StaticResource DataTableGrid}" ItemsSource="{Binding AdvancedAssets}">
+                    <DataGrid.RowStyle>
+                        <Style TargetType="DataGridRow">
+                            <Setter Property="ToolTip">
+                                <Setter.Value>
+                                    <ToolTip MaxWidth="720" Padding="10">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding TypeName}" FontWeight="SemiBold"/>
+                                            <TextBlock Text="{Binding AssetKeyText}" FontFamily="Consolas" Margin="0,3,0,0"/>
+                                            <TextBlock Text="{Binding ResourceName}" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                            <TextBlock Text="{Binding PartSummary}" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                            <TextBlock Text="{Binding TargetSummary}" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                            <TextBlock Text="{Binding ReferenceSummary}" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                            <TextBlock Text="{Binding ProfileStatus}" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                            <TextBlock Text="{Binding DiagnosticSummary}" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                            <TextBlock Text="{Binding PatchGroupSummary}" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                            <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
+                                                <TextBlock Text="Toc "/>
+                                                <TextBlock Text="{Binding TocBytes}"/>
+                                                <TextBlock Text="；Stream "/>
+                                                <TextBlock Text="{Binding StreamBytes}"/>
+                                                <TextBlock Text="；GPU "/>
+                                                <TextBlock Text="{Binding GpuBytes}"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </ToolTip>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </DataGrid.RowStyle>
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="类型" Binding="{Binding TypeName}" Width="0.8*"/>
+                        <DataGridTextColumn Header="AssetKey" Binding="{Binding AssetKeyText}" Width="1.8*"/>
+                        <DataGridTextColumn Header="资源名称" Binding="{Binding ResourceName}" Width="1.35*"/>
+                        <DataGridTextColumn Header="部件" Binding="{Binding PartSummary}" Width="1.45*"/>
+                        <DataGridTextColumn Header="目标" Binding="{Binding TargetSummary}" Width="1.55*"/>
+                        <DataGridTextColumn Header="引用关系" Binding="{Binding ReferenceSummary}" Width="1.1*"/>
+                        <DataGridTextColumn Header="Profile 状态" Binding="{Binding ProfileStatus}" Width="1.25*"/>
+                        <DataGridTextColumn Header="诊断" Binding="{Binding DiagnosticSummary}" Width="1.8*"/>
+                        <DataGridTextColumn Header="Patch 文件组" Binding="{Binding PatchGroupSummary}" Width="1.35*"/>
+                        <DataGridTextColumn Header="Toc" Binding="{Binding TocBytes}" Width="0.55*"/>
+                        <DataGridTextColumn Header="Stream" Binding="{Binding StreamBytes}" Width="0.55*"/>
+                        <DataGridTextColumn Header="GPU" Binding="{Binding GpuBytes}" Width="0.6*"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Border>
+    </Grid>
+</UserControl>

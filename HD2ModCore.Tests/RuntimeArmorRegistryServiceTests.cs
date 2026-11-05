@@ -1,0 +1,887 @@
+using System.Buffers.Binary;
+using HD2ModCore.Application;
+using HD2ModCore.Domain;
+using HD2ModCore.Infrastructure;
+using AdaptationLuaAssetKeys = HD2ModAdaptation.PatchReconstruction.Lua.LuaAssetKeys;
+using AdaptationLua51Bytecode = HD2ModAdaptation.PatchReconstruction.Lua.Lua51Bytecode;
+using AdaptationLuaResourceFormat = HD2ModAdaptation.PatchReconstruction.Lua.LuaResourceFormat;
+using AdaptationPatchEntryPayloadReader = HD2ModAdaptation.PatchReconstruction.PatchEntryPayloadReader;
+using AdaptationPatchTocScanner = HD2ModAdaptation.PatchReconstruction.PatchTocScanner;
+using Microsoft.Data.Sqlite;
+
+namespace HD2ModCore.Tests;
+
+// LuaDeploymentService.MappingMode 对应设置页的「护甲映射模式」。它是静态字段，
+// 这里的部署用例覆盖"需要运行时 Lua"的产品路径，所以显式指定独占入口模式。
+// ⚠️ 静态设置 ⇒ 与本集合内的其它用例串行执行（见 LuaDeploymentStateCollection）。
+[Collection(LuaDeploymentStateCollection.Name)]
+public sealed class RuntimeArmorRegistryServiceTests
+{
+	public RuntimeArmorRegistryServiceTests()
+	{
+		// 显式钉住，不跟随产品默认值：默认值会变（2026-11-03 起映射默认「真映射」、
+		// 物理默认「独占 boot」），而这里的用例描述的是**某一种模式下的产物形态**，
+		// 跟着默认值漂移只会让失败信息看起来像功能坏了。
+		LuaDeploymentService.MappingMode = ArmorMappingMode.ExclusiveLuaEntry;
+		LuaDeploymentService.PhysicsMode = PhysicsMode.Off;
+	}
+
+	[Fact]
+	public async Task ArmorPiecesUseRuntimeBodyEncodingNotCatalogEnum()
+	{
+		await using var fixture = await Fixture.CreateAsync(withCatalog: true);
+		var paths = new StoragePaths(Path.Combine(fixture.Root, "app"));
+		await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Pooling=False");
+		await connection.OpenAsync();
+		await using var command = connection.CreateCommand();
+		command.CommandText = """
+			CREATE TABLE game_data_authority_pieces (
+				item_id INTEGER, raw_body_type INTEGER, body_variant INTEGER,
+				unit_file_id INTEGER, slot INTEGER, piece_type INTEGER, tone_variations INTEGER);
+			INSERT INTO game_data_authority_pieces VALUES
+				(10, 0, 2, 101, 2, 0, 0),
+				(10, 1, 1, 102, 2, 0, 0),
+				(10, 3, 3, 103, 3, 0, 0),
+				(30, 3, 3, 104, 0, 0, 0);
+			""";
+		await command.ExecuteNonQueryAsync();
+		var pieces = await fixture.Service.ReadArmorPiecesAsync(10);
+		Assert.Equal(0u, pieces.Single(p => p.Unit == "0000000000000065").Body);
+		Assert.Equal(1u, pieces.Single(p => p.Unit == "0000000000000066").Body);
+		Assert.Equal(3u, pieces.Single(p => p.Unit == "0000000000000067").Body);
+		var helmet = Assert.Single(await fixture.Service.ReadArmorPiecesAsync(30));
+		Assert.Equal(0u, helmet.Slot);
+	}
+
+	[Fact]
+	public void LegacyAnyHelmetSlot_IsMigratedWithoutChangingConcreteSlotOne()
+	{
+		var document = RuntimeArmorRegistryService.ParseProtocol(
+			"schema=2\nrevision=1\nenabled=true\nmodel=custom,\n"
+			+ "model_piece=custom,3,0000000000000001,1,0,0\n"
+			+ "model_piece=custom,0,0000000000000002,1,0,0\n"
+			+ "piece_override=43,3,0000000000000003,1,0,true\nmap_model=42,custom\n");
+		Assert.Contains(document.ModelDefinitions[0].Pieces!, piece => piece.Body == 3 && piece.Slot == 0);
+		Assert.Contains(document.ModelDefinitions[0].Pieces!, piece => piece.Body == 0 && piece.Slot == 1);
+		Assert.Equal(1u, Assert.Single(document.PieceOverrideDefinitions).Slot);
+	}
+
+	[Fact]
+	public async Task EditorDefaultBase_RemainsInWorkspaceButNeverInRuntimeProtocol()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		const string legacy = "schema=2\nrevision=27\nenabled=true\nmodel=custom,\n"
+			+ "model_piece=custom,0,044e0dee2a7b0002,2,0,0,true,true\nmap_model=42,custom\n";
+		var document = RuntimeArmorRegistryService.ParseProtocol(legacy);
+		Assert.True(document.ModelDefinitions[0].Pieces![0].IsDefaultBase);
+		await fixture.Service.SaveWorkspaceAsync(document);
+		var reloaded = await fixture.Service.ReadSnapshotAsync();
+		Assert.True(reloaded.Document.ModelDefinitions[0].Pieces![0].IsDefaultBase);
+		var wire = RuntimeArmorRegistryService.SerializeProtocol(reloaded.Document);
+		var line = Assert.Single(wire.Split('\n'), l => l.StartsWith("model_piece="));
+		Assert.Equal("model_piece=custom,0,044e0dee2a7b0002,2,0,0,true", line);
+		Assert.Equal(7, line.Split(',').Length);
+
+		// Recreate an old release's successfully saved workspace + incompatible
+		// protocol. The upgraded GUI must offer Apply even without further edits.
+		var applied = await fixture.Service.ApplyAsync(reloaded.Fingerprint, document.Enabled,
+			document.Mappings, document.ModelDefinitions);
+		Assert.False((await fixture.Service.ReadSnapshotAsync()).HasUnappliedChanges);
+		var protocolPath = Path.Combine(fixture.RegistryRoot, RuntimeArmorRegistryService.ProtocolFileName);
+		var oldWire = (await File.ReadAllTextAsync(protocolPath)).Replace(
+			"044e0dee2a7b0002,2,0,0,true\n", "044e0dee2a7b0002,2,0,0,true,true\n");
+		await File.WriteAllTextAsync(protocolPath, oldWire);
+		Assert.True((await fixture.Service.ReadSnapshotAsync()).HasUnappliedChanges);
+	}
+
+	[Fact]
+	public async Task WorkspaceEdits_SurviveReloadWithoutCompilingAndStayPending()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		var first = await fixture.Service.ReadSnapshotAsync();
+		var model = new RuntimeArmorRegistryModel("model", null, [new(0, "0000000000000001", 2, 0), new(1, "0000000000000002", 2, 0)]);
+		await fixture.Service.ApplyAsync(first.Fingerprint, false, [], [model]);
+		var before = await File.ReadAllTextAsync(Path.Combine(fixture.RegistryRoot, RuntimeArmorRegistryService.ProtocolFileName));
+		var snapshot = await fixture.Service.ReadSnapshotAsync();
+		Assert.False(snapshot.HasUnappliedChanges);
+		await fixture.Service.SaveWorkspaceAsync(snapshot.Document with
+		{
+			ModelDefinitions = [model with { Pieces = RuntimeArmorModelStructure.Merge(model.Pieces!, 2, 0) }]
+		});
+		var reloaded = await fixture.Service.ReadSnapshotAsync();
+		Assert.True(reloaded.HasUnappliedChanges);
+		Assert.Equal(2, reloaded.Document.ModelDefinitions.Single().Pieces!.Count);
+		Assert.Single(RuntimeArmorModelStructure.Active(reloaded.Document.ModelDefinitions.Single().Pieces!));
+		Assert.Equal(before, await File.ReadAllTextAsync(Path.Combine(fixture.RegistryRoot, RuntimeArmorRegistryService.ProtocolFileName)));
+		var catalog = Assert.Single(await fixture.Service.ReadCustomModelCatalogAsync());
+		Assert.Single(catalog.Parts);
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Any, catalog.Parts[0].BodyVariant);
+	}
+
+	[Fact]
+	public async Task Apply_PreservesWorkspaceCompositionMode()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		var initial = await fixture.Service.ReadSnapshotAsync();
+		await fixture.Service.SaveWorkspaceAsync(initial.Document with
+		{
+			CompositionMode = "existing_only",
+		});
+
+		var beforeApply = await fixture.Service.ReadSnapshotAsync();
+		await fixture.Service.ApplyAsync(
+			beforeApply.Fingerprint,
+			false,
+			beforeApply.Document.Mappings,
+			beforeApply.Document.ModelDefinitions,
+			beforeApply.Document.PieceOverrideDefinitions,
+			beforeApply.Document.TargetModeDefinitions);
+
+		var protocol = await File.ReadAllTextAsync(
+			Path.Combine(fixture.RegistryRoot, RuntimeArmorRegistryService.ProtocolFileName));
+		Assert.Contains("composition_mode=existing_only\n", protocol, StringComparison.Ordinal);
+		Assert.Equal("existing_only", (await fixture.Service.ReadSnapshotAsync()).Document.CompositionMode);
+	}
+
+	[Fact]
+	public async Task ApplyFilter_KeepsAllWorkspacePiecesAndOnlyCompilesPresentUnits()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		var data = Path.Combine(fixture.Root, "data");
+		Directory.CreateDirectory(data);
+		var bytes = CreateGameBootArchive([1, 2, 3, 4]);
+		BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(68), HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId);
+		BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(92), 1);
+		BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(100), HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId);
+		await File.WriteAllBytesAsync(Path.Combine(data, "0000000000000001.patch_0"), bytes);
+		var model = new RuntimeArmorRegistryModel("test", null, [new(3, "0000000000000001", 2, 0), new(3, "0000000000000002", 3, 0)]);
+		var initial = await fixture.Service.ReadSnapshotAsync();
+		await fixture.Service.ApplyAsync(initial.Fingerprint, true, [new(42, null, "test")], [model], [], [], gameDataDirectory: data);
+		var snapshot = await fixture.Service.ReadSnapshotAsync();
+		Assert.False(snapshot.HasUnappliedChanges);
+		Assert.Equal(2, snapshot.Document.ModelDefinitions.Single().Pieces!.Count);
+		var protocol = RuntimeArmorRegistryService.ParseProtocol(await File.ReadAllTextAsync(snapshot.ProtocolPath));
+		Assert.Equal("0000000000000001", Assert.Single(protocol.ModelDefinitions.Single().Pieces!).Unit);
+	}
+
+	[Fact]
+	public async Task CustomCatalog_UsesPersistentUnsignedIdsAndOnlyEnabledExplicitPieces()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		await fixture.Service.SaveWorkspaceAsync(new(0, false, [], [
+			new("virtual", null, [
+				new(0, "fedcba9876543210", 2, 0),
+				new(1, "fedcba9876543211", 2, 0),
+				new(3, "fedcba9876543214", 1, 0),
+				new(3, "fedcba9876543212", 3, 7),
+				new(1, "fedcba9876543213", 3, 7, Enabled: false)
+			], "测试素体"),
+			new("alias", 42)
+		]));
+		var entry = Assert.Single(await fixture.Service.ReadCustomModelCatalogAsync());
+		Assert.True(entry.IsCustomModel);
+		Assert.Equal("custom-model:virtual", entry.ArchiveId);
+		Assert.Equal("virtual", entry.CustomModelKey);
+		Assert.Equal("测试素体", entry.DisplayName);
+		Assert.Equal(4, entry.Parts.Count);
+		Assert.Equal(0xfedcba9876543210UL, entry.Parts[0].UnitAssetKey.FileId);
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Stocky, entry.Parts[0].BodyVariant);
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Slim, entry.Parts[1].BodyVariant);
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshPartKind.Helmet, entry.Parts[2].PartKind);
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshPartKind.Hips, entry.Parts[3].PartKind);
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Any, entry.Parts[3].BodyVariant);
+		Assert.Equal("7", entry.Parts[3].PieceType);
+		// 组件自己声明的 (slot, pieceType) 就是权威格子：自定义素体没有 GameData 归档，
+		// 但它的部件必须"已定位"，否则既不能当替换护甲的来源，也不参与装箱。
+		var torsoSlot = ArmorStructure.SlotOf(ArmorPart.Torso)!.Value;
+		var helmetSlot = ArmorStructure.SlotOf(ArmorPart.Helmet)!.Value;
+		Assert.Equal(new ArmorCell((int)torsoSlot, 0), entry.Parts[0].Cell);
+		Assert.Equal(new ArmorCell((int)torsoSlot, 0), entry.Parts[1].Cell);
+		Assert.Equal(new ArmorCell((int)helmetSlot, 0), entry.Parts[2].Cell);
+		// piece_type=7 不是合法层号：宁可"未定位"，也不要造出一个查不到部位、
+		// 却因为坐标非负被当成真格子用的坐标。
+		Assert.False(entry.Parts[3].Cell.IsKnown);
+	}
+
+	[Fact]
+	public void Protocol_RoundTripsNormalizedMappings()
+	{
+		var document = new RuntimeArmorRegistryDocument(
+			7,
+			true,
+			[
+				new RuntimeArmorRegistryMapping(30, 300),
+				new RuntimeArmorRegistryMapping(10, 100),
+			]);
+
+		var text = RuntimeArmorRegistryService.SerializeProtocol(document);
+		var parsed = RuntimeArmorRegistryService.ParseProtocol(text);
+
+		Assert.Equal(
+			"schema=2\nrevision=7\nenabled=true\nmap=10,100\nmap=30,300\n",
+			text);
+		Assert.Equal(7, parsed.Revision);
+		Assert.True(parsed.Enabled);
+		Assert.Equal([10u, 30u], parsed.Mappings.Select(mapping => mapping.TargetItemId));
+	}
+
+	[Theory]
+	[InlineData("schema=1\nrevision=0\nenabled=false\nmodel=custom:test\n")]
+	[InlineData("schema=1\nrevision=0\nenabled=false\nmap=10,10\n")]
+	[InlineData("schema=1\nrevision=0\nenabled=false\nmap=10,20\nmap=10,30\n")]
+	public void Protocol_RejectsUnsupportedOrAmbiguousDocuments(string text)
+	{
+		Assert.Throws<InvalidDataException>(() => RuntimeArmorRegistryService.ParseProtocol(text));
+	}
+
+	[Fact]
+	public async Task Snapshot_MissingProtocolStartsAtRevisionZero()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+
+		var snapshot = await fixture.Service.ReadSnapshotAsync();
+
+		Assert.False(snapshot.ProtocolExists);
+		Assert.Equal("missing", snapshot.Fingerprint);
+		Assert.Equal(0, snapshot.Document.Revision);
+		Assert.False(snapshot.Document.Enabled);
+		Assert.Empty(snapshot.Document.Mappings);
+	}
+
+	[Fact]
+	public async Task Apply_IncrementsRevisionAndRejectsFingerprintDrift()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		var initial = await fixture.Service.ReadSnapshotAsync();
+
+		var applied = await fixture.Service.ApplyAsync(
+			initial.Fingerprint,
+			true,
+			[new RuntimeArmorRegistryMapping(488691438, 820333399)]);
+
+		Assert.Equal(1, applied.Document.Revision);
+		Assert.True(applied.Document.Enabled);
+		Assert.Single(applied.Document.Mappings);
+
+		await File.AppendAllTextAsync(
+			Path.Combine(fixture.RegistryRoot, RuntimeArmorRegistryService.ProtocolFileName),
+			"# external edit\n");
+
+		var exception = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+			await fixture.Service.ApplyAsync(
+				applied.Fingerprint,
+				false,
+				Array.Empty<RuntimeArmorRegistryMapping>()));
+		Assert.Contains("其他操作修改", exception.Message, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public async Task Apply_WritesModLibraryWorkspaceAndSnapshotPrefersIt()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		var initial = await fixture.Service.ReadSnapshotAsync();
+		var model = new RuntimeArmorRegistryModel(
+			"custom/coat",
+			null,
+			[new RuntimeArmorRegistryModelPiece(3, "0011223344556677", 1, 0, 0, false)]);
+
+		await fixture.Service.ApplyAsync(
+			initial.Fingerprint,
+			true,
+			[new RuntimeArmorRegistryMapping(488691438, null, "custom/coat")],
+			[model]);
+
+		Assert.True(File.Exists(fixture.Service.WorkspacePath));
+		Assert.Contains("\"custom/coat\"", await File.ReadAllTextAsync(fixture.Service.WorkspacePath), StringComparison.Ordinal);
+
+		var reloaded = await fixture.Service.ReadSnapshotAsync();
+		Assert.Equal(1, reloaded.Document.Revision);
+		Assert.Equal("custom/coat", Assert.Single(reloaded.Document.ModelDefinitions).Key);
+		Assert.False(Assert.Single(Assert.Single(reloaded.Document.ModelDefinitions).Pieces!).Enabled);
+		Assert.True(reloaded.Document.Mappings.Single().IsModelMapping);
+	}
+
+	[Fact]
+	public async Task Snapshot_DoesNotTreatAStaleOrUnrelatedPidAsLiveRuntime()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		await File.WriteAllTextAsync(
+			Path.Combine(fixture.RegistryRoot, RuntimeArmorRegistryService.ProtocolFileName),
+			"schema=1\nrevision=3\nenabled=true\nmap=10,20\n");
+		await File.WriteAllTextAsync(
+			Path.Combine(fixture.RegistryRoot, RuntimeArmorRegistryService.RuntimeStatusFileName),
+			$"pid={Environment.ProcessId}\nstate=ready\nrevision=3\n");
+
+		var snapshot = await fixture.Service.ReadSnapshotAsync();
+
+		Assert.True(snapshot.RuntimeStatusExists);
+		Assert.False(snapshot.RuntimeProcessRunning);
+		Assert.False(snapshot.RuntimeAcknowledged);
+	}
+
+	[Fact]
+	public async Task Catalog_ReturnsArmorAndHelmetEntriesInDisplayOrder()
+	{
+		await using var fixture = await Fixture.CreateAsync(withCatalog: true);
+
+		var entries = await fixture.Service.ReadArmorCatalogAsync();
+
+		Assert.Equal(3, entries.Count);
+		Assert.Equal(["Alpha", "Helmet", "Zulu"], entries.Select(entry => entry.DisplayName));
+		Assert.Equal([20u, 30u, 10u], entries.Select(entry => entry.ItemId));
+		Assert.Equal(
+			[GameDataEquipmentKitKind.Armor, GameDataEquipmentKitKind.Helmet, GameDataEquipmentKitKind.Armor],
+			entries.Select(entry => entry.KitKind));
+	}
+
+	[Fact]
+	public async Task Catalog_UsesAuthoritativeKitKindInsteadOfGuessingFromPieceSlots()
+	{
+		await using var fixture = await Fixture.CreateAsync(withCatalog: true);
+		await using var connection = new SqliteConnection(
+			$"Data Source={new StoragePaths(Path.Combine(fixture.Root, "app")).DbPath};Pooling=False");
+		await connection.OpenAsync();
+		await using var command = connection.CreateCommand();
+		command.CommandText = """
+			CREATE TABLE game_data_authority_pieces (item_id INTEGER NOT NULL, slot INTEGER NOT NULL);
+			INSERT INTO game_data_authority_pieces VALUES (10, 1), (30, 0);
+			""";
+		await command.ExecuteNonQueryAsync();
+
+		var entries = await fixture.Service.ReadArmorCatalogAsync();
+
+		Assert.Equal(GameDataEquipmentKitKind.Armor, Assert.Single(entries, item => item.ItemId == 10).KitKind);
+		Assert.Equal(GameDataEquipmentKitKind.Helmet, Assert.Single(entries, item => item.ItemId == 30).KitKind);
+	}
+
+	// 外置入口模式：运行时作为独立补丁投放，交给外置加载器加载，管理器不碰 boot；
+	// 同时把历史遗留的手动导入 addon 迁移掉。是否投放补丁由模式决定，不再看加载器。
+	[Fact]
+	public async Task LuaDeployment_ExternalLuaEntry_MaterializesManagedAddonAndMigratesLegacyPackage()
+	{
+		LuaDeploymentService.MappingMode = ArmorMappingMode.ExternalLuaEntry;
+		await using var fixture = await Fixture.CreateAsync();
+		var initial = await fixture.Service.ReadSnapshotAsync();
+		await fixture.Service.ApplyAsync(initial.Fingerprint, true, [new RuntimeArmorRegistryMapping(10, 20)]);
+
+		var loaderId = ModNodeId.New();
+		var legacyId = ModNodeId.New();
+		var loader = new ModNode(
+			loaderId,
+			"loader",
+			new ModNodeMetadata("Bingus", null, DateTimeOffset.UtcNow, null, SourcePackageGuid: "612eaf70-d682-43c7-9efd-16dcc695f977"),
+			[],
+			[]);
+		var legacy = new ModNode(
+			legacyId,
+			"legacy",
+			new ModNodeMetadata("Legacy runtime", null, DateTimeOffset.UtcNow, null, SourcePackageGuid: "6dd5cb37-6b45-4f47-a57c-65e3f2f9e0ca"),
+			[],
+			[]);
+		var profile = new Profile(
+			ProfileId.New(),
+			"test",
+			DateTimeOffset.UtcNow,
+			null,
+			[new ProfileEntry(loaderId, 0), new ProfileEntry(legacyId, 1)]);
+		var snapshot = new LibrarySnapshot(
+			1,
+			DateTimeOffset.UtcNow,
+			new Dictionary<ModNodeId, ModNode> { [loaderId] = loader, [legacyId] = legacy },
+			[profile],
+			profile.Id);
+		var legacyPatch = Path.Combine(fixture.Root, "legacy", "9ba626afa44a3aa3.patch_0");
+		Directory.CreateDirectory(Path.GetDirectoryName(legacyPatch)!);
+		await File.WriteAllBytesAsync(legacyPatch, [1]);
+		var index = new PatchFileIndex(
+			DateTimeOffset.UtcNow,
+			new Dictionary<ModNodeId, IReadOnlyList<IndexedPatchFile>>
+			{
+				[legacyId] =
+				[
+					new IndexedPatchFile(
+						legacyId,
+						legacyPatch,
+						Path.GetFileName(legacyPatch),
+						"9ba626afa44a3aa3",
+						0,
+						0,
+						PatchSidecarKind.Base,
+						1,
+						DateTimeOffset.UtcNow),
+				],
+			},
+			[]);
+		var modsRoot = Path.Combine(fixture.Root, "mods");
+		Directory.CreateDirectory(modsRoot);
+
+		var result = await new LuaDeploymentService(armorRegistry: fixture.Service).MaterializeAsync(
+			profile,
+			snapshot,
+			index,
+			modsRoot,
+			Path.Combine(fixture.Root, "unused-game-data"),
+			new Dictionary<ModNodeId, ModContentFacts>(),
+			LuaDeploymentValidationMode.CompileOnly);
+
+		Assert.False(result.HasErrors, string.Join(Environment.NewLine, result.Issues.Select(issue => $"{issue.Code}: {issue.Message}")));
+		var group = Assert.Single(result.GeneratedPatchGroups);
+		var patch = Assert.Single(group.Files, file => file.SidecarKind == PatchSidecarKind.Base);
+		// 一个补丁两个条目：Lua 运行时 + 那个"什么都不画"的隐藏 unit。它们必须在同一个
+		// patch 里，否则管理器的运行时就要额外占用一个 patch 序号。
+		var entries = await new AdaptationPatchTocScanner().ScanEntriesAsync(patch.FilePath);
+		Assert.Equal(2, entries.Count);
+		var entry = Assert.Single(entries, candidate => candidate.AssetKey.TypeId == AdaptationLuaAssetKeys.LuaTypeId);
+		Assert.Equal(0x0A2E0E3386517D4CUL, entry.AssetKey.FileId);
+		var payload = await new AdaptationPatchEntryPayloadReader().ReadPayloadAsync(entry);
+		Assert.StartsWith("-- HD2-Addon: mods/codex/runtime_armor_registry\n", System.Text.Encoding.UTF8.GetString(payload.TocData.AsSpan(8)));
+
+		var hidden = Assert.Single(entries, candidate => candidate.AssetKey.TypeId == 0xE0A48D0BE9A7453FUL);
+		Assert.Equal(0xDEF7DC54E86D6054UL, hidden.AssetKey.FileId);
+		var hiddenPayload = await new AdaptationPatchEntryPayloadReader().ReadPayloadAsync(hidden);
+		// 精确尺寸：这份载荷是 2026-09-28 实验里引擎接受过的隐藏占位，逐字节复用，不允许被改。
+		Assert.Equal(4240, hiddenPayload.TocData.Length);
+		Assert.Equal(418, hiddenPayload.GpuResourceData.Length);
+		Assert.Empty(result.PatchIndex.FilesByNode[legacyId]);
+	}
+
+	[Fact]
+	public async Task LuaDeployment_PhysicsExclusiveBoot_IsBuiltEvenWhenMappingDoesNotUseRuntimeLua()
+	{
+		// 物理与护甲映射是**两件独立的事**：真映射只表示"外观写进注册表数据、不投放映射运行时"，
+		// 它并不禁止投放别的 Lua 功能。所以「真映射 + 物理独占 boot」必须能产出一个 boot patch。
+		//
+		// 这条同时钉住 2026-11-01 那次"整轮完全没有物理"的反面教训：那次**不是**这两者互斥，
+		// 而是启动时没人把设置里的物理模式同步到静态字段，它停在默认的「关闭」——
+		// 见 SettingsService.ApplyToLuaDeployment 的注释。别把这两件事混成一条判据。
+		LuaDeploymentService.MappingMode = ArmorMappingMode.TrueMapping;
+		LuaDeploymentService.PhysicsMode = PhysicsMode.ExclusiveLuaEntry;
+
+		await using var fixture = await Fixture.CreateAsync();
+		var gameData = Path.Combine(fixture.Root, "game", "data");
+		Directory.CreateDirectory(gameData);
+		await File.WriteAllBytesAsync(
+			Path.Combine(gameData, $"{AdaptationLuaAssetKeys.BootArchiveId:x16}"),
+			CreateGameBootArchive([0x1B, 0x4C, 0x4A, 0x02]));
+		var profile = new Profile(ProfileId.New(), "test", DateTimeOffset.UtcNow, null, []);
+		var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode>(), [profile], profile.Id);
+		var modsRoot = Path.Combine(fixture.Root, "mods");
+		Directory.CreateDirectory(modsRoot);
+
+		var result = await new LuaDeploymentService(armorRegistry: fixture.Service).MaterializeAsync(
+			profile,
+			snapshot,
+			new PatchFileIndex(DateTimeOffset.UtcNow, new Dictionary<ModNodeId, IReadOnlyList<IndexedPatchFile>>(), []),
+			modsRoot,
+			gameData,
+			new Dictionary<ModNodeId, ModContentFacts>(),
+			LuaDeploymentValidationMode.CompileOnly);
+
+		Assert.False(result.HasErrors, string.Join(Environment.NewLine, result.Issues.Select(issue => $"{issue.Code}: {issue.Message}")));
+		Assert.Single(result.GeneratedPatchGroups);
+	}
+
+	[Fact]
+	public async Task LuaDeployment_PhysicsOffAndMappingWithoutRuntimeLua_ProducesNoLuaPatch()
+	{
+		// 这正是 2026-11-01 实机的产物形态：真映射 + 物理静态字段停在默认的「关闭」⇒
+		// 管理器一个 patch 都不产、游戏里既没有物理也没有日志。把"什么都没产出"固定成
+		// 一条**预期**行为，将来再出现同样的空部署时能一眼看出是哪一侧关掉了。
+		LuaDeploymentService.MappingMode = ArmorMappingMode.TrueMapping;
+		LuaDeploymentService.PhysicsMode = PhysicsMode.Off;
+
+		await using var fixture = await Fixture.CreateAsync();
+		var gameData = Path.Combine(fixture.Root, "game", "data");
+		Directory.CreateDirectory(gameData);
+		var profile = new Profile(ProfileId.New(), "test", DateTimeOffset.UtcNow, null, []);
+		var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode>(), [profile], profile.Id);
+		var modsRoot = Path.Combine(fixture.Root, "mods");
+		Directory.CreateDirectory(modsRoot);
+
+		var result = await new LuaDeploymentService(armorRegistry: fixture.Service).MaterializeAsync(
+			profile,
+			snapshot,
+			new PatchFileIndex(DateTimeOffset.UtcNow, new Dictionary<ModNodeId, IReadOnlyList<IndexedPatchFile>>(), []),
+			modsRoot,
+			gameData,
+			new Dictionary<ModNodeId, ModContentFacts>(),
+			LuaDeploymentValidationMode.CompileOnly);
+
+		Assert.False(result.HasErrors, string.Join(Environment.NewLine, result.Issues.Select(issue => $"{issue.Code}: {issue.Message}")));
+		Assert.Empty(result.GeneratedPatchGroups);
+	}
+
+	[Fact]
+	public async Task LuaDeployment_WithoutBingus_BuildsDirectBootPatchFromInstalledGameResource()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		var initial = await fixture.Service.ReadSnapshotAsync();
+		await fixture.Service.ApplyAsync(initial.Fingerprint, true, [new RuntimeArmorRegistryMapping(10, 20)]);
+		var gameData = Path.Combine(fixture.Root, "game", "data");
+		Directory.CreateDirectory(gameData);
+		var bootBytecode = new byte[] { 0x1B, 0x4C, 0x4A, 0x02 };
+		await File.WriteAllBytesAsync(
+			Path.Combine(gameData, $"{AdaptationLuaAssetKeys.BootArchiveId:x16}"),
+			CreateGameBootArchive(bootBytecode));
+		var profile = new Profile(ProfileId.New(), "test", DateTimeOffset.UtcNow, null, []);
+		var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode>(), [profile], profile.Id);
+		var modsRoot = Path.Combine(fixture.Root, "mods");
+		Directory.CreateDirectory(modsRoot);
+
+		var result = await new LuaDeploymentService(armorRegistry: fixture.Service).MaterializeAsync(
+			profile,
+			snapshot,
+			new PatchFileIndex(DateTimeOffset.UtcNow, new Dictionary<ModNodeId, IReadOnlyList<IndexedPatchFile>>(), []),
+			modsRoot,
+			gameData,
+			new Dictionary<ModNodeId, ModContentFacts>(),
+			LuaDeploymentValidationMode.CompileOnly);
+
+		Assert.False(result.HasErrors, string.Join(Environment.NewLine, result.Issues.Select(issue => $"{issue.Code}: {issue.Message}")));
+		var group = Assert.Single(result.GeneratedPatchGroups);
+		var patch = Assert.Single(group.Files, file => file.SidecarKind == PatchSidecarKind.Base);
+		var bytes = await File.ReadAllBytesAsync(patch.FilePath);
+		// The deployed resource has to look like the game's own boot resource: the
+		// current format version and a compiled Lua 5.1 chunk, never source text.
+		Assert.Equal(AdaptationLuaResourceFormat.BytecodeVersion, BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(0xBC, 4)));
+		var payload = bytes.AsSpan(0xC0).ToArray();
+		var chunk = AdaptationLua51Bytecode.Read(payload);
+		// The merged source is the largest string constant; the others are the loader
+		// lookup names (rawget / _G / loadstring / load).
+		var embedded = System.Text.Encoding.UTF8.GetString(
+			chunk.Main.Constants
+				.Where(constant => constant.Text is not null)
+				.OrderByDescending(constant => constant.Text!.Length)
+				.First().Text!);
+		Assert.Contains("local BC = ", embedded, StringComparison.Ordinal);
+		Assert.Contains("@mods/codex/runtime_armor_registry", embedded, StringComparison.Ordinal);
+	}
+
+	// 独占模式下运行时必须独占 Lua 启动入口。第三方 mod 也提供 boot 时，管理器不再
+	// 合并（引擎只执行一个 Lua 启动脚本），必须明确报错让用户二选一，而不是让某一方
+	// 静默不生效。
+	[Fact]
+	public async Task LuaDeployment_ExclusiveRuntimeWithThirdPartyBootMod_ReportsConflict()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		var initial = await fixture.Service.ReadSnapshotAsync();
+		await fixture.Service.ApplyAsync(initial.Fingerprint, true, [new RuntimeArmorRegistryMapping(10, 20)]);
+		var gameData = Path.Combine(fixture.Root, "game", "data");
+		Directory.CreateDirectory(gameData);
+		await File.WriteAllBytesAsync(
+			Path.Combine(gameData, $"{AdaptationLuaAssetKeys.BootArchiveId:x16}"),
+			CreateGameBootArchive(new byte[] { 0x1B, 0x4C, 0x4A, 0x02 }));
+
+		var loaderId = ModNodeId.New();
+		var patchPath = Path.Combine(fixture.Root, "loader", $"{AdaptationLuaAssetKeys.BootArchiveId:x16}.patch_0");
+		Directory.CreateDirectory(Path.GetDirectoryName(patchPath)!);
+		await File.WriteAllBytesAsync(patchPath, CreateBootLuaPatch());
+		var loader = new ModNode(loaderId, "loader", new ModNodeMetadata("loader", null, DateTimeOffset.UtcNow, null), [], []);
+		var profile = new Profile(ProfileId.New(), "test", DateTimeOffset.UtcNow, null, [new ProfileEntry(loaderId, 0)]);
+		var snapshot = new LibrarySnapshot(
+			1,
+			DateTimeOffset.UtcNow,
+			new Dictionary<ModNodeId, ModNode> { [loaderId] = loader },
+			[profile],
+			profile.Id);
+		var index = new PatchFileIndex(
+			DateTimeOffset.UtcNow,
+			new Dictionary<ModNodeId, IReadOnlyList<IndexedPatchFile>>
+			{
+				[loaderId] =
+				[
+					new IndexedPatchFile(
+						loaderId,
+						patchPath,
+						Path.GetFileName(patchPath),
+						$"{AdaptationLuaAssetKeys.BootArchiveId:x16}",
+						0,
+						0,
+						PatchSidecarKind.Base,
+						new FileInfo(patchPath).Length,
+						DateTimeOffset.UtcNow),
+				],
+			},
+			[]);
+
+		var result = await new LuaDeploymentService(armorRegistry: fixture.Service).PlanAsync(
+			profile,
+			snapshot,
+			index,
+			Path.Combine(fixture.Root, "mods"),
+			gameData,
+			new Dictionary<ModNodeId, ModContentFacts>());
+
+		Assert.True(result.HasErrors);
+		var issue = Assert.Single(result.Issues, candidate => candidate.Code == "LuaBootEntryConflict");
+		Assert.Equal(CoreIssueSeverity.Error, issue.Severity);
+		Assert.Contains(Path.GetFileName(patchPath), issue.Message, StringComparison.Ordinal);
+		Assert.Empty(result.GeneratedPatchGroups);
+	}
+
+	private static byte[] CreateBootLuaPatch()
+	{
+		const int headerLength = 0x48;
+		const int typeRecordSize = 32;
+		const int entryRecordSize = 80;
+		var entriesOffset = headerLength + typeRecordSize;
+		var dataOffset = entriesOffset + entryRecordSize;
+		var payload = System.Text.Encoding.UTF8.GetBytes(
+			"-- third party boot\nfunction init() end\nfunction update() end\nfunction render() end\nfunction shutdown() end\n");
+		var bytes = new byte[dataOffset + 8 + payload.Length];
+		BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(0), 0xF0000011);
+		BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(4), 1);
+		BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(8), 1);
+		BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(headerLength + 8), AdaptationLuaAssetKeys.LuaTypeId);
+		BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(headerLength + 16), 1);
+		BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(entriesOffset), AdaptationLuaAssetKeys.BootFileId);
+		BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(entriesOffset + 8), AdaptationLuaAssetKeys.LuaTypeId);
+		BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(entriesOffset + 16), (ulong)dataOffset);
+		BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(entriesOffset + 56), (uint)(8 + payload.Length));
+		BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(dataOffset), (uint)payload.Length);
+		BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(dataOffset + 4), AdaptationLuaResourceFormat.LegacySourceVersion);
+		payload.CopyTo(bytes.AsSpan(dataOffset + 8));
+		return bytes;
+	}
+
+	private static byte[] CreateGameBootArchive(byte[] bootBytecode)
+	{
+		var resource = new byte[bootBytecode.Length + 8];
+		BinaryPrimitives.WriteUInt32LittleEndian(resource.AsSpan(0), checked((uint)bootBytecode.Length));
+		BinaryPrimitives.WriteUInt32LittleEndian(resource.AsSpan(4), 2);
+		bootBytecode.CopyTo(resource.AsSpan(8));
+		const int typeOffset = 60;
+		const int entryOffset = 92;
+		const int payloadOffset = 176;
+		var archive = new byte[payloadOffset + resource.Length];
+		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(0), 0xF0000011);
+		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(4), 1);
+		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(8), 1);
+		BinaryPrimitives.WriteUInt64LittleEndian(archive.AsSpan(typeOffset + 8), AdaptationLuaAssetKeys.LuaTypeId);
+		BinaryPrimitives.WriteUInt64LittleEndian(archive.AsSpan(typeOffset + 16), 1);
+		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(typeOffset + 24), 16);
+		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(typeOffset + 28), 64);
+		BinaryPrimitives.WriteUInt64LittleEndian(archive.AsSpan(entryOffset), AdaptationLuaAssetKeys.BootFileId);
+		BinaryPrimitives.WriteUInt64LittleEndian(archive.AsSpan(entryOffset + 8), AdaptationLuaAssetKeys.LuaTypeId);
+		BinaryPrimitives.WriteUInt64LittleEndian(archive.AsSpan(entryOffset + 16), payloadOffset);
+		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(entryOffset + 56), checked((uint)resource.Length));
+		resource.CopyTo(archive.AsSpan(payloadOffset));
+		return archive;
+	}
+
+	// 作用：把"本库没有工作区时，退回协议副本"这件事**标记出来**，而不是悄悄发生。
+	//
+	// 为什么这是正确性要求而不是诊断：工作区在模组库里（跟库走），协议在用户目录里（跟用户走），
+	// 两者生命周期不同。用户把新版解压到另一个目录后，本库没有工作区，页面只能显示协议副本——
+	// 那是他映射的最后一份存留。**显示它是对的**（看不见比看见得不全更糟），
+	// 但必须能说出"这不是本库的工作区"，否则用户会以为映射本来就这么少。
+	[Fact]
+	public async Task MissingWorkspace_FallsBackToTheProtocolAndRecordsThatItDid()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		await File.WriteAllTextAsync(
+			Path.Combine(fixture.RegistryRoot, RuntimeArmorRegistryService.ProtocolFileName),
+			"schema=2\nrevision=92\nenabled=true\nmap=42,43\n");
+
+		var snapshot = await fixture.Service.ReadSnapshotAsync();
+
+		Assert.Equal(RuntimeArmorRegistryDocumentSource.ProtocolFallback, snapshot.DocumentSource);
+		// 回退必须真的发生——映射不能被"藏起来"。
+		Assert.Single(snapshot.Document.Mappings);
+		// 旧版本写的协议没有归属记录，要如实说"无从判断"，而不是假装它是本库的。
+		Assert.Null(snapshot.ProtocolOwnerWorkspace);
+	}
+
+	// 作用：钉住"归属凭据与被守护的文件同生共死"。
+	//
+	// 旧凭据（程序目录下的 runtime-armor-registry.deployment）**换一次解压目录就没了**，
+	// 而协议还在——用"升级必被摧毁的凭据"守护"升级必被保留的文件"，
+	// 守卫必然退化成"没有凭据 ⇒ 一律相信"。这正是 20261011 崩溃的形状。
+	[Fact]
+	public async Task ProtocolOwnership_IsRecordedNextToTheProtocolSoItSurvivesANewInstallDirectory()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		var first = await fixture.Service.ReadSnapshotAsync();
+		await fixture.Service.ApplyAsync(first.Fingerprint, true, [new(42u, 43u)]);
+
+		// 归属标记必须写在**协议旁边**（用户级），不能只在程序目录里。
+		var ownerPath = Path.Combine(fixture.RegistryRoot, RuntimeArmorRegistryService.OwnerFileName);
+		Assert.True(File.Exists(ownerPath), "应用后应在协议旁边写下归属标记。");
+		Assert.Contains(fixture.Service.WorkspacePath, await File.ReadAllTextAsync(ownerPath));
+
+		// 忠实模拟"把新版解压到新目录 + 指向了另一个模组库"：
+		// 程序目录全新（data/ 与 settings.json 都没了），用户目录（协议 + 归属标记）照旧。
+		var freshPaths = new StoragePaths(
+			Path.Combine(fixture.Root, "app-fresh"),
+			Path.Combine(fixture.Root, "another-library"));
+		var fresh = new RuntimeArmorRegistryService(freshPaths, fixture.RegistryRoot);
+
+		var snapshot = await fresh.ReadSnapshotAsync();
+
+		// 仍然是回退（不隐藏映射），但现在**能说清楚这份协议属于谁**——页面据此提示用户确认库地址。
+		Assert.Equal(RuntimeArmorRegistryDocumentSource.ProtocolFallback, snapshot.DocumentSource);
+		Assert.Equal(fixture.Service.WorkspacePath, snapshot.ProtocolOwnerWorkspace);
+	}
+
+	// 作用：旧版本应用过的用户不能被新逻辑弄丢——他们只有程序目录里的部署记录。
+	[Fact]
+	public async Task ProtocolOwnership_FallsBackToTheOldInstallLevelRecordWhenTheNewMarkerIsAbsent()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		var first = await fixture.Service.ReadSnapshotAsync();
+		await fixture.Service.ApplyAsync(first.Fingerprint, true, [new(42u, 43u)]);
+
+		// 模拟"这份协议是旧版本写的"：协议旁边的归属标记不存在，只有程序目录里的部署记录。
+		File.Delete(Path.Combine(fixture.RegistryRoot, RuntimeArmorRegistryService.OwnerFileName));
+
+		var snapshot = await fixture.Service.ReadSnapshotAsync();
+
+		Assert.Equal(fixture.Service.WorkspacePath, snapshot.ProtocolOwnerWorkspace);
+	}
+
+	// 自定义素体的"层"必须跟着 pieceType 走：0 内层 / 1 护甲 / 2 装饰。
+	// 以前这里一律写 Armor，于是下游按"层 == Undergarment 或 部位 == 头盔"挑基础 7 槽时，
+	// 素体的身体件全部被当成护甲层，最后整具模型都走了隐藏路径。
+	// Layer must follow pieceType, otherwise every body piece of a custom model gets hidden.
+	[Fact]
+	public async Task CustomCatalog_MapsPieceTypeToLayer()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		await fixture.Service.SaveWorkspaceAsync(new(0, false, [],
+		[
+			new("layers", null,
+			[
+				new(3, "aaaa000000000001", 2, 0),
+				new(3, "aaaa000000000002", 2, 1),
+				new(3, "aaaa000000000003", 2, 2),
+				new(3, "aaaa000000000004", 2, 7),
+			])
+		]));
+
+		var entry = Assert.Single(await fixture.Service.ReadCustomModelCatalogAsync());
+
+		Assert.Equal(4, entry.Parts.Count);
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshPartLayer.Undergarment, entry.Parts[0].Layer);
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshPartLayer.Armor, entry.Parts[1].Layer);
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshPartLayer.Accessory, entry.Parts[2].Layer);
+		// 未知编号不假装知道含义：按附件处理，绝不冒充内层顶掉身体。
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshPartLayer.Accessory, entry.Parts[3].Layer);
+	}
+
+	// 自定义素体的伪归档 id 是"目标护甲"下拉与 CLI 之间的契约，只有一处拼、一处拆。
+	[Fact]
+	public void CustomModelArchiveId_RoundTripsAndRejectsForeignIds()
+	{
+		var id = RuntimeArmorRegistryService.CustomModelArchiveId("lunalice-bill");
+		Assert.Equal("custom-model:lunalice-bill", id);
+		Assert.True(RuntimeArmorRegistryService.TryReadCustomModelKey(id, out var key));
+		Assert.Equal("lunalice-bill", key);
+
+		Assert.False(RuntimeArmorRegistryService.TryReadCustomModelKey("d923906f8b815987", out _));
+		Assert.False(RuntimeArmorRegistryService.TryReadCustomModelKey("custom-model:", out _));
+		Assert.False(RuntimeArmorRegistryService.TryReadCustomModelKey("custom-model:   ", out _));
+		Assert.False(RuntimeArmorRegistryService.TryReadCustomModelKey(null, out _));
+	}
+
+	/// <summary>
+	/// VPK 导入是**另一个进程**把新素体写进工作区的；管理器的护甲映射页拿着导入前的内存快照
+	/// 稍后自动保存一次，就会把新素体整份覆盖掉——"导入完成了，页面上却找不到这个素体"。
+	/// 这条用例钉住"保存时要把别人刚加进来的素体并回来"。
+	/// </summary>
+	[Fact]
+	public async Task SaveWorkspacePreservingExternalModels_KeepsModelsAnotherProcessJustRegistered()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+
+		// 另一个进程（`hd2mod vpk2patch`）把刚导入的素体写进工作区。
+		await fixture.Service.SaveWorkspaceAsync(Document(models: [Model("custom-external")]));
+		Assert.Single(await fixture.Service.ReadWorkspaceModelsAsync());
+
+		// 页面拿着"加载时的旧快照"（没有这个素体）来保存。
+		var merged = await fixture.Service.SaveWorkspacePreservingExternalModelsAsync(
+			Document(models: []),
+			knownModelKeys: new HashSet<string>(StringComparer.Ordinal));
+
+		Assert.Contains(merged.ModelDefinitions, model => model.Key == "custom-external");
+	}
+
+	/// <summary>反向保证：用户自己删掉的素体不能被"合并"逻辑复活。</summary>
+	[Fact]
+	public async Task SaveWorkspacePreservingExternalModels_StillDeletesModelsTheUserRemoved()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		await fixture.Service.SaveWorkspaceAsync(Document(models: [Model("custom-gone")]));
+		Assert.Single(await fixture.Service.ReadWorkspaceModelsAsync());
+
+		var merged = await fixture.Service.SaveWorkspacePreservingExternalModelsAsync(
+			Document(models: []),
+			knownModelKeys: new HashSet<string>(["custom-gone"], StringComparer.Ordinal));
+
+		Assert.Empty(merged.ModelDefinitions);
+		Assert.Empty(await fixture.Service.ReadWorkspaceModelsAsync());
+	}
+
+	// 素体必须至少有一个 piece 才算有效结构，所以给一个最小可用的 body/slot/unit。
+	private static RuntimeArmorRegistryModel Model(string key) => new(
+		key,
+		null,
+		[new RuntimeArmorRegistryModelPiece(1, "0000000000000001", 2, 0, IsDefaultBase: true)],
+		key);
+
+	private static RuntimeArmorRegistryDocument Document(IReadOnlyList<RuntimeArmorRegistryModel> models)
+		=> new(1, true, [], models);
+
+	private sealed class Fixture : IAsyncDisposable
+	{
+		private Fixture(string root, string registryRoot, RuntimeArmorRegistryService service)
+		{
+			Root = root;
+			RegistryRoot = registryRoot;
+			Service = service;
+		}
+
+		public string Root { get; }
+		public string RegistryRoot { get; }
+		public RuntimeArmorRegistryService Service { get; }
+
+		public static async ValueTask<Fixture> CreateAsync(bool withCatalog = false)
+		{
+			var root = Path.Combine(Path.GetTempPath(), "hd2-armor-registry-tests", Guid.NewGuid().ToString("N"));
+			var paths = new StoragePaths(Path.Combine(root, "app"));
+			var registryRoot = Path.Combine(root, "registry");
+			Directory.CreateDirectory(paths.IndexDirectory);
+			Directory.CreateDirectory(registryRoot);
+
+			if (withCatalog)
+			{
+				await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Pooling=False");
+				await connection.OpenAsync();
+				await using var create = connection.CreateCommand();
+				create.CommandText = """
+					CREATE TABLE game_data_authority_kits (
+						item_id INTEGER PRIMARY KEY,
+						dlc_id INTEGER NOT NULL,
+						set_id INTEGER NOT NULL,
+						kit_kind INTEGER NOT NULL,
+						archive_id TEXT NOT NULL,
+						display_name TEXT NOT NULL
+					);
+					INSERT INTO game_data_authority_kits VALUES (10, 0, 0, 0, 'z', 'Zulu');
+					INSERT INTO game_data_authority_kits VALUES (20, 0, 0, 0, 'a', 'Alpha');
+					INSERT INTO game_data_authority_kits VALUES (30, 0, 0, 1, 'helmet', 'Helmet');
+					""";
+				await create.ExecuteNonQueryAsync();
+			}
+
+			return new Fixture(root, registryRoot, new RuntimeArmorRegistryService(paths, registryRoot));
+		}
+
+		public ValueTask DisposeAsync()
+		{
+			SqliteConnection.ClearAllPools();
+			try { Directory.Delete(Root, recursive: true); }
+			catch { }
+			return ValueTask.CompletedTask;
+		}
+	}
+}

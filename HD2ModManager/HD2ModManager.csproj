@@ -1,0 +1,72 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ApplicationIcon>Resources\helldivers2.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\HD2ModCore\HD2ModCore.csproj" />
+    <!-- Build the headless companion with the desktop application, without
+         making the WPF application depend on the CLI assembly at runtime. -->
+    <ProjectReference Include="..\HD2ModCli\HD2ModCli.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Resources\helldivers2.ico" />
+    <Content Include="..\..\config.toml" Link="config.toml" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest">
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </Content>
+    <Content Include="..\tools\native-python\anim_batch_mod\**\*" Exclude="**\__pycache__\**" Link="anim_batch_mod\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest">
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </Content>
+    <Resource Include="Resources\helldivers2.png" />
+    <!-- Ship one consistent, versioned metadata snapshot so first launch and
+         GameData indexing do not depend on GitHub being reachable. Online
+         metadata maintenance can still safely replace these files later. -->
+    <Content Include="Resources\AssetMetadata\**\*" Link="data\resources\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest">
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </Content>
+    <Content Include="ThirdParty\7zip\**\*" Link="third_party\7zip\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest">
+      <!-- 7z.exe is launched as a real child process, so it must remain a
+           physical file beside the published application. -->
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </Content>
+  </ItemGroup>
+  
+  <!-- Rely on implicit ApplicationDefinition for App.xaml -->
+
+  <!-- Rely on implicit WPF XAML items; do not explicitly include Page/ApplicationDefinition to avoid duplicates -->
+
+  <!-- Use implicit EmbeddedResource items for .resx files; remove explicit includes to avoid duplicates -->
+
+  <!-- Keep CLI entry artifacts beside development builds. The release script
+       intentionally relocates the published CLI into bin and validates it
+       against the matching release layout. -->
+  <Target Name="ValidateNativeRuntimeForPublish" BeforeTargets="PrepareForPublish">
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)\..\tools\native-python\anim_batch_mod\runtime\python.exe')"
+           Text="先运行 tools/BuildNativeRuntime.ps1，再发布包含原生骨架转换的管理器。" />
+  </Target>
+  <Target Name="CopyHd2ModCliArtifacts" AfterTargets="Build">
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\HD2ModCli\Armor-Diagnostics.cmd" DestinationFolder="$(TargetDir)" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\HD2ModCli\ARMOR-DIAGNOSTICS.md" DestinationFolder="$(TargetDir)hd2mod-docs" />
+    <MSBuild Projects="$(MSBuildProjectDirectory)\..\HD2ModCli\HD2ModCli.csproj" Targets="GetHd2ModCliArtifactFiles" Properties="Configuration=$(Configuration);Platform=$(Platform);BaseOutputPath=$(BaseOutputPath)">
+      <Output TaskParameter="TargetOutputs" ItemName="Hd2ModCliArtifact" />
+    </MSBuild>
+    <Copy SourceFiles="@(Hd2ModCliArtifact)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+    <ItemGroup>
+      <Hd2ModCliDocumentation Include="$(MSBuildProjectDirectory)\..\HD2ModCli\README.md" />
+      <Hd2ModCliDocumentation Include="$(MSBuildProjectDirectory)\..\HD2ModCli\SKILL.md" />
+	  <Hd2ModCliSkillDocumentation Include="$(MSBuildProjectDirectory)\..\HD2ModCli\skills\**\SKILL.md" />
+    </ItemGroup>
+    <Copy SourceFiles="@(Hd2ModCliDocumentation)" DestinationFiles="@(Hd2ModCliDocumentation->'$(TargetDir)hd2mod-docs\%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+	<Copy SourceFiles="@(Hd2ModCliSkillDocumentation)" DestinationFiles="@(Hd2ModCliSkillDocumentation->'$(TargetDir)hd2mod-docs\skills\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
+
+  <!-- A project referenced with ReferenceOutputAssembly=false is built, but its
+       main DLL is omitted by Publish. Keep the complete CLI beside its apphost. -->
+  <Target Name="PublishHd2ModCliArtifacts" AfterTargets="Publish" DependsOnTargets="CopyHd2ModCliArtifacts">
+    <Copy SourceFiles="@(Hd2ModCliArtifact)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+    <Error Condition="!Exists('$(PublishDir)hd2mod.dll')" Text="发布目录缺少 hd2mod.dll，不能交付无法启动的 CLI。" />
+  </Target>
+</Project>

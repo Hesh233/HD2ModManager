@@ -1,0 +1,101 @@
+namespace HD2ModCore.Domain;
+
+// 作用：描述读取器可以按需提供的细粒度 Mod 属性，而不是把整包高级分析视为一个黑盒。
+// Purpose: Describes fine-grained Mod properties that the reader can provide on demand.
+public enum ModInformationPropertyKind
+{
+	Identity,
+	ContentRevision,
+	PatchCatalog,
+	PatchEntryPayload,
+	AssetInventory,
+	UnitCatalog,
+	UnitPartMapping,
+	UnitGeometrySummary,
+	UnitStructure,
+	MaterialDependencyClosure,
+	CompositeBoneDependencyClosure,
+	ReferenceEdges,
+	ReferenceClosure,
+	GpuPayload,
+	StreamPayload,
+	TocPayload,
+	GameDataMapping,
+	Compatibility,
+	DecorationDefinition,
+	Maintenance,
+	Thumbnail,
+	// 游戏数据侧的两个输入事实（设计文档 §4 #8 / #9）。追加在末尾以保持既有取值的数值不变：
+	// 这些取值会随诊断状态一起出现在内存对象里，改变数值会让"同一份日志"在两版之间对不上。
+	// Appended at the end so existing numeric values are preserved.
+	GameDataIndex,
+	AssetMetadata,
+	// 实际部署图（设计文档 §4 #11）。它读的是 Data 目录里的 patch 文件与激活状态，
+	// 两者都不在表内，所以它同样是源事实——但它**没有节点**：身份是"游戏目录 + 部署指纹"。
+	// Appended at the end for the same reason as the two above.
+	DeployedGraph,
+	// 护甲覆盖视图（设计文档 §4 #23）。它是**派生记忆**：由游戏数据侧三条事实组合而来，
+	// 只记忆、不落盘——落盘就会多出一个"会忘记失效"的缓存。
+	// Appended at the end for the same reason as the three above.
+	ArmorCoverage,
+	// 一批 unit 的 section 结构。与 ArmorCoverage 一样是**派生记忆**：
+	// 由部署的 patch 与原版 archive 现算而来，只记忆、不落盘。
+	// 衣柜编辑器与 section 映射表都通过它取数，于是"这个 unit 有几个 section"全应用只有一个答案。
+	// Appended at the end for the same reason as the four above.
+	UnitSectionStructure,
+	// 一批护甲条目的 unit 表；与 UnitSectionStructure 同源不同层。
+	ArmourUnitTable,
+}
+
+// 作用：标识属性来自哪一层，便于 UI 和诊断区分缓存命中、生产和组合结果。
+// Purpose: Identifies where a property value came from for UI and diagnostics.
+public enum ModInformationValueSource
+{
+	None,
+	PersistentCache,
+	SessionCache,
+	OperationCache,
+	Producer,
+	Composite,
+	LegacyCache,
+}
+
+// 作用：表达“缺失、不可读”和“生产失败”的区别，避免把缺失误判成否定事实。
+// Purpose: Distinguishes missing, unreadable, and failed values from a definitive negative fact.
+public enum ModInformationPropertyStatus
+{
+	Missing,
+	Fresh,
+	Cached,
+	Stale,
+	Partial,
+	Failed,
+	Unavailable,
+}
+
+// 作用：描述一个细粒度属性及其来源、修订和诊断状态。
+// Purpose: Describes the state, source, revision, and diagnostics of one fine-grained property.
+public sealed record ModInformationPropertyState(
+	ModInformationPropertyKind Kind,
+	ModInformationPropertyStatus Status,
+	ModInformationValueSource Source,
+	ModContentRevision? Revision = null,
+	DateTimeOffset? BuiltUtc = null,
+	IReadOnlyList<CoreIssue>? Issues = null)
+{
+	public IReadOnlyList<CoreIssue> Diagnostics => Issues ?? Array.Empty<CoreIssue>();
+
+	public bool HasValue => Status is not ModInformationPropertyStatus.Missing
+		and not ModInformationPropertyStatus.Unavailable
+		and not ModInformationPropertyStatus.Failed;
+}
+
+// 作用：承载统一读取器返回的一个属性值及可审计状态。
+// Purpose: Carries one reader property value together with an auditable state.
+public sealed record ModInformationPropertyResult<T>(
+	T? Data,
+	ModInformationPropertyState State,
+	bool WasCoalesced = false)
+{
+	public bool HasValue => Data is not null && State.HasValue;
+}

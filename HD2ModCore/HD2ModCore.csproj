@@ -1,0 +1,157 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_refresh_hotkey.lua"
+                      Link="RuntimeArmorRegistry\armor_refresh_hotkey.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_refresh_resources.lua"
+                      Link="RuntimeArmorRegistry\armor_refresh_resources.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_refresh_component.lua"
+                      Link="RuntimeArmorRegistry\armor_refresh_component.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_refresh_multisite.lua"
+                      Link="RuntimeArmorRegistry\armor_refresh_multisite.lua" />
+    <Compile Remove="artifacts\**\*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+	<PackageReference Include="K4os.Compression.LZ4" Version="1.3.8" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.13" />
+    <!--
+      浣滅敤锛氭妸鍐呭祵鐨?SQLite 鍘熺敓寮曟搸鍥哄畾鍦?2.1.12锛岀粫寮€ GHSA-2m69-gcr7-jv3q銆?
+      鑳屾櫙锛歁icrosoft.Data.Sqlite 8.0.13 浼犻€掑紩鍏?SQLitePCLRaw.bundle_e_sqlite3 2.1.6锛?
+      鍏跺師鐢熷簱 e_sqlite3.dll 閲屽唴宓岀殑 SQLite 瀹炴祴涓?3.41.2锛堟洿鏃╃殑 2.1.11 鏄?3.49.1锛夛紝
+      閮戒綆浜庤鍏憡瑕佹眰鐨?3.50.2锛屽睘浜庡凡鐭ョ殑楂樺嵄鍐呭瓨鐮村潖缂洪櫡锛圕VE-2025-6965锛夈€?
+      2.1.12 姝ｆ槸涓婃父閽堝杩欐潯鍏憡鍙戝竷鐨勭淮鎶ょ増锛堝彂甯冭鏄庯細鎶婂師鐢熷簱鍗囧埌 SQLite 3.53.3锛夛紱
+      2.1.13 鐨勫師鐢熶簩杩涘埗涓?2.1.12 閫愬瓧鑺傜浉鍚岋紝鏁呭彇鏈夊叕寮€璇存槑鐨?2.1.12銆?
+      杩欓噷鍙崲鍘熺敓寮曟搸锛屾墭绠?API锛圡icrosoft.Data.Sqlite 8.0.13 + SQLitePCLRaw 2.1.x锛変繚鎸佷笉鍙橈紝
+      瀵瑰綊妗ｇ储寮曠殑璇诲啓琛屼负娌℃湁褰卞搷銆?
+
+      Pins the bundled SQLite native engine to 2.1.12 to clear GHSA-2m69-gcr7-jv3q.
+      Microsoft.Data.Sqlite 8.0.13 transitively pulls SQLitePCLRaw.bundle_e_sqlite3 2.1.6, whose
+      native e_sqlite3.dll embeds SQLite 3.41.2 (and 2.1.11 embeds 3.49.1) 鈥?both below the 3.50.2
+      the advisory requires, i.e. CVE-2025-6965, a high-severity memory-corruption bug.
+      2.1.12 is the upstream maintenance release published for exactly that advisory (its note:
+      bump the native lib to SQLite 3.53.3); 2.1.13's native binaries are byte-identical to 2.1.12's,
+      so the documented 2.1.12 wins. Only the native engine moves; the managed API stays put, so
+      archive-index reads and writes behave exactly as before.
+    -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
+  </ItemGroup>
+
+  <ItemGroup>
+	<ProjectReference Include="..\HD2ModAdaptation\HD2ModAdaptation.csproj" />
+	<ProjectReference Include="..\HD2GameItemAssets\HD2GameItemAssets.csproj" />
+	<ProjectReference Include="..\Decryptor\Decryptor.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_refresh_code_probe.lua"
+                      Link="RuntimeArmorRegistry\armor_refresh_code_probe.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_refresh_route_probe.lua"
+                      Link="RuntimeArmorRegistry\armor_refresh_route_probe.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_refresh_world_probe.lua"
+                      Link="RuntimeArmorRegistry\armor_refresh_world_probe.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_refresh_probe.lua"
+                      Link="RuntimeArmorRegistry\armor_refresh_probe.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\resources\wardrobe_hidden_unit.patch"
+                      Link="RuntimeArmorRegistry\wardrobe_hidden_unit.patch" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\resources\wardrobe_hidden_unit.patch.gpu_resources"
+                      Link="RuntimeArmorRegistry\wardrobe_hidden_unit.patch.gpu_resources" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_override_runtime.lua"
+                      Link="RuntimeArmorRegistry\armor_override_runtime.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_transaction.lua"
+                      Link="RuntimeArmorRegistry\armor_registry_transaction.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_composition.lua"
+                      Link="RuntimeArmorRegistry\armor_registry_composition.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_protocol.lua"
+                      Link="RuntimeArmorRegistry\armor_registry_protocol.lua" />
+    <!--
+      琛ｆ煖 section 鎺╃爜鐨勫彧璇昏В鏋愬櫒銆傚繀椤诲拰鍗忚涓€鏍峰唴宓岋細杩愯鏃舵病鏈夌鐩樹笂鐨?src 鐩綍鍙锛?
+      鎷兼帴椤哄簭鐢?RuntimeArmorRegistryLuaSource 鍐冲畾锛岃繖涓枃浠舵帓鍦ㄥ叆鍙ｇ偣涔嬪墠銆?
+      Read-only wardrobe mask parser. Embedded for the same reason as the protocol: the runtime has no
+      src directory on disk, and RuntimeArmorRegistryLuaSource controls the concatenation order.
+    -->
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_wardrobe_masks.lua"
+                      Link="RuntimeArmorRegistry\armor_wardrobe_masks.lua" />
+    <!--
+      unit TOC 鐨勫彧璇荤粨鏋勮В鏋愶細杩愯鏃舵嵁姝よ嚜宸辩畻鍑?section 鍋忕Щ锛屼笉蹇呰鏋勫缓鏈熺殑鏄犲皠琛ㄣ€?
+      瀹炴祴渚濇嵁瑙?notes/section-toc-memory-header-differs-only-in-unit-id-20261019.md銆?
+      Read-only unit TOC walker: lets the runtime derive section offsets itself instead of
+      reading a build-time map. Evidence in the note referenced above.
+    -->
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_section_layout.lua"
+                      Link="RuntimeArmorRegistry\armor_section_layout.lua" />
+    <!--
+      鎶婃帺鐮佺炕璇戞垚 NumIndices 鍐欏叆骞朵繚璇佸彲鍥炴粴銆備笌璧版煡鍣ㄥ垎寮€锛氳繖涓€灞傚彧鍋?绠楄鍒?鎵ц"锛?
+      鎵€浠ヨ兘绂荤嚎鐢ㄥ彲鍙樺瓧鑺傜紦鍐叉祴鍑烘仮澶嶄笌鍥炴粴锛屼笉蹇呰繘娓告垙銆?
+      Turns masks into NumIndices writes with rollback. Kept apart from the walker so the
+      restore and rollback paths can be verified offline against a mutable byte buffer.
+    -->
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_section_apply.lua"
+                      Link="RuntimeArmorRegistry\armor_section_apply.lua" />
+    <!--
+      鍦ㄨ繘绋嬪唴瀛橀噷鎸?FileId+8 涓浂瀛楄妭瀹氫綅 unit 鐨?TOC 鍓湰锛屽懡涓悗鐢ㄧ粨鏋勮蛋鏌ラ獙璇併€?
+      涓庤蛋鏌ュ櫒鍒嗗紑鏄负浜嗚兘鐢?鍋囧唴瀛?绂荤嚎娴嬭鍛戒腑銆佸潖鍓湰銆佺紦瀛樺け鏁堛€?
+      Locates a unit's TOC copy by its FileId and validates it structurally; kept apart so
+      false hits, broken copies and cache invalidation can be exercised against fake memory.
+    -->
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_section_locate.lua"
+                      Link="RuntimeArmorRegistry\armor_section_locate.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_section_publish.lua"
+                      Link="RuntimeArmorRegistry\armor_section_publish.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_runtime.lua"
+                      Link="RuntimeArmorRegistry\armor_registry_runtime.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_metadata_probe_core.lua"
+                      Link="RuntimeArmorRegistry\armor_metadata_probe_core.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_metadata_probe.lua"
+                      Link="RuntimeArmorRegistry\armor_metadata_probe.lua" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      浣滅敤锛氭妸绠＄悊鍣ㄨ祫婧愮洰褰曢噷鐨勮祫浜х被鍨嬪搱甯岃〃锛坱ypehash.txt锛夊唴宓岃繘 Core锛屼緵 AssetTypeNameTable 瑙ｆ瀽
+      "unit / state_machine / cloth" 杩欑被鍙绫诲瀷鍚嶃€傚埢鎰忓紩鐢ㄧ鐞嗗櫒璧勬簮鐩綍閲岀殑閭ｄ竴浠斤紝鑰屼笉鏄彟瀛樹竴浠斤細
+      绫诲瀷鍝堝笇琛ㄥ彧鏈変竴浠界湡鐩革紝鏇存柊璺緞浠嶇劧鏄?assets metadata plan/apply 鍐?StoragePaths.TypeHashesPath锛?
+      鍐呭祵鍓湰鍙槸"娌℃湁绠＄悊鍣ㄥ畨瑁呮椂"鐨勯粯璁ゅ€硷紝涓斿彧褰卞搷鏄剧ず鍚嶏紝涓嶅奖鍝嶆彁鍙栫粨鏋滅殑姝ｇ‘鎬с€?
+      Purpose: Embeds the manager resource directory's asset type hash table so AssetTypeNameTable can resolve
+      readable type names. It deliberately references the single existing copy instead of duplicating it: the
+      table keeps one source of truth (updated by assets metadata plan/apply into StoragePaths.TypeHashesPath),
+      and the embedded copy is only the default for machines with no manager install. A stale copy affects
+      display names only, never the correctness of an extraction.
+    -->
+    <EmbeddedResource Include="..\HD2ModManager\Resources\AssetMetadata\typehash.txt"
+                      Link="AssetMetadata\typehash.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      物理骨骼运行时。两个文件都必须内嵌：
+        physbone_compat.lua  = 求解器库（attach / 求解 / 生命周期闸），纯 Lua 无依赖；
+        physbone_runtime.lua = 生产入口（发现目标 / 调度 / 挂卸钩子）。
+      导出外置包时把 compat **内联**进 runtime，玩家只需要拖一个文件进 mod 库。
+    -->
+    <EmbeddedResource Include="..\HD2PhysBoneCompat\src\physbone_compat.lua"
+                      Link="PhysBone\physbone_compat.lua" />
+    <EmbeddedResource Include="..\HD2PhysBoneCompat\src\physbone_runtime.lua"
+                      Link="PhysBone\physbone_runtime.lua" />
+    <EmbeddedResource Include="..\HD2PhysBoneCompat\src\native_attachments.lua"
+                      Link="PhysBone\native_attachments.lua" />
+    <EmbeddedResource Include="..\HD2PhysBoneCompat\src\native_attachment_profile.lua"
+                      Link="PhysBone\native_attachment_profile.lua" />
+    <!--
+      2026-11-05 挂点对调拆分：骨骼挂点动态修正运行时独立于物理包导出。
+      native_attachments/native_attachment_profile 保留内嵌作为后续握点实现的参考源，
+      但不再被 ComposeStandalonePackage 内联进 hd2physbone.lua。
+    -->
+    <EmbeddedResource Include="..\HD2PhysBoneCompat\src\attachment_fix_runtime.lua"
+                      Link="PhysBone\attachment_fix_runtime.lua" />
+    <EmbeddedResource Include="..\HD2PhysBoneCompat\src\native_grip_transfer_test.lua"
+                      Link="PhysBone\native_grip_transfer_test.lua" />
+    <EmbeddedResource Include="..\HD2PhysBoneCompat\src\native_grip_transfer_test_entry.lua"
+                      Link="PhysBone\native_grip_transfer_test_entry.lua" />
+  </ItemGroup>
+
+</Project>
+

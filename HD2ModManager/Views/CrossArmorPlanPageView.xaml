@@ -1,0 +1,143 @@
+<UserControl x:Class="HD2ModManager.Views.CrossArmorPlanPageView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:analysis="clr-namespace:HD2ModAdaptation.Analysis;assembly=HD2ModAdaptation"
+             xmlns:domain="clr-namespace:HD2ModCore.Domain;assembly=HD2ModCore">
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="12"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <Grid Grid.Column="0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="12"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <Grid Grid.Column="0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="12"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                <Border Grid.Row="0" Style="{StaticResource CardContainer}">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                        <Grid Grid.Row="0">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <StackPanel>
+                            <TextBlock Text="替换模型到选择的护甲" Style="{StaticResource AppCardTitle}"/>
+                            <TextBlock Text="输出独立 Patch，不修改来源。自定义素体仅生成已启用组件；安装后需在护甲映射页映射到真实护甲并应用。" Style="{StaticResource AppSupportingText}" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                            <TextBlock Text="{Binding CandidateOutput.State}" Style="{StaticResource AppSupportingText}" Margin="0,5,0,0" TextWrapping="Wrap"/>
+                            </StackPanel>
+                            <Button Style="{StaticResource AppPrimaryButton}" Grid.Column="1" Content="生成" Command="{Binding CandidateOutput.GenerateCommand}" IsEnabled="{Binding CandidateOutput.CanGenerate}" MinWidth="78" Margin="12,0,0,0" VerticalAlignment="Top"/>
+                        </Grid>
+                        <StackPanel Grid.Row="1" Margin="0,12,0,0">
+                            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="78"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="来源 Armor" VerticalAlignment="Center"/><ComboBox Style="{StaticResource AppComboBox}" Grid.Column="1" ItemsSource="{Binding SourceArmorChoices}" DisplayMemberPath="Display" SelectedValuePath="Entry" SelectedValue="{Binding SelectedSourceArmor}"/></Grid>
+                            <Grid Margin="0,7,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="78"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="来源 Helmet" VerticalAlignment="Center"/><ComboBox Style="{StaticResource AppComboBox}" Grid.Column="1" ItemsSource="{Binding SourceHelmetChoices}" DisplayMemberPath="Display" SelectedValuePath="Entry" SelectedValue="{Binding SelectedSourceHelmet}"/></Grid>
+                            <Grid Margin="0,7,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="78"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="来源身形" VerticalAlignment="Center"/><ComboBox Style="{StaticResource AppComboBox}" Grid.Column="1" SelectedValuePath="Tag" SelectedValue="{Binding SelectedSourceBodyVariant}"><ComboBoxItem Content="任意" Tag="{x:Static analysis:UnitMeshBodyVariant.Any}"/><ComboBoxItem Content="Slim" Tag="{x:Static analysis:UnitMeshBodyVariant.Slim}"/><ComboBoxItem Content="Stocky" Tag="{x:Static analysis:UnitMeshBodyVariant.Stocky}"/></ComboBox></Grid>
+                            <Grid Margin="0,7,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="78"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="优先身形" VerticalAlignment="Center"/><ComboBox Style="{StaticResource AppComboBox}" Grid.Column="1" SelectedValuePath="Tag" SelectedValue="{Binding BodyVariantPreference}"><ComboBoxItem Content="Slim" Tag="{x:Static domain:CrossArmorBodyVariantPreference.Slim}"/><ComboBoxItem Content="Stocky" Tag="{x:Static domain:CrossArmorBodyVariantPreference.Stocky}"/></ComboBox></Grid>
+                            <Grid Margin="0,7,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="78"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="输出目录" VerticalAlignment="Center"/><Grid Grid.Column="1"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox Style="{StaticResource AppTextBox}" Text="{Binding CandidateOutput.OutputDirectory}" IsReadOnly="True"/><Button Style="{StaticResource AppSecondaryButton}" Grid.Column="1" Content="浏览..." Margin="8,0,0,0" Click="OnBrowseOutputClick"/></Grid></Grid>
+                            <CheckBox Margin="0,9,0,0" Style="{StaticResource AppCheckBox}" Content="生成后自动导入 Mod 库"
+                                      IsChecked="{Binding CandidateOutput.AutoImport}"
+                                      ToolTip="把生成的候选作为新 Mod 导入模组库；只导入，不会启用或部署。" HorizontalAlignment="Left"/>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+                <Border Grid.Row="2" Style="{StaticResource DataTableCard}">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                        <Border Grid.Row="0" Style="{StaticResource DataTableToolbar}">
+                            <DockPanel>
+                                <Button DockPanel.Dock="Right" Style="{StaticResource AppSecondaryButton}"
+                                        Content="重新计算可见部件"
+                                        Command="{Binding RescanSourceUnitsCommand}"
+                                        ToolTip="重新解析来源 Unit 的网格，判断哪些是真几何、哪些是极小化占位。计算中不可点击。"/>
+                                <TextBlock Text="{Binding SourceScanState}" Style="{StaticResource AppSupportingText}"
+                                           VerticalAlignment="Center" Margin="12,0,0,0" TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Text="来源部件" FontWeight="SemiBold" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                            </DockPanel>
+                        </Border>
+                        <DataGrid Grid.Row="1" Style="{StaticResource DataTableGrid}" ItemsSource="{Binding SourceUnitRows}"
+                                  IsReadOnly="True" SelectionMode="Single"
+                                  ToolTip="这里列出来源 Patch 里的**全部** unit。部位/层/身形来自注册表；「作为来源」点一下即可切换。">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="部位" Binding="{Binding PartText}" Width="0.9*"/>
+                                <DataGridTextColumn Header="层" Binding="{Binding LayerText}" Width="0.7*"/>
+                                <DataGridTextColumn Header="身形" Binding="{Binding BodyText}" Width="0.7*"/>
+                                <DataGridTextColumn Header="ID" Binding="{Binding IdText}" Width="1.2*"/>
+                                <DataGridTemplateColumn Header="作为来源" Width="0.8*">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <!-- 用文本而不是勾选框：勾选框的默认尺寸会把行高顶变。 -->
+                                            <TextBlock Text="{Binding EnabledText}" VerticalAlignment="Center"
+                                                       Cursor="Hand" MouseLeftButtonUp="OnSourceUnitToggleClick"
+                                                       ToolTip="{Binding StatusText}"/>
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Grid>
+                </Border>
+            </Grid>
+
+            <Border Grid.Column="2" Style="{StaticResource CardContainer}">
+                <Grid>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <DockPanel>
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                            <CheckBox Style="{StaticResource AppCheckBox}" Content="自动多选通用部件的对象" IsChecked="{Binding AutoSelectSharedParts}" Margin="0,0,12,0"/>
+                            <CheckBox Style="{StaticResource AppCheckBox}" Content="自动勾选头盔" IsChecked="{Binding AutoSelectMatchingHelmet}"/>
+                        </StackPanel>
+                        <TextBlock Text="目标护甲 / 自定义素体（可多选）" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                    </DockPanel>
+                    <ListBox Grid.Row="1" ItemsSource="{Binding TargetChoices}" Margin="0,8,0,8" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.CanContentScroll="True">
+                        <ListBox.ItemTemplate><DataTemplate><CheckBox Style="{StaticResource AppCheckBox}" Content="{Binding Display}" IsChecked="{Binding IsSelected}"/></DataTemplate></ListBox.ItemTemplate>
+                    </ListBox>
+                    <StackPanel Grid.Row="2">
+                        <TextBlock Text="{Binding Summary}" TextWrapping="Wrap"/>
+                        <TextBlock Text="{Binding Issues}" Foreground="{StaticResource StatusDanger}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                        <TextBlock Text="{Binding PlanState}" Foreground="{StaticResource StatusSuccess}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                        <WrapPanel Margin="0,6,0,0"><Button Style="{StaticResource AppSecondaryButton}" Content="全选" Command="{Binding SelectAllTargetsCommand}" Margin="0,0,6,0"/><Button Style="{StaticResource AppSecondaryButton}" Content="反选" Command="{Binding InvertTargetSelectionCommand}" Margin="0,0,6,0"/><Button Style="{StaticResource AppSecondaryButton}" Content="全选未替换" Command="{Binding SelectAllUnreplacedTargetsCommand}" ToolTip="选中当前确认未被有效 Mod 覆盖的装备"/></WrapPanel>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <Border Grid.Column="2" Style="{StaticResource DataTableCard}">
+            <Grid>
+                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                <Border Style="{StaticResource DataTableToolbar}">
+                    <DockPanel>
+                        <Button Style="{StaticResource AppSecondaryButton}" DockPanel.Dock="Right" Content="刷新计划" Command="{Binding RefreshPlanCommand}"/>
+                        <ComboBox Style="{StaticResource AppCompactComboBox}" DockPanel.Dock="Right" Width="185" ItemsSource="{Binding TargetArchiveFilters}" SelectedItem="{Binding SelectedTargetArchiveFilter}" DisplayMemberPath="DisplayName" Margin="0,0,8,0" ToolTip="仅从已经选择的目标 archive 筛选"/>
+                        <TextBlock Text="目标预测" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <CheckBox Style="{StaticResource AppToggleSwitch}" Content="手动模式" IsChecked="{Binding AllowManualMappings}" Margin="12,0,0,0" ToolTip="启用后仅保留显式手动结果，不再进行自动预测。"/>
+                        <CheckBox Style="{StaticResource AppToggleSwitch}" Content="自动隐藏其余部件" IsChecked="{Binding AutoHideUnmappedTargetUnits}" Margin="12,0,0,0" ToolTip="关闭后仅输出真实替换的 Unit，其余未命中部件保持 Game Data 原样且不写入 Patch。"/>
+						<TextBlock Text="生产路线：快速复用来源 Unit" Foreground="{StaticResource StatusSuccess}" VerticalAlignment="Center" Margin="12,0,0,0" ToolTip="替换护甲生产直接复用来源 Unit 的完整 TOC、GPU、Stream 及其依赖。Canonical 全量重建保留给 Same-key 修复等通用 Patch 流程。"/>
+                    </DockPanel>
+                </Border>
+                <DataGrid Grid.Row="1" Style="{StaticResource DataTableGrid}" ItemsSource="{Binding FilteredTargetMappings}" SelectedItem="{Binding SelectedTargetMapping, Mode=TwoWay}" ContextMenuOpening="OnTargetMappingContextMenuOpening">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="部位" Binding="{Binding Target.PartKind}" Width="0.85*"/>
+                        <DataGridTemplateColumn Header="结果" Width="0.75*">
+                            <DataGridTemplateColumn.CellTemplate><DataTemplate><TextBlock Text="{Binding Reason}" VerticalAlignment="Center"><TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Foreground" Value="#9CA3AF"/><Style.Triggers><DataTrigger Binding="{Binding Reason}" Value="强制隐藏"><Setter Property="Foreground" Value="#4B5563"/></DataTrigger><DataTrigger Binding="{Binding Reason}" Value="命中"><Setter Property="Foreground" Value="#16803A"/></DataTrigger><DataTrigger Binding="{Binding Reason}" Value="强制命中"><Setter Property="Foreground" Value="#1E63D6"/></DataTrigger><DataTrigger Binding="{Binding Reason}" Value="广播"><Setter Property="Foreground" Value="#0F766E"/></DataTrigger><DataTrigger Binding="{Binding Reason}" Value="改挂"><Setter Property="Foreground" Value="#B45309"/></DataTrigger><DataTrigger Binding="{Binding Reason}" Value="合并"><Setter Property="Foreground" Value="#7C3AED"/></DataTrigger></Style.Triggers></Style></TextBlock.Style></TextBlock></DataTemplate></DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTextColumn Header="ID" Binding="{Binding PhysicalTarget.UnitAssetKey.FileId, StringFormat=0x{0:x16}}" Width="1.25*"/>
+                        <DataGridTextColumn Header="目标" Binding="{Binding Target.SemanticName}" Width="1.35*"/>
+                        <DataGridTextColumn Header="尺寸" Binding="{Binding Target.StoredSizeText}" Width="0.85*"/>
+                        <DataGridTemplateColumn Header="命中/复用" Width="0.9*">
+                            <DataGridTemplateColumn.CellTemplate><DataTemplate><TextBlock><Run Text="{Binding HitCount, Mode=OneWay}"/><Run Text=" / "/><Run Text="{Binding UsedByArchiveIds.Count, Mode=OneWay}"/></TextBlock></DataTemplate></DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTextColumn Header="目录身形" Binding="{Binding Target.BodyVariant}" Width="0.95*"/>
+                        <DataGridTextColumn Header="来源身形" Binding="{Binding Source.BodyVariant, TargetNullValue=—}" Width="0.95*"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

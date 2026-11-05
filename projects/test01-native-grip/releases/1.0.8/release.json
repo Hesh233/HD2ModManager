@@ -1,0 +1,18 @@
+{
+  "version": "1.0.8",
+  "status": "user-smoke-tested",
+  "feedback": "暂无发现明显问题",
+  "packages": [
+    {
+      "path": "releases/1.0.8/B23LR-M-多武器握持修正-1.0.8.zip",
+      "sha256": "64c5103e817e0769a360cb5dac375b41e5d14504a697e856691ef16e4714bd8f",
+      "bytes": 782465
+    },
+    {
+      "path": "releases/1.0.8/B23LR-M-多武器握持测试工程-1.0.8.zip",
+      "sha256": "d1b09731a09a05a8f536c06dce820416d78afdaf6e15d5d9430a138fd388e621",
+      "bytes": 1393692
+    }
+  ],
+  "fullWeaponAcceptance": false
+}

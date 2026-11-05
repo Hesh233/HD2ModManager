@@ -1,0 +1,203 @@
+<UserControl x:Class="HD2ModManager.Views.SettingsPageView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:HD2ModManager.Views" xmlns:scroll="clr-namespace:HD2ModManager.Controls.Scrolling"
+             xmlns:res="clr-namespace:HD2ModManager.Resources"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             d:DesignHeight="884.68" d:DesignWidth="800">
+    <ScrollViewer Background="Transparent" scroll:SmoothScrollBehavior.IsEnabled="True">
+        <StackPanel>
+            <TextBlock Text="{x:Static Member=res:Strings.Home_Settings}" Style="{StaticResource AppPageTitle}" Margin="0,0,0,12"/>
+
+            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
+                <StackPanel>
+                    <TextBlock Text="通用" Style="{StaticResource AppCardTitle}"/>
+                    <CheckBox Style="{StaticResource AppToggleSwitch}" Content="导入 Mod 后自动加入活动配置并部署" IsChecked="{Binding AutoImportToActiveProfile, Mode=TwoWay}" Margin="0,12,0,0"/>
+                    <Grid Margin="0,14,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="150"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="默认导出路径" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <TextBox Grid.Column="1" Style="{StaticResource AppTextBox}" Text="{Binding DefaultExportPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" ToolTip="支持相对路径和绝对路径；相对路径相对于管理器程序目录。"/>
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="8,0,0,0">
+                            <Button Style="{StaticResource AppSecondaryButton}" Content="浏览" Click="BrowseDefaultExportFolder_Click"/>
+                            <Button Style="{StaticResource AppSecondaryButton}" Content="打开" Command="{Binding OpenDefaultExportFolderCommand}" Margin="8,0,0,0"/>
+                            <Button Style="{StaticResource AppSecondaryButton}" Content="重置" Command="{Binding ResetDefaultExportPathCommand}" Margin="8,0,0,0"/>
+                        </StackPanel>
+                    </Grid>
+                    <TextBlock Text="支持相对路径和绝对路径；相对路径将按管理器程序目录解析。" Style="{StaticResource AppSupportingText}" Margin="150,5,0,0" TextWrapping="Wrap"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,12,0,0" Visibility="Collapsed">
+                        <TextBlock Text="Language" Width="150" VerticalAlignment="Center"/>
+                        <ComboBox Style="{StaticResource AppComboBox}" Width="180" SelectedValue="{Binding Language, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" SelectedValuePath="Tag">
+                            <ComboBoxItem Content="English" Tag="en-US"/>
+                            <ComboBoxItem Content="中文" Tag="zh-CN"/>
+                        </ComboBox>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
+                <StackPanel>
+                    <TextBlock Text="内置 lua" Style="{StaticResource AppCardTitle}"/>
+                    <CheckBox Style="{StaticResource AppToggleSwitch}" Margin="0,12,0,0"
+                              Content="启用管理器内置 lua 类功能"
+                              IsChecked="{Binding BuiltInLuaEnabled, Mode=TwoWay}"
+                              ToolTip="这是所有内置 Lua 功能的唯一入口。关闭后管理器不再占用游戏启动入口（boot），内置功能只能以外置补丁包形式提供。"/>
+                    <TextBlock Text="{Binding BuiltInLuaNote}" Style="{StaticResource AppSupportingText}" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                    <Grid Margin="0,14,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="150"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="映射模式" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <ComboBox Grid.Column="1" Style="{StaticResource AppComboBox}"
+                                  ItemsSource="{Binding ArmorMappingModeOptions}"
+                                  DisplayMemberPath="DisplayName" SelectedValuePath="Value"
+                                  SelectedValue="{Binding ArmorMappingMode, Mode=TwoWay}"/>
+                    </Grid>
+                    <TextBlock Text="{Binding ArmorMappingModeDescription}" Style="{StaticResource AppSupportingText}" Margin="150,8,0,0" TextWrapping="Wrap"/>
+                    <TextBlock Text="{Binding ArmorMappingModeHotSwitchNote}" Style="{StaticResource AppSupportingText}" Margin="150,4,0,0" TextWrapping="Wrap"/>
+                    <Grid Margin="0,14,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="150"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="物理模式" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <ComboBox Grid.Column="1" Style="{StaticResource AppComboBox}"
+                                  ItemsSource="{Binding PhysicsModeOptions}"
+                                  DisplayMemberPath="DisplayName" SelectedValuePath="Value"
+                                  SelectedValue="{Binding PhysicsMode, Mode=TwoWay}"/>
+                    </Grid>
+                    <TextBlock Text="{Binding PhysicsModeDescription}" Style="{StaticResource AppSupportingText}" Margin="150,8,0,0" TextWrapping="Wrap"/>
+                    <!--
+                        外置包刷新提示：升级管理器后，早就是外置模式的用户手里那份 lua 还是旧的，
+                        而他们不会再动上面那个下拉 —— 所以这里主动说一句"包已更新、要重新装一次"。
+                        只在真的写过盘时出现（内容一致时完全不打扰）。
+                    -->
+                    <TextBlock Text="{Binding LuaPackageUpdateHint}"
+                               Foreground="{StaticResource StatusWarning}"
+                               Style="{StaticResource AppSupportingText}"
+                               Margin="150,6,0,0" TextWrapping="Wrap"
+                               Visibility="{Binding HasLuaPackageUpdateHint, Converter={StaticResource BoolToVis}}"/>
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource CardContainer}">
+                <StackPanel>
+                    <TextBlock Text="游戏与资产" Style="{StaticResource AppCardTitle}"/>
+                    <Grid Margin="0,14,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="150"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="游戏目录" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <TextBox Grid.Column="1" Style="{StaticResource AppTextBox}" Text="{Binding GameDataFolder, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="8,0,0,0">
+                            <Button Style="{StaticResource AppSecondaryButton}" Content="浏览" Click="BrowseGameDataFolder_Click"/>
+                            <Button Style="{StaticResource AppSecondaryButton}" Content="打开" Command="{Binding OpenGameDataFolderCommand}" Margin="8,0,0,0"/>
+                            <Button Style="{StaticResource AppSecondaryButton}" Content="重置" Command="{Binding DetectGameDataFolderCommand}" Margin="8,0,0,0"/>
+                        </StackPanel>
+                    </Grid>
+                    <Grid Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="150"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Mod 库目录" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <TextBox Grid.Column="1" Style="{StaticResource AppTextBox}" Text="{Binding ModLibraryFolder, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="8,0,0,0">
+                            <Button Style="{StaticResource AppSecondaryButton}" Content="浏览" Click="BrowseModFolder_Click"/>
+                            <Button Style="{StaticResource AppSecondaryButton}" Content="打开" Command="{Binding OpenModFolderCommand}" Margin="8,0,0,0"/>
+                            <Button Style="{StaticResource AppSecondaryButton}" Content="重置" Command="{Binding ResetModFolderCommand}" Margin="8,0,0,0"/>
+                        </StackPanel>
+                    </Grid>
+
+                    <Separator Margin="0,18,0,14"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="150"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="在线资产索引源" FontWeight="SemiBold"/>
+                        </StackPanel>
+                        <TextBox Grid.Column="1" Style="{StaticResource AppTextBox}" Text="{Binding AssetMetadataRepository, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                        <Button Grid.Column="2" Style="{StaticResource AppPrimaryButton}" Content="立即检查 / 更新" Command="{Binding UpdateAssetMetadataCommand}" Margin="8,0,0,0"/>
+                    </Grid>
+                    <Grid Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="150"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="在线资产检查周期" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <ComboBox Grid.Column="1" Style="{StaticResource AppComboBox}" Width="120" HorizontalAlignment="Left" SelectedValue="{Binding AssetMetadataCheckIntervalHours, Mode=TwoWay}" SelectedValuePath="Tag">
+                            <ComboBoxItem Content="每次启动" Tag="0"/>
+                            <ComboBoxItem Content="每 6 小时" Tag="6"/>
+                            <ComboBoxItem Content="每 1 天" Tag="24"/>
+                            <ComboBoxItem Content="每 7 天" Tag="168"/>
+                        </ComboBox>
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="8,0,0,0" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding AssetMetadataStatus}" Style="{StaticResource AppSupportingText}" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                            <CheckBox Style="{StaticResource AppToggleSwitch}" Content="自动检查" IsChecked="{Binding AutoUpdateAssetMetadata, Mode=TwoWay}"/>
+                        </StackPanel>
+                    </Grid>
+
+                    <Separator Margin="0,18,0,14"/>
+                    <TextBlock Text="Game Data 索引状态检查" FontWeight="SemiBold"/>
+                    <Grid Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="150"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="索引状态检测周期" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <ComboBox Grid.Column="1" Style="{StaticResource AppComboBox}" Width="120" HorizontalAlignment="Left" SelectedValue="{Binding GameDataIndexCheckIntervalHours, Mode=TwoWay}" SelectedValuePath="Tag">
+                            <ComboBoxItem Content="每次启动" Tag="0"/>
+                            <ComboBoxItem Content="每 6 小时" Tag="6"/>
+                            <ComboBoxItem Content="每 1 天" Tag="24"/>
+                            <ComboBoxItem Content="每 7 天" Tag="168"/>
+                        </ComboBox>
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="8,0,0,0" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding GameDataIndexLastCheckText}" Style="{StaticResource AppSupportingText}" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                            <CheckBox Style="{StaticResource AppToggleSwitch}" Content="自动检查" IsChecked="{Binding AutoCheckGameDataIndex, Mode=TwoWay}"/>
+                        </StackPanel>
+                    </Grid>
+
+                    <Border Style="{StaticResource AppCard}" Padding="12" Margin="0,14,0,0">
+                        <StackPanel>
+                            <TextBlock Text="资产索引状态" Style="{StaticResource AppCardTitle}"/>
+                            <UniformGrid Columns="2" Margin="0,10,0,0">
+                                <TextBlock Text="状态" Style="{StaticResource AppSupportingText}" Margin="0,0,8,8"/>
+                                <TextBlock Text="{Binding AssetIndexState}" Style="{StaticResource AppStatusValue}" Margin="0,0,0,8"/>
+                                <TextBlock Text="摘要" Style="{StaticResource AppSupportingText}" Margin="0,0,8,8"/>
+                                <TextBlock Text="{Binding AssetIndexSummary}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                                <TextBlock Text="构建时间" Style="{StaticResource AppSupportingText}" Margin="0,0,8,8"/>
+                                <TextBlock Text="{Binding AssetIndexBuiltUtc}" Margin="0,0,0,8"/>
+                                <TextBlock Text="索引内容" Style="{StaticResource AppSupportingText}" Margin="0,0,8,8"/>
+                                <TextBlock Text="{Binding AssetIndexCounts}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                            </UniformGrid>
+                            <TextBlock Text="{Binding AssetIndexHint}" Style="{StaticResource AppSupportingText}"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                <Button Style="{StaticResource AppPrimaryButton}" Content="Steam 校验完整性" Command="{Binding VerifyWithSteamCommand}"
+                                        ToolTip="调用 Steam 校验游戏文件完整性，把被真映射改写的注册表恢复成官方版本，并重置原始备份基准。这是最后的兜底修复。"/>
+                                <Button Style="{StaticResource AppPrimaryButton}" Content="建立 / 重建资产索引" Command="{Binding BuildAssetIndexCommand}" Margin="8,0,0,0"/>
+                                <Button Style="{StaticResource AppSecondaryButton}" Content="刷新状态" Command="{Binding RefreshAssetIndexStatusCommand}" Margin="8,0,0,0"/>
+                                <Button Style="{StaticResource AppSecondaryButton}" Content="查看资产索引" Command="{Binding ViewGameDataIndexCommand}" Margin="8,0,0,0"/>
+                                <Button Style="{StaticResource AppSecondaryButton}" Content="完全重算护甲类 Unit 部位" Command="{Binding RebuildAllUnitPartFactsCommand}" Margin="8,0,0,0"/>
+                                <Button Style="{StaticResource AppSecondaryButton}" Content="重算新增的护甲类 Unit 部位" Command="{Binding BuildMissingUnitPartFactsCommand}" Margin="8,0,0,0"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

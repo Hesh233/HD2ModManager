@@ -1,0 +1,38 @@
+{
+  "status": "PASS",
+  "pairs": [
+    {
+      "native": "attach_hand_r",
+      "nativeNode": 84,
+      "nativeChannel": 16,
+      "nativeReference": "__hd2_attach_original__hd2n_4e4fb4fa303d_084",
+      "referenceNode": 220,
+      "referenceChannel": 203,
+      "runtimeSource": "hd2n_4e4fb4fa303d_anim_031_r_hand",
+      "runtimeSourceNode": 138,
+      "sourceBakeCarrier": "hd2n_4e4fb4fa303d_aux_047_valvebiped_weapon_bone",
+      "sourceBakeChannel": 137,
+      "sourceBakeNode": 154
+    },
+    {
+      "native": "attach_hand_l",
+      "nativeNode": 48,
+      "nativeChannel": 19,
+      "nativeReference": "__hd2_attach_original__hd2n_4e4fb4fa303d_048",
+      "referenceNode": 219,
+      "referenceChannel": 202,
+      "runtimeSource": "hd2n_4e4fb4fa303d_anim_008_l_hand",
+      "runtimeSourceNode": 259,
+      "sourceBakeCarrier": "hd2n_4e4fb4fa303d_aux_024_valvebiped_l_weapon_bone",
+      "sourceBakeChannel": 114,
+      "sourceBakeNode": 131
+    }
+  ],
+  "policy": "position_preserve_native_aim",
+  "nativeReferencePolicy": "original_unswapped_animation_channels",
+  "runtimeCalibration": "converter_hands_not_legacy_weapon_bone_worlds",
+  "additivePolicy": "no_world_path_swap_preserve_original_references",
+  "tested108PayloadUnchanged": true,
+  "futureBakeStage": "after-final-arm-reference",
+  "testedAnimationBakeIsFrozenLegacyB22": true
+}

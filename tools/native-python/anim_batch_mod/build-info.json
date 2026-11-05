@@ -1,0 +1,76 @@
+﻿{
+    "builtUtc":  "2026-11-05T13:47:08.5785503Z",
+    "runtime":  "Official CPython 3.11.9 embeddable x64",
+    "archiveSha256":  "009D6BF7E3B2DDCA3D784FA09F90FE54336D5B60F0E0F305C37F400BF83CFD3B",
+    "signer":  "CN=Python Software Foundation, O=Python Software Foundation, L=Beaverton, S=Oregon, C=US",
+    "files":  [
+                  {
+                      "sha256":  "9AF659598EBACA4D66A89AD97F44EB6A28458E88260A83795E2E6DDE85578B8E",
+                      "name":  "__init__.py"
+                  },
+                  {
+                      "sha256":  "1F4756747ABDE9F5DACEF9C92F5F5C77D3D9E1150455AD35536011322BEFDF83",
+                      "name":  "main.py"
+                  },
+                  {
+                      "sha256":  "4988E191E93C93923F6A4681A942635CB7E0B85A57E5604E9227C1D3366E964D",
+                      "name":  "cli.py"
+                  },
+                  {
+                      "sha256":  "50AB8066FF1BF39B5FB41F8B7570623FBDA9EAE48EAAF84A46F6711AE2B6E83E",
+                      "name":  "native_skeleton.py"
+                  },
+                  {
+                      "sha256":  "F0E854A01589373F1EF07C55A178E9FAFC8E52B96482DD6F7814EB3158007E02",
+                      "name":  "native_animation.py"
+                  },
+                  {
+                      "sha256":  "27FC844BECF6FEDF78F385885CEC22A7F839260DCDE2D86EACF71C865C23900B",
+                      "name":  "native_arm_reference.py"
+                  },
+                  {
+                      "sha256":  "B023AFBEB511D2A2F839A22262623BD99B70172BB32C61AC7FDF58DB13F46BA3",
+                      "name":  "attachment_skeleton.py"
+                  },
+                  {
+                      "sha256":  "49F99ABCE4F9890AF92076BF2BF89618FD0979C80AC0017C12EA3784D24D6E89",
+                      "name":  "motion_skeleton.py"
+                  },
+                  {
+                      "sha256":  "FB5D4035B400EED521649C5F30282EEE6D0E883FEDC14470E38619D655B1C473",
+                      "name":  "archive.py"
+                  },
+                  {
+                      "sha256":  "E8217128CBFD9E3F4D5360E92C590D20F315D66BD84774F02B0364FF13D4BA2E",
+                      "name":  "batch.py"
+                  },
+                  {
+                      "sha256":  "F1F9B1D84EA87F76860C526827BB11C0F8AC8F7658DCEBE70A97257C974C1B19",
+                      "name":  "binary.py"
+                  },
+                  {
+                      "sha256":  "2105525FD5BB77D22844B6A251F829BF94AF387CEF78B79F4BD7C2F64C8746F2",
+                      "name":  "constants.py"
+                  },
+                  {
+                      "sha256":  "7E8521E49DF49F29D8538445669082002D85053E8F207FB9DE173B91A4813ABB",
+                      "name":  "formats.py"
+                  },
+                  {
+                      "sha256":  "49638C4FCF0E0BB2B9F61A56BA0EC515DDE6CA7418750E1A549E10089B4049DA",
+                      "name":  "math3d.py"
+                  },
+                  {
+                      "sha256":  "706733503A406AA74D7EA9C41F61DDF46C8DBE3666858361A00D8252DB3B997F",
+                      "name":  "processor.py"
+                  },
+                  {
+                      "sha256":  "80D1736C80DB8A28B22DD1EF9A0771BD572DAA451FFEA2FD702B642310C9DBF8",
+                      "name":  "weapon_grip_targets.json"
+                  },
+                  {
+                      "sha256":  "5ED32A206715EAB5979174F3C3AC9A3B02BA7046120A598A52447F0D8B1009BC",
+                      "name":  "config.toml"
+                  }
+              ]
+}

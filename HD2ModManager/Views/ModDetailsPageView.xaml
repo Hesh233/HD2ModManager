@@ -1,0 +1,343 @@
+<UserControl x:Class="HD2ModManager.Views.ModDetailsPageView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:HD2ModManager.Views" xmlns:scroll="clr-namespace:HD2ModManager.Controls.Scrolling"
+             xmlns:lists="clr-namespace:HD2ModManager.Controls.Lists"
+             xmlns:tree="clr-namespace:HD2ModManager.Controls.Trees"
+             xmlns:cards="clr-namespace:HD2ModManager.Controls.Cards">
+    <UserControl.Resources>
+        <ResourceDictionary>
+
+            <local:ImagePlaceholderConverter x:Key="ImagePlaceholder"/>
+            <local:AttachmentListMaxHeightConverter x:Key="AttachmentListMaxHeight"/>
+            <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+
+            <!--
+                本页的卡片内容模板。键名约定 CardTemplate.{CardKind}，由 CardStackHost 解析。
+                放在页面资源里而不是全局字典，是因为其中几张需要页面代码后置的事件处理
+                （修改图像 / 名称 / 备注、VPK 下拉滚轮）。
+                卡片外壳、间距、标题、增删动画由 CardStackHost 负责，这里只写内容。
+            -->
+
+            <DataTemplate x:Key="CardTemplate.ModHeader">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Border Width="96" Height="96"
+                            CornerRadius="{StaticResource RadiusCard}"
+                            ClipToBounds="True"
+                            Background="{StaticResource SurfaceMuted}"
+                            Margin="0,0,16,0">
+                        <Image Source="{Binding Image, Converter={StaticResource ImagePlaceholder}, ConverterParameter=160}"
+                               Stretch="UniformToFill"/>
+                    </Border>
+                    <TextBlock Grid.Column="1"
+                               Text="{Binding Name}"
+                               FontSize="22"
+                               FontWeight="SemiBold"
+                               Foreground="{StaticResource TextPrimary}"
+                               TextWrapping="Wrap"
+                               TextTrimming="CharacterEllipsis"
+                               VerticalAlignment="Top"/>
+                </Grid>
+            </DataTemplate>
+
+            <DataTemplate x:Key="CardTemplate.ModDescription">
+                <TextBlock Text="{Binding Description}"
+                           FontSize="13"
+                           Foreground="{StaticResource TextSecondary}"
+                           TextWrapping="Wrap"/>
+            </DataTemplate>
+
+            <!--
+                这张卡本身对所有 Mod 都显示（打开文件夹 / 改图像 / 改名 / 改备注是通用操作）；
+                只有 patch 级的那几行对 VPK 版 Mod 隐藏——VPK 的 patch 是转换产物，
+                在它上面做 patch 级编辑会被下一次转换覆盖。
+            -->
+            <DataTemplate x:Key="CardTemplate.VpkActions">
+                <StackPanel>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="目标护甲" Foreground="{StaticResource TextSecondary}"
+                                   VerticalAlignment="Center" Margin="0,0,12,0"/>
+                        <ComboBox Grid.Column="1" Style="{StaticResource AppComboBox}"
+                                  ItemsSource="{Binding VpkTargetArmors}"
+                                  SelectedItem="{Binding SelectedVpkTargetArmor, Mode=TwoWay}"
+                                  DisplayMemberPath="DisplayName" MinWidth="200" VerticalAlignment="Center"
+                                  scroll:WheelScroll.IsEnabled="True"/>
+                        <Button Grid.Column="2" Style="{StaticResource AppSecondaryButton}" Content="切换"
+                                Command="{Binding ApplyVpkTargetArmorCommand}" Margin="12,0,0,0" Padding="14,6"/>
+                    </Grid>
+                    <Grid Margin="0,12,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="启用 L4N 支持的衣物装饰组件切换"
+                                   Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                        <CheckBox Grid.Column="1" Style="{StaticResource AppToggleSwitch}"
+                                  IsChecked="{Binding EnableVpkComponentTree, Mode=TwoWay}"
+                                  VerticalAlignment="Center" Margin="12,0,0,0"/>
+                    </Grid>
+                    <!--
+                        头身合并：头并进护甲套件的胸部槽位，于是游戏里那件头盔 item 不再有模型
+                        （不穿配套头盔也有头）。翻转它会**重新生成 Overwrite**——两种状态写出来的
+                        patch 完全不同，只存状态的话用户会看到开关翻了、游戏里却没变。
+                    -->
+                    <Grid Margin="0,12,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                            <TextBlock Text="头身合并到身体（头盔 item 不再有模型）"
+                                       Foreground="{StaticResource TextPrimary}" TextWrapping="Wrap"/>
+                            <TextBlock Text="关掉则头回到头盔套件，需要把配套头盔也穿上才有头"
+                                       Foreground="{StaticResource TextSecondary}" FontSize="11"
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
+                        <CheckBox Grid.Column="1" Style="{StaticResource AppToggleSwitch}"
+                                  IsChecked="{Binding HeadMergeIntoBody, Mode=TwoWay}"
+                                  VerticalAlignment="Center" Margin="12,0,0,0"
+                                  AutomationProperties.Name="头身合并到身体"/>
+                    </Grid>
+                    <!-- 当前目标下这一项不生效时当场说明（例如目标是自定义素体：头本来就在主体里）。 -->
+                    <TextBlock Text="{Binding HeadMergeHint}"
+                               Foreground="{StaticResource StatusWarning}"
+                               FontSize="11" TextWrapping="Wrap" Margin="0,4,0,0"
+                               Visibility="{Binding HasHeadMergeHint, Converter={StaticResource BoolToVis}}"/>
+                    <!--
+                        重构建：用 Mod 文件夹里那份来源 VPK 重跑一次转换。
+                        它不是"再导入一次"——目标护甲、section 勾选、素体 unit id 全部保住，
+                        所以作者发新版包时不用从头配一遍。
+                    -->
+                    <Grid Margin="0,12,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0"
+                                   Text="用来源 VPK 重新转换（保住目标护甲与勾选）"
+                                   Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center"
+                                   TextWrapping="Wrap" FontSize="12"/>
+                        <Button Grid.Column="1" Style="{StaticResource AppSecondaryButton}" Content="重构建"
+                                Command="{Binding RebuildVpkCommand}" Margin="12,0,0,0" Padding="14,6"/>
+                    </Grid>
+                    <TextBlock Text="{Binding VpkComponentStatus}" Foreground="{StaticResource TextSecondary}"
+                               TextWrapping="Wrap" Margin="0,8,0,0"
+                               Visibility="{Binding HasVpkComponentStatus, Converter={StaticResource BoolToVis}}"/>
+                </StackPanel>
+            </DataTemplate>
+
+            <!-- 关掉的 section 不再绘制；勾选会立刻存盘，点卡标题右侧的「应用」才烘进 patch。 -->
+            <DataTemplate x:Key="CardTemplate.VpkComponents">
+                <StackPanel>
+                    <TextBlock Text="条目可单击展开。勾选会立刻保存；点「应用」才烘进 patch，之后要重启游戏才生效。"
+                               Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" FontSize="12"/>
+                    <!--
+                        section 组：源侧 `XXX关` 那类 $no_draw 包翻译出来的（自动命名），
+                        加上用户自己建的。与下面的树是同一份状态的两种视图——
+                        这里按"部件"命名（猫耳、披风），树按"unit / section"铺开。
+                    -->
+                    <TextBlock Text="{Binding VpkGroupSummary}"
+                               Margin="0,10,0,0"
+                               Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" FontSize="12"
+                               Visibility="{Binding HasVpkGroups, Converter={StaticResource BoolToVis}}"/>
+                    <ItemsControl ItemsSource="{Binding VpkGroups}"
+                                  Margin="0,6,0,0"
+                                  Visibility="{Binding HasVpkGroups, Converter={StaticResource BoolToVis}}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="{StaticResource SurfaceMuted}"
+                                        CornerRadius="4"
+                                        Padding="10,6"
+                                        Margin="0,0,0,4">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                            <!--
+                                                名字直接可改：失焦即落盘。组名不参与身份（身份是 id），
+                                                所以改名不会影响勾选状态，也不会让别的引用错位。
+                                            -->
+                                            <TextBox Text="{Binding Name, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                                     Background="Transparent"
+                                                     BorderThickness="0"
+                                                     Padding="0"
+                                                     Foreground="{StaticResource TextPrimary}"
+                                                     CaretBrush="{StaticResource TextPrimary}"
+                                                     AutomationProperties.Name="组名"/>
+                                            <TextBlock Text="{Binding Detail}"
+                                                       FontSize="11"
+                                                       Foreground="{StaticResource TextSecondary}"
+                                                       TextWrapping="Wrap"/>
+                                            <!-- 共用 / 失效必须当场说出来，否则两个看起来独立的复选框会骗人。 -->
+                                            <TextBlock Text="{Binding StateHint}"
+                                                       FontSize="11"
+                                                       Foreground="{StaticResource StatusWarning}"
+                                                       TextWrapping="Wrap"
+                                                       Visibility="{Binding HasStateHint, Converter={StaticResource BoolToVis}}"/>
+                                        </StackPanel>
+                                        <CheckBox Grid.Column="1"
+                                                  Style="{StaticResource AppToggleSwitch}"
+                                                  VerticalAlignment="Center"
+                                                  Margin="12,0,2,0"
+                                                  IsChecked="{Binding IsEnabled, Mode=TwoWay}"
+                                                  AutomationProperties.Name="{Binding Name}"/>
+                                        <Button Grid.Column="2"
+                                                Style="{StaticResource AppSecondaryButton}"
+                                                Content="删除"
+                                                Padding="10,4"
+                                                Margin="8,0,0,0"
+                                                VerticalAlignment="Center"
+                                                Command="{Binding DeleteCommand}"
+                                                AutomationProperties.Name="删除组"/>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock Text="{Binding VpkGroupStatus}"
+                               Margin="0,4,0,0"
+                               Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" FontSize="11"
+                               Visibility="{Binding HasVpkGroupStatus, Converter={StaticResource BoolToVis}}"/>
+                    <!--
+                        新建组：先选目标（在下面的树里点一块几何或一个部位），再命名。
+                        「选中」和「勾选」是两件事——勾选框表达"这一块画不画"，选中表达"要把它建成组"。
+                        混用同一个控件会让用户分不清自己在做什么。
+                    -->
+                    <TextBlock Text="{Binding VpkSelectionHint}"
+                               Margin="0,8,0,0"
+                               Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" FontSize="11"/>
+                    <Grid Margin="0,4,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBox Grid.Column="0"
+                                 Text="{Binding NewVpkGroupName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                 Style="{StaticResource AppTextBox}"
+                                 VerticalAlignment="Center"
+                                 AutomationProperties.Name="新组名"/>
+                        <Button Grid.Column="1"
+                                Style="{StaticResource AppSecondaryButton}"
+                                Content="新建组"
+                                Command="{Binding CreateVpkGroupCommand}"
+                                Margin="8,0,0,0"
+                                Padding="14,6"/>
+                    </Grid>
+                    <!--
+                        行外观、缩进、竖线、点击展开、展开/收起的过渡全在 TreeSurface 里，
+                        这里只给数据。原来那套 ItemTemplate + ItemContainerStyle 不再需要。
+                    -->
+                    <local:TreeSurface
+                                       Roots="{Binding VpkTree.Roots}"
+                                       Margin="0,8,0,0"
+                                       MaxHeight="420"
+                                       VerticalScrollBarVisibility="Auto"
+                                       SelectionChanged="OnVpkComponentTreeSelectionChanged"/>
+                </StackPanel>
+            </DataTemplate>
+
+            <DataTemplate x:Key="CardTemplate.UserStatus">
+                <StackPanel>
+                    <TextBlock Text="{Binding UserStatusTitle}"
+                               Foreground="{StaticResource Accent}"
+                               FontWeight="SemiBold"
+                               FontSize="16"/>
+                    <TextBlock Text="{Binding UserStatusSummary}"
+                               FontSize="13"
+                               Foreground="{StaticResource TextSecondary}"
+                               TextWrapping="Wrap"
+                               Margin="0,4,0,0"/>
+                </StackPanel>
+            </DataTemplate>
+
+            <DataTemplate x:Key="CardTemplate.AssetTags">
+                <StackPanel>
+                    <TextBlock Text="{Binding AssetTagsString}"
+                               FontFamily="Consolas"
+                               FontSize="12"
+                               Foreground="{StaticResource TextSecondary}"
+                               TextWrapping="Wrap"/>
+                    <TextBlock Text="{Binding DataIndexSummary}"
+                               FontSize="12"
+                               Foreground="{StaticResource TextSecondary}"
+                               TextWrapping="Wrap"
+                               Margin="0,8,0,0"/>
+                </StackPanel>
+            </DataTemplate>
+
+            <DataTemplate x:Key="CardTemplate.ModelCompatibility">
+                <StackPanel>
+                    <TextBlock Text="模型过时"
+                               Foreground="{StaticResource StatusDanger}"
+                               FontWeight="SemiBold"
+                               FontSize="16">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsModelOutdated}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    <TextBlock Text="{Binding UnitCompatibilitySummary}"
+                               FontSize="13"
+                               Foreground="{StaticResource TextSecondary}"
+                               TextWrapping="Wrap"
+                               Margin="0,4,0,0"/>
+                </StackPanel>
+            </DataTemplate>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <Grid>
+        <ScrollViewer x:Name="DetailsScrollViewer" Background="Transparent" scroll:SmoothScrollBehavior.IsEnabled="True">
+            <StackPanel>
+                <!--
+                    卡片由 ViewModel 声明（ModDetailsPageViewModel.Cards），
+                    外壳、标题、间距、增删与可见性动画全部由宿主处理。
+                -->
+                <cards:CardStackHost Cards="{Binding Cards}"/>
+
+                <local:ModListPanel x:Name="HostAttachmentList"
+                                    ItemsSource="{Binding HostDecorations}"
+                                    HeaderTitle="可为该 Mod 启用的附加选项"
+                                    HeaderSummary="已列出支持当前主体的装饰与选项。"
+                                    MaxHeight="{Binding ActualHeight, ElementName=DetailsScrollViewer, Converter={StaticResource AttachmentListMaxHeight}}"
+                                    VerticalScrollBarVisibility="Auto"
+                                    UseInternalScroll="True"
+                                    RowActions="Rename, Details, ToggleDecoration, ExportMod, OpenFolder, DeleteFromLibrary"
+                                    RowActionInvoked="OnHostDecorationRowActionInvoked"
+                                    RowRightClicked="OnHostDecorationOpenDetailsOnRightClick"
+                                    SelectionPolicy="Multiple"
+                                    SelectionRequested="OnHostDecorationSelectionRequested"
+                                    KeyboardCommandRequested="OnHostDecorationKeyboardCommandRequested"
+                                    RelationshipDragOperation="RemoveOptionParent"
+                                    RelationshipDragSourceHostId="{Binding ModId}"
+                                    AllowInternalReorder="{Binding CanReorderHostOptions}"
+                                    InternalReorderRequested="OnHostAttachmentInternalReorderRequested"
+                                    TransitionStateChanged="OnHostAttachmentTransitionStateChanged"
+                                    Visibility="{Binding HasHostDecorations, Converter={StaticResource BoolToVis}}"/>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- 拖放叠层与列表页共用同一个控件；这里只决定它盖住整个详情页。 -->
+        <lists:DropHintOverlay x:Name="RelationshipDropOverlay"
+                               Panel.ZIndex="30"
+                               Margin="{StaticResource CardStackMargin}"/>
+    </Grid>
+</UserControl>

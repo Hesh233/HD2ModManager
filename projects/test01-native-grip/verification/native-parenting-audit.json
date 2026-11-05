@@ -1,0 +1,80 @@
+{
+  "status": "PASS",
+  "originalNodes": 255,
+  "outputNodes": 260,
+  "animationChannels": 238,
+  "privateReferenceChannels": 5,
+  "unanimatedNamedOutputs": 5,
+  "originalChannelIndicesPreserved": true,
+  "nativeHierarchyAndLocalBytesPreserved": true,
+  "oldWorldBindBytesPreserved": true,
+  "maximumBindMatrixError": 1.357071999219528e-08,
+  "skinNamesPreserved": true,
+  "modelMeshWeightsUnchanged": true,
+  "avatarExternalDataUnchanged": true,
+  "animationResourcesInOverlay": 0,
+  "changedParents": [
+    112,
+    116,
+    119,
+    122,
+    125,
+    128,
+    131,
+    132,
+    134,
+    135,
+    161,
+    171,
+    183
+  ],
+  "outputs": [
+    {
+      "driver": "spine2",
+      "name": "hd2n_4e4fb4fa303d_anim_003_spine2",
+      "referenceName": "__hd2_b23_reference__hd2n_4e4fb4fa303d_anim_003_spine2",
+      "referenceIndex": 110,
+      "outputIndex": 255,
+      "parentIndex": 26,
+      "channel": 93
+    },
+    {
+      "driver": "chest",
+      "name": "hd2n_4e4fb4fa303d_anim_004_chest",
+      "referenceName": "__hd2_b23_reference__hd2n_4e4fb4fa303d_anim_004_chest",
+      "referenceIndex": 111,
+      "outputIndex": 256,
+      "parentIndex": 28,
+      "channel": 94
+    },
+    {
+      "driver": "l_shoulder",
+      "name": "hd2n_4e4fb4fa303d_anim_006_l_shoulder",
+      "referenceName": "__hd2_b23_reference__hd2n_4e4fb4fa303d_anim_006_l_shoulder",
+      "referenceIndex": 113,
+      "outputIndex": 257,
+      "parentIndex": 113,
+      "channel": 96
+    },
+    {
+      "driver": "l_elbow",
+      "name": "hd2n_4e4fb4fa303d_anim_007_l_elbow",
+      "referenceName": "__hd2_b23_reference__hd2n_4e4fb4fa303d_anim_007_l_elbow",
+      "referenceIndex": 114,
+      "outputIndex": 258,
+      "parentIndex": 114,
+      "channel": 97
+    },
+    {
+      "driver": "l_hand",
+      "name": "hd2n_4e4fb4fa303d_anim_008_l_hand",
+      "referenceName": "__hd2_b23_reference__hd2n_4e4fb4fa303d_anim_008_l_hand",
+      "referenceIndex": 115,
+      "outputIndex": 259,
+      "parentIndex": 115,
+      "channel": 98
+    }
+  ],
+  "patchSha256": "3590b6d6f3fdb8a9983f6782d45d20729678a258ddf7fd97399eb61a048f0043",
+  "gameTested": false
+}

@@ -1,0 +1,120 @@
+{
+  "status": "PASS",
+  "clips": [
+    {
+      "clip": "1404552152609308",
+      "additive": false,
+      "samples": 5,
+      "maximumWristAxisDegrees": 7.345431034138497e-05,
+      "shadowRotationQuaternionError": 2.4043540491902604e-08
+    },
+    {
+      "clip": "1746139878407817355",
+      "additive": false,
+      "samples": 5,
+      "maximumWristAxisDegrees": 2.2588727439225648e-05,
+      "shadowRotationQuaternionError": 2.2195081328391097e-08
+    },
+    {
+      "clip": "3533497934076257483",
+      "additive": false,
+      "samples": 5,
+      "maximumWristAxisDegrees": 9.956626120759437e-06,
+      "shadowRotationQuaternionError": 0.0
+    },
+    {
+      "clip": "5197676336735232665",
+      "additive": false,
+      "samples": 5,
+      "maximumWristAxisDegrees": 2.547051630297354e-05,
+      "shadowRotationQuaternionError": 2.2195081328391097e-08
+    },
+    {
+      "clip": "6765311201281224297",
+      "additive": false,
+      "samples": 5,
+      "maximumWristAxisDegrees": 8.18910913293408e-06,
+      "shadowRotationQuaternionError": 2.2195081328391097e-08
+    },
+    {
+      "clip": "8373161410392156559",
+      "additive": false,
+      "samples": 5,
+      "maximumWristAxisDegrees": 5.399738656763834e-06,
+      "shadowRotationQuaternionError": 2.2195081328391097e-08
+    },
+    {
+      "clip": "10127401427126083064",
+      "additive": false,
+      "samples": 5,
+      "maximumWristAxisDegrees": 6.502146373618258e-06,
+      "shadowRotationQuaternionError": 2.4390995889689293e-08
+    },
+    {
+      "clip": "11799714247906909728",
+      "additive": false,
+      "samples": 5,
+      "maximumWristAxisDegrees": 1.870524340221744e-05,
+      "shadowRotationQuaternionError": 2.2195081328391097e-08
+    },
+    {
+      "clip": "13335687515922973660",
+      "additive": false,
+      "samples": 5,
+      "maximumWristAxisDegrees": 9.80911239371097e-06,
+      "shadowRotationQuaternionError": 5.809155823044421e-09
+    },
+    {
+      "clip": "14937692956692085276",
+      "additive": false,
+      "samples": 5,
+      "maximumWristAxisDegrees": 4.353408482428142e-06,
+      "shadowRotationQuaternionError": 0.0
+    },
+    {
+      "clip": "16676033200662993689",
+      "additive": false,
+      "samples": 5,
+      "maximumWristAxisDegrees": 1.6422663987382993e-05,
+      "shadowRotationQuaternionError": 2.2195081328391097e-08
+    },
+    {
+      "clip": "18445151815192392367",
+      "additive": false,
+      "samples": 5,
+      "maximumWristAxisDegrees": 5.915117333884395e-06,
+      "shadowRotationQuaternionError": 0.0
+    },
+    {
+      "clip": "16559285465095148",
+      "additive": true,
+      "samples": 5,
+      "maximumWristAxisDegrees": 0.0,
+      "shadowRotationQuaternionError": 0.0
+    },
+    {
+      "clip": "5634600025455116514",
+      "additive": true,
+      "samples": 5,
+      "maximumWristAxisDegrees": 0.0,
+      "shadowRotationQuaternionError": 0.0
+    },
+    {
+      "clip": "11507818249679074438",
+      "additive": true,
+      "samples": 5,
+      "maximumWristAxisDegrees": 0.0,
+      "shadowRotationQuaternionError": 0.0
+    },
+    {
+      "clip": "18401918653336146784",
+      "additive": true,
+      "samples": 5,
+      "maximumWristAxisDegrees": 0.0,
+      "shadowRotationQuaternionError": 0.0
+    }
+  ],
+  "interpretation": "Converter wrist-axis registration in 16 packaged clips; not live IK or palm calibration",
+  "maximumWristAxisDegrees": 7.345431034138497e-05,
+  "gameTested": false
+}

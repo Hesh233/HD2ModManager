@@ -1,0 +1,23 @@
+{
+  "gameDeployed": false,
+  "addonVersion": "1.0.8",
+  "updateCalls": 60,
+  "gameTested": false,
+  "nonChefRejected": true,
+  "shutdownAndStop": true,
+  "emptyWorldWrites": 0,
+  "chefVersion": "1.4.1",
+  "independentPhysicsStatePreserved": true,
+  "status": "PASS",
+  "appendLogPath": "C:/fixture/roaming/Arrowhead/Helldivers2/hd2_grip_b23.log",
+  "renderCalls": 60,
+  "appendLogAllowed": true,
+  "actualChefParser": true,
+  "actualChefSandbox": true,
+  "actualChefModuleSelection": true,
+  "separatePhysicsResource": true,
+  "loaderSha256": "9a3bebdc2338cacb457eba25b52e5d8a731e1c01a8e4e0b89c0d9fd126be8b85",
+  "patchSha256": "20025a0347c05c749abd7fb4f9511e4d5e73ee878a2d8f81aef0acbbd8e6fd7f",
+  "sourceSha256": "6e7fd2c532964f199f381313fddb97e89eadcf2e2febcb674395decb32a6eb21",
+  "scope": "Actual loader code with simulated empty worlds/IO; live game timing unverified"
+}

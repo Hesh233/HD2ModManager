@@ -1,0 +1,31 @@
+<UserControl x:Class="HD2ModManager.Views.ProfilePageView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:HD2ModManager.Views">
+    <UserControl.Resources>
+        <DataTemplate x:Key="ProfileSearchActions">
+            <Button Style="{StaticResource AppHeaderTextButton}" Content="{Binding OutdatedFilterText}" Click="OnToggleOutdatedFilterClick"/>
+        </DataTemplate>
+    </UserControl.Resources>
+    <local:ModListPanel x:Name="ProfileModList" ItemsSource="{Binding Items}"
+                        HeaderTitle="{Binding CurrentProfileTitle}"
+                        HeaderSummary="{Binding HeaderSummary}"
+                        EmptyState="{Binding EmptyState}"
+                        SearchText="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
+                        SearchActionsTemplate="{StaticResource ProfileSearchActions}"
+                        RowActions="Details, ExportMod, MoveUp, MoveDown, RemoveFromProfile, DeleteFromLibrary"
+                         RowActionInvoked="OnRowActionInvoked"
+                         SelectionPolicy="Multiple"
+                         RelationshipDragOperation="SetAsOption"
+                         AllowExternalProfileDrop="{Binding CanAcceptLibraryDrop}"
+                        AllowExternalProfileRemovalDrag="{Binding CanAcceptLibraryDrop}"
+                         ExternalProfileDropRequested="OnExternalProfileDropRequested"
+                         SelectionRequested="OnSelectionRequested"
+                         KeyboardCommandRequested="OnKeyboardCommandRequested"
+                         AllowKeyboardRename="True"
+                          AllowInternalReorder="{Binding CanReorder}"
+                         InternalReorderRequested="OnInternalReorderRequested"
+                         TransitionStateChanged="OnListTransitionStateChanged"
+                        RowRightClicked="OnOpenDetailsOnRightClick"
+                        BackgroundClicked="OnListBackgroundClick"/>
+</UserControl>

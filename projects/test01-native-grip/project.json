@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "projectId": "test01-native-grip",
+  "version": "1.0.8",
+  "status": "user-smoke-tested",
+  "userFeedback": "暂无发现明显问题",
+  "fullWeaponAcceptance": false,
+  "profile": "config/B23-profile.json",
+  "manifest": "config/manifest.json",
+  "baseline": "inputs/baseline-1.0.7.zip",
+  "components": "inputs/components.json",
+  "observedParts": "inputs/observed-marked-parts.json",
+  "sourceSkeleton": "inputs/source-skeleton.json",
+  "animationConfig": "config/animation-config.toml",
+  "buildOutput": ".build",
+  "builder": "tools/build_native_b23_108.py",
+  "sharedSources": [
+    "HD2PhysBoneCompat/src/native_grip_transfer_test.lua",
+    "HD2PhysBoneCompat/src/native_grip_transfer_test_entry.lua",
+    "HD2PhysBoneCompat/src/attachment_fix_runtime.lua",
+    "HD2PhysBoneCompat/test/native_grip_transfer_harness.lua",
+    "HD2PhysBoneCompat/test/native_grip_transfer_108_harness.lua",
+    "tools/build_native_b23_108.py",
+    "tools/repack_native_b23.py"
+  ],
+  "releases": [
+    {
+      "path": "releases/1.0.8/B23LR-M-多武器握持修正-1.0.8.zip",
+      "sha256": "64c5103e817e0769a360cb5dac375b41e5d14504a697e856691ef16e4714bd8f",
+      "bytes": 782465
+    },
+    {
+      "path": "releases/1.0.8/B23LR-M-多武器握持测试工程-1.0.8.zip",
+      "sha256": "d1b09731a09a05a8f536c06dce820416d78afdaf6e15d5d9430a138fd388e621",
+      "bytes": 1393692
+    }
+  ],
+  "dependencies": {
+    "test01Animations": "outputs/native-v30-b22-20261105/runtime/9ba626afa44a3aa3.patch_2",
+    "test01AnimationInstallZip": "outputs/native-v30-b22-20261105/runtime/动画挂点交换.zip",
+    "nativeArmReference": "outputs/native-manual-20261103/project/refs/arm-reference.patch_0",
+    "test01ModelDirectory": "outputs/native-manual-20261103/project/models-o3/test01-O3",
+    "modelInstallZip": "outputs/native-manual-20261103/test01-模型材质.zip"
+  },
+  "animationRebaked": false,
+  "gameDeploymentChanged": false,
+  "notes": [
+    "Frozen observed 1.0.8 runtime/Avatar/Bones payloads are preserved.",
+    "Future animation converter now swaps AFTER final arm reference and respects parent scale; no automatic rebake of observed B22 clips."
+  ],
+  "baselineSha256": "7ef0e996c707a4270b649dfeb4125c2faf4caeb8ab3154d6ffbe8ede94e37a9c",
+  "futureAnimationConverterContract": "v2-after-arm-reference-scaled-parent"
+}

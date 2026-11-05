@@ -1,0 +1,353 @@
+<Window x:Class="HD2ModManager.MainWindow"
+    x:Name="RootWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        xmlns:views="clr-namespace:HD2ModManager.Views"
+        xmlns:nav="clr-namespace:HD2ModManager.Controls.Nav"
+        xmlns:localVM="clr-namespace:HD2ModManager.ViewModels"
+        xmlns:localViews="clr-namespace:HD2ModManager.Views"
+        WindowStyle="None"
+        ResizeMode="CanResize"
+        AllowsTransparency="False"
+        Icon="Resources/helldivers2.ico"
+        Background="{StaticResource AppSurfaceBrush}"
+        Title="HD2 Mod Manager" Height="720" Width="1200" MinHeight="720" MinWidth="1200">
+    <Window.Resources>
+        <localVM:NotificationBrushConverter x:Key="NotificationBrushConverter"/>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <localViews:BoolToStarLengthConverter x:Key="BoolToStarLength"/>
+
+        <Style x:Key="WorkspacePageHost" TargetType="ContentControl">
+            <Setter Property="RenderTransformOrigin" Value="0.5,0.5"/>
+        </Style>
+        <DataTemplate x:Key="MessageItemTemplate">
+            <Border Padding="6,5" Margin="0,1" Background="Transparent" MouseLeftButtonUp="OnMessageItemClick">
+                <Grid>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <Path Grid.RowSpan="2" Width="14" Height="14" VerticalAlignment="Center" Data="M7,1.5 A5.5,5.5 0 1 0 7,12.5 A5.5,5.5 0 1 0 7,1.5 M7,4 L7,7.5 M7,9.5 L7,9.7" Stroke="{StaticResource Accent}" StrokeThickness="1.3" StrokeStartLineCap="Round"/>
+                    <TextBlock Grid.Column="1" Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap" MaxHeight="42" TextTrimming="CharacterEllipsis"/>
+                    <StackPanel Grid.Row="0" Grid.RowSpan="2" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button Style="{StaticResource AppHeaderTextButton}" Width="24" Height="24" MinWidth="0" MinHeight="0" Padding="0" ToolTip="复制消息" Command="{Binding DataContext.CopyMessageCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}"><Path Width="12" Height="12" Data="M4,4 L11,4 11,11 4,11 Z M2,8 L2,2 8,2" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.2" StrokeLineJoin="Round"/></Button>
+                        <Button Style="{StaticResource AppHeaderTextButton}" Width="24" Height="24" MinWidth="0" MinHeight="0" Padding="0" ToolTip="我知道了，移除消息" Command="{Binding DataContext.DismissMessageCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}" Visibility="{Binding CanDismiss, Converter={StaticResource BoolToVis}}"><Path Width="12" Height="12" Data="M2,6.5 L5,9.5 10.5,3" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/></Button>
+                    </StackPanel>
+                    <TextBlock Grid.Row="1" Grid.Column="1" Foreground="{StaticResource TextSecondary}" FontSize="11" Text="{Binding Detail}" TextTrimming="CharacterEllipsis" Margin="0,2,4,0"/>
+                    <ProgressBar Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Value="{Binding Progress, Mode=OneWay}" Maximum="1" Height="3" Margin="0,21,4,0" Visibility="{Binding HasProgress, Converter={StaticResource BoolToVis}}"/>
+                    <TextBox Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Text="{Binding ExpandedDetail, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True" BorderThickness="0" Background="Transparent" Margin="0,6,4,0" Visibility="{Binding IsExpanded, Converter={StaticResource BoolToVis}}"/>
+                </Grid>
+            </Border>
+        </DataTemplate>
+
+        <DataTemplate DataType="{x:Type localVM:HomePageViewModel}">
+            <views:HomePageView/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type localVM:ProfilePageViewModel}">
+            <views:ProfilePageView/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type localVM:LibraryPageViewModel}">
+            <views:LibraryPageView/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type localVM:SettingsPageViewModel}">
+            <views:SettingsPageView/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type localVM:ModDetailsPageViewModel}">
+            <views:ModDetailsPageView/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type localVM:AdvancedModDetailsPageViewModel}">
+            <views:AdvancedModDetailsPageView/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type localVM:GameDataBrowserPageViewModel}">
+            <views:GameDataBrowserPageView/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type localVM:GameDataArchiveDetailsHostPageViewModel}">
+            <views:GameDataArchiveDetailsPageView/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type views:CrossArmorTransferPlanWindowViewModel}">
+            <views:CrossArmorPlanPageView/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type localVM:MaterialPackagingPageViewModel}">
+            <views:MaterialPackagingPageView/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type localVM:PatchResourceRepackagingPageViewModel}">
+            <views:PatchResourceRepackagingPageView/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type localVM:DecorationPlanPageViewModel}">
+            <views:DecorationPlanPageView/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type localVM:BatchDecorationPlanPageViewModel}">
+            <views:BatchDecorationPlanPageView/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type localVM:HelmetToArmorMergePlanPageViewModel}">
+            <views:HelmetToArmorMergePlanPageView/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type localVM:ArmorRegistryPageViewModel}">
+            <views:ArmorRegistryPageView/>
+        </DataTemplate>
+
+        <!--
+            顶栏 4 个导航按钮的外观已移入 Controls/Nav/NavBarHost.xaml。
+            消息按钮刻意保留在这里：它和导航不是同一类东西（功能入口 vs 通知），
+            后续可能换成系统通知，届时整块删除即可。
+        -->
+        <Style x:Key="TopNavButton" TargetType="Button">
+            <Setter Property="Height" Value="32"/>
+            <Setter Property="Padding" Value="16,0"/>
+            <Setter Property="Margin" Value="4,0"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Panel.ZIndex" Value="1"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="16" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+                            </Trigger>
+                            <Trigger Property="Tag" Value="Active">
+                                <Setter Property="Foreground" Value="White"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="CaptionButtonGreyHover" TargetType="Button">
+            <Setter Property="Width" Value="48"/>
+            <Setter Property="Height" Value="48"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#D9D9D9"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#BFBFBF"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="CaptionButtonRedHover" TargetType="Button" BasedOn="{StaticResource CaptionButtonGreyHover}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#E53935"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#B71C1C"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+    </Window.Resources>
+
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="48" ResizeBorderThickness="6" CornerRadius="0" GlassFrameThickness="0" UseAeroCaptionButtons="False"/>
+    </shell:WindowChrome.WindowChrome>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="48"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Background="{StaticResource SurfaceCard}" shell:WindowChrome.IsHitTestVisibleInChrome="True" MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Grid Margin="16,0,18,0" VerticalAlignment="Center">
+                <TextBlock Text="HD2 Mod Manager" VerticalAlignment="Center" FontSize="18" FontWeight="SemiBold">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Visibility" Value="Visible"/>
+                            <Style.Triggers><DataTrigger Binding="{Binding ShowHomeTitle}" Value="False"><Setter Property="Visibility" Value="Hidden"/></DataTrigger></Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+                <Button Content="启动游戏" Command="{Binding LaunchGameCommand}" Padding="14,5">
+                    <Button.Style>
+                        <Style TargetType="Button" BasedOn="{StaticResource AppPrimaryButton}">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                            <Style.Triggers><DataTrigger Binding="{Binding ShowLaunchGameButton}" Value="True"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                </Button>
+            </Grid>
+
+            <!--
+                顶栏按钮由 ShellViewModel 声明（LeadingNavItems / TrailingNavItems），
+                外观、激活块滑动、增删重排、窄窗口横向滚动都在 NavBarHost 里。
+                中间的胶囊是工作区视图开关，作为固定内容插在两个集合之间。
+            -->
+            <Grid x:Name="WorkspaceNavigationHost" Grid.Column="1" HorizontalAlignment="Stretch" VerticalAlignment="Center">
+                <nav:NavBarHost x:Name="WorkspaceNavHost"
+                                LeadingItems="{Binding LeadingNavItems}"
+                                TrailingItems="{Binding TrailingNavItems}">
+                    <nav:NavBarHost.CenterContent>
+                        <localViews:CapsuleButtonGroup Width="168" Height="40" Margin="10,0"
+                                                       MiddleContent="配置页  |  模组库"
+                                                       LeftToolTip="只打开配置页" MiddleToolTip="合并为左右双页" RightToolTip="只打开模组库"
+                                                       LeftCommand="{Binding ShowProfileCommand}"
+                                                       MiddleCommand="{Binding ShowSplitCommand}"
+                                                       RightCommand="{Binding ShowLibraryCommand}"
+                                                       LeftIsActive="{Binding IsProfileActive}"
+                                                       MiddleIsActive="{Binding IsSplitActive}"
+                                                       RightIsActive="{Binding IsLibraryActive}"/>
+                    </nav:NavBarHost.CenterContent>
+                </nav:NavBarHost>
+            </Grid>
+
+            <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="MessageNavigationButton" Style="{StaticResource TopNavButton}" Command="{Binding ToggleMessagePanelCommand}" Margin="0,8,6,8" Padding="12,0">
+                    <Grid>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Path Width="15" Height="15" Margin="0,0,6,0" Data="M3,4 L13,4 L13,14 L3,14 Z M5,7 L11,7 M5,10 L9,10" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.35" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+                            <TextBlock Text="消息" VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <Border HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-5,-8,0" MinWidth="14" Height="14" Padding="3,0" CornerRadius="7" Background="#D94B56" Visibility="{Binding HasUnreadTaskHubEvents, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="{Binding MessageBadgeText}" Foreground="White" FontWeight="SemiBold" FontSize="9" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                    </Grid>
+                    <Button.ToolTip>
+                        <TextBlock Text="查看任务状态与最近消息"/>
+                    </Button.ToolTip>
+                </Button>
+                <Button Style="{StaticResource CaptionButtonGreyHover}" Click="MinButton_Click"><Path Width="12" Height="12" StrokeThickness="1.5" Stroke="Black" Data="M 1,5 L 11,5"/></Button>
+                <Button Style="{StaticResource CaptionButtonGreyHover}" Click="MaxButton_Click"><Path Width="12" Height="12" StrokeThickness="1.3" Stroke="Black" Data="M 1,1 L 11,1 11,11 1,11 Z"/></Button>
+                <Button Style="{StaticResource CaptionButtonRedHover}" Click="CloseButton_Click"><Path Width="12" Height="12" StrokeThickness="1.6" Stroke="Black" Data="M 2,2 L 10,10 M 10,2 L 2,10"/></Button>
+            </StackPanel>
+        </Grid>
+
+        <Grid Grid.Row="1">
+            <!--
+                Real but invisible workspace hosts used only for startup warmup.
+                Opacity=0 deliberately keeps measure/arrange and virtualization
+                active; Collapsed would leave the first navigation cold.
+            -->
+            <Grid x:Name="WorkspaceVisualPrewarmHost"
+                  Opacity="0"
+                  IsHitTestVisible="False"
+                  ClipToBounds="True"
+                  Panel.ZIndex="-100">
+                <Grid Margin="{StaticResource LayoutGapThickness}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="12"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <ContentControl x:Name="PrewarmProfilePageHost" Grid.Column="0" Style="{StaticResource WorkspacePageHost}"/>
+                    <ContentControl x:Name="PrewarmLibraryPageHost" Grid.Column="2" Style="{StaticResource WorkspacePageHost}"/>
+                </Grid>
+                <!--
+                    护甲映射页是整页布局（单页模式），所以给它单独一层、占满整个工作区：
+                    预热时量到的宽高与真正打开时一致，上排两张页面的测量尺寸也完全不受影响。
+                -->
+                <ContentControl x:Name="PrewarmArmorPageHost"
+                                Margin="{StaticResource LayoutGapThickness}"
+                                Style="{StaticResource WorkspacePageHost}"/>
+            </Grid>
+            <Grid Margin="{StaticResource LayoutGapThickness}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="{Binding ShowRightSlot, Converter={StaticResource BoolToStarLength}, ConverterParameter=12}"/>
+                    <ColumnDefinition Width="{Binding ShowRightSlot, Converter={StaticResource BoolToStarLength}}"/>
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Column="0" Background="Transparent" BorderThickness="0" ClipToBounds="True">
+                    <Grid>
+                        <ContentControl x:Name="LeftPreviousPageHost" Style="{StaticResource WorkspacePageHost}" IsHitTestVisible="False"/>
+                        <ContentControl x:Name="LeftCurrentPageHost" Style="{StaticResource WorkspacePageHost}"/>
+                        <views:FloatingActionCluster HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="18" LabelDirection="Right" Actions="{Binding LeftSlotActions}" Visibility="{Binding ShowSplitLeftSlotActions, Converter={StaticResource BoolToVis}}"/>
+                        <views:FloatingActionCluster HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="18" Actions="{Binding LeftSlotActions}" Visibility="{Binding ShowFullScreenActions, Converter={StaticResource BoolToVis}}"/>
+                    </Grid>
+                </Border>
+
+                <Grid Grid.Column="1" Visibility="{Binding ShowRightSlot, Converter={StaticResource BoolToVis}}"/>
+
+                <Border Grid.Column="2" Background="Transparent" BorderThickness="0" ClipToBounds="True" Visibility="{Binding ShowRightSlot, Converter={StaticResource BoolToVis}}">
+                    <Grid>
+                        <ContentControl x:Name="RightPreviousPageHost" Style="{StaticResource WorkspacePageHost}" IsHitTestVisible="False"/>
+                        <ContentControl x:Name="RightCurrentPageHost" Style="{StaticResource WorkspacePageHost}"/>
+                        <views:FloatingActionCluster HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="18" Actions="{Binding RightSlotActions}" Visibility="{Binding ShowRightSlotActions, Converter={StaticResource BoolToVis}}"/>
+                    </Grid>
+                </Border>
+
+                <Canvas x:Name="PageTransitionOverlay" Grid.ColumnSpan="3" IsHitTestVisible="False" ClipToBounds="False">
+                    <ContentControl x:Name="OverlayLeftPageHost" Style="{StaticResource WorkspacePageHost}"/>
+                    <ContentControl x:Name="OverlayRightPageHost" Style="{StaticResource WorkspacePageHost}"/>
+                </Canvas>
+            </Grid>
+
+            <Border x:Name="BottomContextBar" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,22"
+                    Padding="14,10" CornerRadius="18" RenderTransformOrigin="0.5,0.5"
+                    Visibility="Collapsed">
+                <Border.RenderTransform><ScaleTransform ScaleX="1" ScaleY="1"/></Border.RenderTransform>
+                <Border.Style>
+                    <Style TargetType="Border" BasedOn="{StaticResource AppElevatedPanel}">
+                    </Style>
+                </Border.Style>
+                <Grid x:Name="BottomContextBarContent" VerticalAlignment="Center">
+                    <views:BottomBarSurface x:Name="BottomBarSurface"/>
+                </Grid>
+            </Border>
+
+            <Border x:Name="MessageCenterPanel" Style="{StaticResource AppElevatedPanel}" HorizontalAlignment="Right" VerticalAlignment="Top" Width="440" MaxHeight="620" Margin="0,0,4,0"
+                    Padding="8" Panel.ZIndex="20" RenderTransformOrigin="0.5,0"
+                    Visibility="Collapsed">
+                <Border.RenderTransform><TranslateTransform Y="0"/></Border.RenderTransform>
+                <Grid>
+					<Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                    <DockPanel Margin="4,2,2,6">
+						<TextBlock Text="消息中心" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <TextBlock Text="本次运行的消息" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                        <Button DockPanel.Dock="Right" Style="{StaticResource AppHeaderTextButton}" Padding="8,3" Content="清理已读" Command="{Binding ClearReadMessagesCommand}" ToolTip="移除所有已读消息"/>
+					</DockPanel>
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel>
+                            <ItemsControl ItemsSource="{Binding MessageItems}" ItemTemplate="{StaticResource MessageItemTemplate}"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+            </Border>
+
+            <!-- This panel is already hosted below the 48px title bar (Grid.Row=1).
+                 Keep only a small local gap instead of applying a second title-bar offset. -->
+            <StackPanel x:Name="MessagePreviewPanel" HorizontalAlignment="Right" VerticalAlignment="Top" Width="420" Margin="0,4,18,0"
+                        Panel.ZIndex="19" Cursor="Hand" Visibility="Collapsed" RenderTransformOrigin="0.5,0"
+                        MouseLeftButtonUp="OnMessagePreviewClick">
+                <StackPanel.RenderTransform><TranslateTransform Y="0"/></StackPanel.RenderTransform>
+                <Border Style="{StaticResource AppElevatedPanel}" Padding="6" Margin="0,0,0,6" Visibility="{Binding HasActiveTaskToasts, Converter={StaticResource BoolToVis}}">
+                    <ItemsControl ItemsSource="{Binding ActiveTaskToasts}" ItemTemplate="{StaticResource MessageItemTemplate}"/>
+                </Border>
+                <Border Style="{StaticResource AppElevatedPanel}" Padding="6" Visibility="{Binding HasTransientToast, Converter={StaticResource BoolToVis}}">
+                    <ContentControl Content="{Binding CurrentTransientToast}" ContentTemplate="{StaticResource MessageItemTemplate}"/>
+                </Border>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>

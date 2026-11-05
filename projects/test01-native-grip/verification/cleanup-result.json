@@ -1,0 +1,157 @@
+{
+  "reclaimedGiB": 12.95,
+  "policy": "Only exact archived animation duplicates and disposable import copies; no original references, latest exports, models or accepted baselines",
+  "deletedBytes": 13905453743,
+  "scope": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs",
+  "status": "complete",
+  "deletedFiles": 19,
+  "deleted": [
+    {
+      "path": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\before-native-v10-20261104\\project\\animations\\runtime\\9ba626afa44a3aa3.patch_2",
+      "keeper": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\before-native-v10-20261104\\test01-配套动画.zip",
+      "sha256": "fde298b8c41cda914e2c6c65bde3ffd22202a9e8dba690abaa7d5a25eda02bb6",
+      "bytes": 1331523049,
+      "keeperMember": "9ba626afa44a3aa3.patch_2"
+    },
+    {
+      "path": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\before-native-v10-20261104\\project\\animations\\runtime\\9ba626afa44a3aa3.patch_2.stream",
+      "keeper": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\before-native-v10-20261104\\test01-配套动画.zip",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "keeperMember": "9ba626afa44a3aa3.patch_2.stream"
+    },
+    {
+      "path": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\before-native-v10-20261104\\project\\animations\\runtime\\9ba626afa44a3aa3.patch_2.gpu_resources",
+      "keeper": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\before-native-v10-20261104\\test01-配套动画.zip",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "keeperMember": "9ba626afa44a3aa3.patch_2.gpu_resources"
+    },
+    {
+      "path": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\before-native-v8-20261104\\project\\animations\\runtime\\9ba626afa44a3aa3.patch_2",
+      "keeper": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\before-native-v8-20261104\\test01-配套动画.zip",
+      "sha256": "8eddda2e480e1705c5aa2db46b2067e1f1eefcb98242b53aea0b4b2219440429",
+      "bytes": 1331523049,
+      "keeperMember": "9ba626afa44a3aa3.patch_2"
+    },
+    {
+      "path": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\before-native-v8-20261104\\project\\animations\\runtime\\9ba626afa44a3aa3.patch_2.stream",
+      "keeper": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\before-native-v8-20261104\\test01-配套动画.zip",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "keeperMember": "9ba626afa44a3aa3.patch_2.stream"
+    },
+    {
+      "path": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\before-native-v8-20261104\\project\\animations\\runtime\\9ba626afa44a3aa3.patch_2.gpu_resources",
+      "keeper": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\before-native-v8-20261104\\test01-配套动画.zip",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "keeperMember": "9ba626afa44a3aa3.patch_2.gpu_resources"
+    },
+    {
+      "path": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\before-native-v9-20261104\\project\\animations\\runtime\\9ba626afa44a3aa3.patch_2",
+      "keeper": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\before-native-v9-20261104\\test01-配套动画.zip",
+      "sha256": "7c9187cb5873f9ec40c2ae7aa9d8429cf49c4aa014f5403bf5de666170ea160d",
+      "bytes": 1331523049,
+      "keeperMember": "9ba626afa44a3aa3.patch_2"
+    },
+    {
+      "path": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\before-native-v9-20261104\\project\\animations\\runtime\\9ba626afa44a3aa3.patch_2.stream",
+      "keeper": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\before-native-v9-20261104\\test01-配套动画.zip",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "keeperMember": "9ba626afa44a3aa3.patch_2.stream"
+    },
+    {
+      "path": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\before-native-v9-20261104\\project\\animations\\runtime\\9ba626afa44a3aa3.patch_2.gpu_resources",
+      "keeper": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\before-native-v9-20261104\\test01-配套动画.zip",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "keeperMember": "9ba626afa44a3aa3.patch_2.gpu_resources"
+    },
+    {
+      "path": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\v11-before-20261104\\project\\animations\\runtime\\9ba626afa44a3aa3.patch_2",
+      "keeper": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\v11-before-20261104\\test01-配套动画.zip",
+      "sha256": "efb080d2ca39462e52dec18d7c6a7a18acf5c209c3936544c6c23b81b18dbf50",
+      "bytes": 1331523049,
+      "keeperMember": "9ba626afa44a3aa3.patch_2"
+    },
+    {
+      "path": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\v12-before-20261104\\project\\animations\\runtime\\9ba626afa44a3aa3.patch_2",
+      "keeper": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\v12-before-20261104\\test01-配套动画.zip",
+      "sha256": "651367210831c0c9f6cfaa98f08695b0ecf7bf40787164107dd27ed2c18f8f8e",
+      "bytes": 1331523049,
+      "keeperMember": "9ba626afa44a3aa3.patch_2"
+    },
+    {
+      "path": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\v13-before-20261104\\project\\animations\\runtime\\9ba626afa44a3aa3.patch_2",
+      "keeper": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\v13-before-20261104\\test01-配套动画.zip",
+      "sha256": "3a9de96ad5208a48d66f5f5f876329217059d2d43c6c31afced73cc2b24b231f",
+      "bytes": 1331523049,
+      "keeperMember": "9ba626afa44a3aa3.patch_2"
+    },
+    {
+      "path": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\v13-preview-before-20261104\\project\\animations\\runtime\\9ba626afa44a3aa3.patch_2",
+      "keeper": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\v13-preview-before-20261104\\test01-配套动画.zip",
+      "sha256": "483ee0c0a47894d9cfe4ebae1480c5193c4685ddd4103118c335e000bec3c614",
+      "bytes": 1331523049,
+      "keeperMember": "9ba626afa44a3aa3.patch_2"
+    },
+    {
+      "path": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\v13-preview-before-20261104\\project\\animations\\runtime\\9ba626afa44a3aa3.patch_2.gpu_resources",
+      "keeper": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\v13-preview-before-20261104\\test01-配套动画.zip",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "keeperMember": "9ba626afa44a3aa3.patch_2.gpu_resources"
+    },
+    {
+      "path": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\v14-before-20261104\\project\\animations\\runtime\\9ba626afa44a3aa3.patch_2",
+      "keeper": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\v14-before-20261104\\test01-配套动画.zip",
+      "sha256": "91043c5fe487cf3a11d8517c75299625cf4293aa035e082b964db2334840bc3c",
+      "bytes": 1331553392,
+      "keeperMember": "9ba626afa44a3aa3.patch_2"
+    },
+    {
+      "path": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\v15-before-20261104\\project\\animations\\runtime\\9ba626afa44a3aa3.patch_2",
+      "keeper": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\v15-before-20261104\\test01-配套动画.zip",
+      "sha256": "bf551e7f1b000d3827a44e6f65ddb896b681c779babb1546490882eed7108c73",
+      "bytes": 1671961408,
+      "keeperMember": "9ba626afa44a3aa3.patch_2"
+    },
+    {
+      "path": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-test02-integrated-20261105\\import-audit-gqp_wfe9\\1\\library\\test02-原比例动画-3180\\9ba626afa44a3aa3.patch_0",
+      "keeper": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-test02-integrated-20261105\\animations-upgraded\\runtime\\9ba626afa44a3aa3.patch_2",
+      "sha256": "5b13fa8577663ef661a7b84f362cb7d4e063a30f4504cb65e7f1e3613a38c002",
+      "bytes": 1579498720,
+      "keeperMember": null
+    },
+    {
+      "path": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-test02-integrated-20261105\\import-audit-gqp_wfe9\\1\\library\\test02-原比例动画-3180\\9ba626afa44a3aa3.patch_0.stream",
+      "keeper": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-test02-integrated-20261105\\animations-upgraded\\runtime\\9ba626afa44a3aa3.patch_2.stream",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "keeperMember": null
+    },
+    {
+      "path": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-test02-integrated-20261105\\import-audit-gqp_wfe9\\1\\library\\test02-原比例动画-3180\\9ba626afa44a3aa3.patch_0.gpu_resources",
+      "keeper": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-test02-integrated-20261105\\animations-upgraded\\runtime\\9ba626afa44a3aa3.patch_2.gpu_resources",
+      "sha256": "fe42182b024fab191a1b1b8a0d3b67a1bb9d2b8a4060d10e7a325be2ba87f52e",
+      "bytes": 1778880,
+      "keeperMember": null
+    }
+  ],
+  "keepersRetained": [
+    "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\before-native-v10-20261104\\test01-配套动画.zip",
+    "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-test02-integrated-20261105\\animations-upgraded\\runtime\\9ba626afa44a3aa3.patch_2.stream",
+    "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\v13-preview-before-20261104\\test01-配套动画.zip",
+    "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\v14-before-20261104\\test01-配套动画.zip",
+    "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\v13-before-20261104\\test01-配套动画.zip",
+    "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-test02-integrated-20261105\\animations-upgraded\\runtime\\9ba626afa44a3aa3.patch_2",
+    "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\v11-before-20261104\\test01-配套动画.zip",
+    "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\v12-before-20261104\\test01-配套动画.zip",
+    "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\v15-before-20261104\\test01-配套动画.zip",
+    "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\before-native-v8-20261104\\test01-配套动画.zip",
+    "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-manual-20261103\\backups\\before-native-v9-20261104\\test01-配套动画.zip",
+    "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-test02-integrated-20261105\\animations-upgraded\\runtime\\9ba626afa44a3aa3.patch_2.gpu_resources"
+  ]
+}

@@ -1,0 +1,35 @@
+<UserControl x:Class="HD2ModManager.Views.SelectionActionBarContent"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </UserControl.Resources>
+    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+        <TextBlock Text="{Binding SelectionSummary}" VerticalAlignment="Center" Foreground="{StaticResource Accent}" FontWeight="SemiBold" Margin="2,0,14,0"/>
+        <Button Style="{StaticResource AppPrimaryButton}" Content="加入配置" Command="{Binding SelectionPrimaryCommand}" Margin="0,0,8,0" Visibility="{Binding ShowAddToProfile, Converter={StaticResource BoolToVis}}"/>
+        <Button Style="{StaticResource AppPrimaryButton}" Content="{Binding MoveButtonText}" Command="{Binding BeginMoveCommand}" Margin="0,0,8,0" Visibility="{Binding ShowMove, Converter={StaticResource BoolToVis}}"/>
+        <Button Style="{StaticResource AppPrimaryButton}" Content="插入" Command="{Binding BeginInsertCommand}" Margin="0,0,8,0" Visibility="{Binding ShowInsert, Converter={StaticResource BoolToVis}}"/>
+        <Button Style="{StaticResource AppPrimaryButton}" Content="{Binding SetAsOptionText}" Command="{Binding SetSelectedModsAsOptionsCommand}" Margin="0,0,8,0" Visibility="{Binding ShowSetAsOption, Converter={StaticResource BoolToVis}}"/>
+        <Button Style="{StaticResource AppPrimaryButton}" Content="{Binding AttachDecorationsToHostText}" Command="{Binding AttachSelectedDecorationsCommand}" Margin="0,0,8,0" Visibility="{Binding ShowAttachDecorationsToHost, Converter={StaticResource BoolToVis}}"/>
+        <Button Style="{StaticResource AppSecondaryButton}" Content="从当前 Mod 移除选项" Command="{Binding RemoveSelectedOptionsFromHostCommand}" Margin="0,0,8,0" Visibility="{Binding ShowRemoveOptionsFromHost, Converter={StaticResource BoolToVis}}"/>
+        <Button Style="{StaticResource AppPrimaryButton}" Content="转为视觉对象" Command="{Binding PromoteArmorProvidersCommand}" Margin="0,0,8,0" Visibility="{Binding ShowPromoteArmorProviders, Converter={StaticResource BoolToVis}}"/>
+        <!--
+            左侧停在"某个视觉来源的目标列表"时，右侧选中的护甲应该变成**映射目标**，
+            而不是又一个视觉来源。两颗按钮互斥显示，语义与单行按钮的提示保持一致。
+        -->
+        <Button Style="{StaticResource AppPrimaryButton}" Content="注册为映射目标" Command="{Binding RegisterArmorTargetsCommand}" Margin="0,0,8,0" Visibility="{Binding ShowRegisterArmorTargets, Converter={StaticResource BoolToVis}}"/>
+        <Button Style="{StaticResource AppSecondaryButton}" Content="解除视觉对象" Command="{Binding ReleaseArmorProvidersCommand}" Margin="0,0,8,0" Visibility="{Binding ShowReleaseArmorProviders, Converter={StaticResource BoolToVis}}"/>
+        <!--
+            来源多选时的两颗"解除"是不同的动作：解除视觉对象会把来源整条删掉，
+            解除映射目标只清掉它名下的映射、来源留着。以前只有前者，配错了就只能连来源一起删。
+        -->
+        <Button Style="{StaticResource AppSecondaryButton}" Content="解除映射目标" Command="{Binding ClearArmorTargetsCommand}" Margin="0,0,8,0" Visibility="{Binding ShowClearArmorTargets, Converter={StaticResource BoolToVis}}"/>
+        <Button Style="{StaticResource AppSecondaryButton}" Content="解除映射目标" Command="{Binding ReleaseArmorTargetsCommand}" Margin="0,0,8,0" Visibility="{Binding ShowReleaseArmorTargets, Converter={StaticResource BoolToVis}}"/>
+        <Button Style="{StaticResource AppPrimaryButton}" Content="启用" Command="{Binding EnableDecorationsCommand}" Margin="0,0,8,0" Visibility="{Binding ShowEnableDecorations, Converter={StaticResource BoolToVis}}"/>
+        <Button Style="{StaticResource AppSecondaryButton}" Content="禁用" Command="{Binding DisableDecorationsCommand}" Margin="0,0,8,0" Visibility="{Binding ShowDisableDecorations, Converter={StaticResource BoolToVis}}"/>
+        <Button Style="{StaticResource AppDangerButton}" Content="删除" Command="{Binding SelectionDeleteCommand}" Margin="0,0,8,0" Visibility="{Binding ShowDelete, Converter={StaticResource BoolToVis}}"/>
+        <Button Style="{StaticResource AppDangerButton}" Content="移除" Command="{Binding SelectionDeleteCommand}" Margin="0,0,8,0" Visibility="{Binding ShowRemove, Converter={StaticResource BoolToVis}}"/>
+        <Button Style="{StaticResource AppDangerButton}" Content="删除" Command="{Binding DeleteFromLibraryCommand}" Margin="0,0,8,0" Visibility="{Binding ShowDeleteFromLibrary, Converter={StaticResource BoolToVis}}"/>
+        <Button Style="{StaticResource AppSecondaryButton}" Content="取消选择" Command="{Binding CancelSelectionCommand}"/>
+    </StackPanel>
+</UserControl>

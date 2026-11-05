@@ -1,0 +1,85 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>hd2mod</AssemblyName>
+    <RootNamespace>HD2ModCli</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\HD2ModCore\HD2ModCore.csproj" />
+    <!-- 源模型（求生之路 2 / Source 引擎）只读解析层：纯文件格式，不认识 HD2。 -->
+    <ProjectReference Include="..\HD2SourceModel\HD2SourceModel.csproj" />
+    <!-- 源模型 → HD2 骨架的重定向层：唯一同时认识两侧的地方。 -->
+    <ProjectReference Include="..\HD2SourceMigration\HD2SourceMigration.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="..\HD2ModManager\ThirdParty\7zip\**\*"
+             Link="third_party\7zip\%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest">
+      <!-- The archive extractor executes 7z.exe by path, so a bundled-only
+           copy would be unusable after single-file publishing. -->
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Remove="SKILL.md" />
+    <None Remove="skills\**\SKILL.md" />
+    <EmbeddedResource Include="SKILL.md" LogicalName="HD2ModCli.Skill.cli-router" />
+    <EmbeddedResource Include="skills\library-inspection\SKILL.md" LogicalName="HD2ModCli.Skill.library-inspection" />
+	<EmbeddedResource Include="skills\library-synchronization\SKILL.md" LogicalName="HD2ModCli.Skill.library-synchronization" />
+	<EmbeddedResource Include="skills\decoration-package\SKILL.md" LogicalName="HD2ModCli.Skill.decoration-package" />
+	<EmbeddedResource Include="skills\decoration-edit\SKILL.md" LogicalName="HD2ModCli.Skill.decoration-edit" />
+	<EmbeddedResource Include="skills\mod-export\SKILL.md" LogicalName="HD2ModCli.Skill.mod-export" />
+	<EmbeddedResource Include="skills\safe-import\SKILL.md" LogicalName="HD2ModCli.Skill.safe-import" />
+	<EmbeddedResource Include="skills\batch-import\SKILL.md" LogicalName="HD2ModCli.Skill.batch-import" />
+    <EmbeddedResource Include="skills\mod-management\SKILL.md" LogicalName="HD2ModCli.Skill.mod-management" />
+    <EmbeddedResource Include="skills\mod-metadata\SKILL.md" LogicalName="HD2ModCli.Skill.mod-metadata" />
+	<EmbeddedResource Include="skills\mod-media\SKILL.md" LogicalName="HD2ModCli.Skill.mod-media" />
+	<EmbeddedResource Include="skills\patch-analysis\SKILL.md" LogicalName="HD2ModCli.Skill.patch-analysis" />
+    <EmbeddedResource Include="skills\option-management\SKILL.md" LogicalName="HD2ModCli.Skill.option-management" />
+    <EmbeddedResource Include="skills\safe-library-deletion\SKILL.md" LogicalName="HD2ModCli.Skill.safe-library-deletion" />
+    <EmbeddedResource Include="skills\profile-management\SKILL.md" LogicalName="HD2ModCli.Skill.profile-management" />
+    <EmbeddedResource Include="skills\profile-alignment\SKILL.md" LogicalName="HD2ModCli.Skill.profile-alignment" />
+    <EmbeddedResource Include="skills\safe-deployment\SKILL.md" LogicalName="HD2ModCli.Skill.safe-deployment" />
+	<EmbeddedResource Include="skills\lua-reshade-external-deployment\SKILL.md" LogicalName="HD2ModCli.Skill.lua-reshade-external-deployment" />
+    <EmbeddedResource Include="skills\patch-resource-repackaging\SKILL.md" LogicalName="HD2ModCli.Skill.patch-resource-repackaging" />
+	<EmbeddedResource Include="skills\generated-patch-integration\SKILL.md" LogicalName="HD2ModCli.Skill.generated-patch-integration" />
+	<EmbeddedResource Include="skills\helmet-to-armor-merge\SKILL.md" LogicalName="HD2ModCli.Skill.helmet-to-armor-merge" />
+	<EmbeddedResource Include="skills\cross-armor-transfer\SKILL.md" LogicalName="HD2ModCli.Skill.cross-armor-transfer" />
+	<EmbeddedResource Include="skills\host-derived-overwrite\SKILL.md" LogicalName="HD2ModCli.Skill.host-derived-overwrite" />
+	<EmbeddedResource Include="skills\gamedata-inspection\SKILL.md" LogicalName="HD2ModCli.Skill.gamedata-inspection" />
+	<EmbeddedResource Include="skills\gamedata-extraction\SKILL.md" LogicalName="HD2ModCli.Skill.gamedata-extraction" />
+	<EmbeddedResource Include="skills\asset-metadata-management\SKILL.md" LogicalName="HD2ModCli.Skill.asset-metadata-management" />
+	<EmbeddedResource Include="skills\armor-registry\SKILL.md" LogicalName="HD2ModCli.Skill.armor-registry" />
+	<EmbeddedResource Include="skills\gamedata-index-management\SKILL.md" LogicalName="HD2ModCli.Skill.gamedata-index-management" />
+	<EmbeddedResource Include="skills\batch-patch-repair\SKILL.md" LogicalName="HD2ModCli.Skill.batch-patch-repair" />
+	<EmbeddedResource Include="skills\same-key-reconstruction\SKILL.md" LogicalName="HD2ModCli.Skill.same-key-reconstruction" />
+	<EmbeddedResource Include="skills\patch-primitives\SKILL.md" LogicalName="HD2ModCli.Skill.patch-primitives" />
+	<EmbeddedResource Include="skills\equipment-facts\SKILL.md" LogicalName="HD2ModCli.Skill.equipment-facts" />
+	<EmbeddedResource Include="skills\unit-inspection\SKILL.md" LogicalName="HD2ModCli.Skill.unit-inspection" />
+  </ItemGroup>
+
+  <!-- Lets the Manager copy the exact artifacts from this build, including
+       isolated output roots used by verification builds. -->
+  <Target Name="GetHd2ModCliArtifactFiles" Returns="@(Hd2ModCliArtifact)">
+    <ItemGroup>
+      <Hd2ModCliArtifact Include="$(TargetPath)" Condition="Exists('$(TargetPath)')" />
+      <Hd2ModCliArtifact Include="$(TargetDir)$(AssemblyName).exe" Condition="Exists('$(TargetDir)$(AssemblyName).exe')" />
+      <Hd2ModCliArtifact Include="$(TargetDir)$(AssemblyName).deps.json" Condition="Exists('$(TargetDir)$(AssemblyName).deps.json')" />
+      <Hd2ModCliArtifact Include="$(TargetDir)$(AssemblyName).runtimeconfig.json" Condition="Exists('$(TargetDir)$(AssemblyName).runtimeconfig.json')" />
+      <Hd2ModCliArtifact Include="$(TargetDir)$(AssemblyName).pdb" Condition="Exists('$(TargetDir)$(AssemblyName).pdb')" />
+      <!--
+        CLI 的运行时依赖。少了它们，复制到管理器旁边的 hd2mod.exe 会在加载
+        HD2SourceMigration / HD2SourceModel 时抛 "Could not load file or assembly"——
+        管理器自己不引用这两个（只有 CLI 引用），所以必须由这里带过去。
+        vpk2patch 与 vpk rekey 都在 HD2SourceMigration 里，缺了它们整条 VPK 链路是死的。
+      -->
+      <Hd2ModCliArtifact Include="$(TargetDir)*.dll" Condition="Exists('$(TargetDir)')" />
+    </ItemGroup>
+  </Target>
+
+</Project>

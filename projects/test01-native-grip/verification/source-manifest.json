@@ -1,0 +1,57 @@
+[
+  {
+    "path": "HD2PhysBoneCompat/src/native_grip_transfer_test.lua",
+    "sha256": "ce41b476282cd8c47da46015e58a97057027622d65e44ccab7d3c972cc57b150",
+    "role": "runtime-or-archive-tool"
+  },
+  {
+    "path": "HD2PhysBoneCompat/src/native_grip_transfer_test_entry.lua",
+    "sha256": "42a7ed64237c30b1689a49dc8f99b1cca9b068200eb5baef0f0cc442849e4f05",
+    "role": "runtime-or-archive-tool"
+  },
+  {
+    "path": "HD2PhysBoneCompat/src/attachment_fix_runtime.lua",
+    "sha256": "2c863e954825de14cc49550289999b54c2de71a202fed6c2f8e4dc0ee865013b",
+    "role": "runtime-or-archive-tool"
+  },
+  {
+    "path": "tools/build_native_b23_108.py",
+    "sha256": "ccea70dea4af11e6c6a3a102f4a4ecf09939d6ef038260f481e398bebca1d716",
+    "role": "runtime-or-archive-tool"
+  },
+  {
+    "path": "tools/repack_native_b23.py",
+    "sha256": "86b3b2386a64a222f63996a8fe799aeb745c2f92a87f8eae68bbbff27504e91d",
+    "role": "runtime-or-archive-tool"
+  },
+  {
+    "path": "tools/test_native_grip_project.py",
+    "sha256": "04116dd949a1d1d39b239e7c325292afa019edfb984a5ffa78b0f52b3fec5651",
+    "role": "runtime-or-archive-tool"
+  },
+  {
+    "path": "tools/verify_native_grip_archive.py",
+    "sha256": "df7739a6e5ffbee1b80f672545f2332661da35c54df1917e2227fe668eb85b9e",
+    "role": "runtime-or-archive-tool"
+  },
+  {
+    "path": "../native_skeleton.py",
+    "sha256": "50ab8066ff1bf39b5fb41f8b7570623fbda9eae48eaaf84a46f6711ae2b6e83e",
+    "role": "future-animation-converter-v2"
+  },
+  {
+    "path": "../attachment_skeleton.py",
+    "sha256": "b023afbeb511d2a2f839a22262623bd99b70172bb32c61ac7fdf58db13f46ba3",
+    "role": "future-animation-converter-v2"
+  },
+  {
+    "path": "../test_attachment_swap.py",
+    "sha256": "8f2c4482495392f78d0555c6b2e96648d4580ddf45ed6749b715fbdf3989c6ab",
+    "role": "future-animation-converter-v2"
+  },
+  {
+    "path": "../test_attachment_skeleton.py",
+    "sha256": "2424f92db0594cd1609928359330d51e7e6f5e9d92339ad4eb2d230dc3afca9a",
+    "role": "future-animation-converter-v2"
+  }
+]

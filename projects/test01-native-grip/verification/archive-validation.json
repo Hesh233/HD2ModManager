@@ -1,0 +1,30 @@
+{
+  "status": "ARCHIVED_SMOKE_TESTED_PAYLOAD_PRESERVED",
+  "userFeedback": "暂无发现明显问题",
+  "releasePayloadByteIdentical": true,
+  "baseline107ByteIdentical": true,
+  "animationRebaked": false,
+  "gameDeploymentChanged": false,
+  "canonicalBuild": "PASS_OFFLINE_IMPORT_SKIPPED",
+  "freshImports": [
+    {
+      "package": "B23LR-M-多武器握持修正-1.0.8-待测试.zip",
+      "status": "SKIPPED_MANAGER_ACTIVE",
+      "reason": "Manager process is running; no library writes performed"
+    },
+    {
+      "package": "B23LR-M-多武器握持测试工程-1.0.8-待测试.zip",
+      "status": "SKIPPED_MANAGER_ACTIVE",
+      "reason": "Manager process is running; no library writes performed"
+    }
+  ],
+  "prior108Imports": "PASS (original delivery reports retained)",
+  "nativePythonTests": 38,
+  "projectContractTests": 6,
+  "runtimeChecks": 215958,
+  "cleanupDeletedFiles": 19,
+  "cleanupReclaimedBytes": 13905453743,
+  "cleanupReclaimedGiB": 12.95,
+  "outputsAfterGiB": 34.331,
+  "fullWeaponAcceptance": false
+}
