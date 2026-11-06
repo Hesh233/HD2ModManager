@@ -82,6 +82,9 @@ public sealed record RetargetResult(
 	/// <summary>Full Source rig appended to the unmodified HD2 driver rig.</summary>
 	public HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitTransformInfo? SourceNativeTransforms { get; init; }
 
+	/// <summary>Single HD2 route: the same posed bind that produced Output, without Source tracks.</summary>
+	public HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitTransformInfo? SingleHd2Transforms { get; init; }
+
 	/// <summary>把结果里的顶点位置摊平成 <c>[x, y, z]</c> 数组，供 npz 落盘与逐点对拍。</summary>
 	public static double[,] ToArray(IReadOnlyList<Vec3> points)
 	{

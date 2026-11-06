@@ -5,14 +5,8 @@ using System.Windows.Media;
 
 namespace HD2ModManager.Services;
 
-/// <summary>拖入 VPK 后对单个模型主体的决策：是否制作原骨架护甲、倍率、是否生成骨架动画。</summary>
-public sealed record VpkModelDecision(
-	bool UseNativeSkeleton,
-	double ModelScale,
-	bool GenerateAnimation);
-
 /// <summary>
-/// 逐模型的三段询问：原骨架护甲 → 大小倍率 → 骨架动画。
+/// 逐模型询问：取消 / 单 HD2 骨架 / 双骨架 + Lua，然后选择大小倍率。
 /// 任一环节取消返回 <c>null</c>，由调用方中止整批导入。
 /// </summary>
 internal static class VpkModelDecisionPrompt
@@ -20,35 +14,24 @@ internal static class VpkModelDecisionPrompt
     internal static async Task<VpkModelDecision?> ShowAsync(string model, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var native = await VpkChoicePrompt.ShowAsync(
+        var dual = await VpkChoicePrompt.ShowAsync(
             "制作原骨架护甲",
-            $"模型「{model}」是否制作原骨架护甲？\n"
-            + "是：保留来源骨架、按你指定的大小倍率转换，产物以 [原比例模型] 命名。\n"
-            + "否：按原逻辑转换（重定向到游戏统一骨架）。",
-            "是，制作原骨架护甲",
-            "否，按原逻辑制作 Mod",
+            $"模型「{model}」请选择制作流程：\n"
+            + "单原骨架：VPK 骨架转为一套 HD2 骨架，动画使用原 anim_batch_mod 打包流程，不生成挂点 Lua。\n"
+            + "双骨架 + Lua：保留 VPK 原骨架和 HD2 骨架，分别使用自己的挂点；生成配套动画及挂点修正 Lua。\n"
+            + "取消：中止本次导入。两种制作流程均全量生成配套动画。",
+            "是，制作双骨架护甲+lua",
+            "是，制作单原骨架护甲",
             cancellationToken).ConfigureAwait(false);
-        if (native is null) return null;
-        if (native == false) return new VpkModelDecision(false, 1, false);
-
+        if (dual is null) return null;
+        if (!VpkAnimationBuildService.IsRuntimeAvailable())
+            throw new InvalidOperationException("制作骨架护甲需要完整随包 Python 运行时，请更新完整管理器后重试。");
         var scale = await ModelScalePrompt.ShowAsync(model, cancellationToken).ConfigureAwait(false);
         if (scale is null) return null;
-
-        // 随包 Python 运行时缺失时不追问：动画生成不了，但原骨架模型本身仍然可以正常产出。
-        if (!VpkAnimationBuildService.IsRuntimeAvailable())
-            return new VpkModelDecision(true, scale.Value, false);
-
-        var animate = await VpkChoicePrompt.ShowAsync(
-            "生成骨架动画",
-            $"模型「{model}」是否需要生成骨架动画？\n"
-            + "需要：转换完成后会全量转换游戏第三人称动画（约数千条，耗时较长），"
-            + "产出一个以 [原比例混合动画](VPK名字) 命名的独立动画 Mod。",
-            "需要生成动画",
-            "不需要",
-            cancellationToken).ConfigureAwait(false);
-        if (animate is null) return null;
-
-        return new VpkModelDecision(true, scale.Value, animate.Value);
+        var threads = await AnimationThreadCountPrompt.ShowAsync(model, cancellationToken).ConfigureAwait(false);
+        if (threads is null) return null;
+        return new VpkModelDecision(dual.Value, scale.Value, true, SingleHd2Skeleton: !dual.Value,
+            AnimationThreads: threads.Value);
     }
 }
 
@@ -71,7 +54,7 @@ internal static class VpkChoicePrompt
             var window = new Window
             {
                 Title = title,
-                Width = 440,
+                Width = yesText.Length > 12 || noText.Length > 12 ? 660 : 440,
                 SizeToContent = SizeToContent.Height,
                 ResizeMode = ResizeMode.NoResize,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,

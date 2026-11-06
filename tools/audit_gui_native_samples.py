@@ -36,8 +36,13 @@ for folder in map(Path,sys.argv[1:]):
     profile=json.loads(next((folder/'attachment').rglob('attachment-profile.json')).read_text(encoding='utf-8'))
     assert profile['leftGrip']['intent']['enabled'] and profile['performance']['strictConsumers'] and profile['previewGuard']['enabled']
     assert profile['runtimePolicyVersion']=='b23-1.0.8'
-    naming=json.loads((folder/'animation-package/manifest.json').read_text(encoding='utf-8'))
-    assert naming['Name']==f"[原比例混合动画]({Path(json.loads((folder/'simulation.json').read_text(encoding='utf-8'))['vpk']).stem})"
+    simulation=folder/'simulation.json'
+    if not simulation.exists():simulation=folder/'import-regression.json'
+    info=json.loads(simulation.read_text(encoding='utf-8'))
+    identity=folder/'animation-package/manifest.json'
+    if not identity.exists():identity=folder/'animations/runtime/manifest.json'
+    naming=json.loads(identity.read_text(encoding='utf-8'))
+    assert naming['Name']==f"[原比例混合动画]({Path(info['vpk']).stem})"
     assert naming['Description']=='[全量动作文件]'
     report={'status':'PASS','independentWorldChecks':tested,'maximumGripAndSwapPositionError':maxError,
         'runtimePoliciesEnabled':True,'animationName':naming['Name'],'description':naming['Description'],'gameTested':False}

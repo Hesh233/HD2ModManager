@@ -54,6 +54,7 @@ def compose_source(profile):
         '-- INSERT LEGACY ARM MATH', legacy_arm_math()).replace(
         '-- INSERT TRANSFER MODULE', (SRC / 'native_grip_transfer_test.lua').read_text(encoding='utf-8')).replace(
         '-- INSERT TRANSFER PROFILE', 'return ' + lua(profile)).replace(
+        '-- INSERT FIRST PERSON GUARD', (SRC / 'native_first_person_guard.lua').read_text(encoding='utf-8-sig')).replace(
         '-- INSERT ATTACHMENT ADAPTER', (SRC / 'attachment_fix_runtime.lua').read_text(encoding='utf-8'))
 
 

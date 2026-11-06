@@ -17,6 +17,9 @@
     <Content Include="..\..\config.toml" Link="config.toml" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest">
       <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
     </Content>
+    <Content Include="..\..\attachment-fix.json" Link="config\attachment-fix.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest">
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </Content>
     <Content Include="..\tools\native-python\anim_batch_mod\**\*" Exclude="**\__pycache__\**" Link="anim_batch_mod\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest">
       <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
     </Content>

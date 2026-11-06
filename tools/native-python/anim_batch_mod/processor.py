@@ -31,6 +31,7 @@ from .math3d import (
 class IKChainConfig:
     chain: list[str]
     target_multiplier: list[float] | float = 1.0
+    policy: str = "fk-target"
 
     def __post_init__(self):
         self.chain = [str(name) for name in self.chain]
@@ -47,6 +48,10 @@ class IKChainConfig:
         if not all(isfinite(value) for value in values):
             raise ValueError("IK target_multiplier must contain only finite numbers")
         self.target_multiplier = values
+        if self.policy not in ("fk-target", "bind-relative-arm-v1"):
+            raise ValueError("Unknown IK chain policy")
+        if self.policy == "bind-relative-arm-v1" and values != [1.0, 1.0, 1.0]:
+            raise ValueError("Bind-relative arms require an identity target multiplier")
 
 
 @dataclass
@@ -138,6 +143,7 @@ class ModConfig:
             ik_chains[str(target_name)] = IKChainConfig(
                 chain=chain,
                 target_multiplier=chain_data.get("target_multiplier", [1.0, 1.0, 1.0]),
+                policy=chain_data.get("policy", "fk-target"),
             )
         if not offsets and not rotation_compensations and not ik_chains:
             raise ValueError(
@@ -160,6 +166,7 @@ class ModificationResult:
     generated_position_keys: int
     sample_count: int
     ik_corrections: int = 0
+    arm_retargets: int = 0
     ik_max_error_before: float = 0.0
     ik_max_error_after: float = 0.0
 
@@ -373,6 +380,8 @@ def modify_animation_with_world_compensation(
                     f"IK chain {target_name!r} requires the target bone to be a direct child of the second bone"
                 )
             ik_indices[target_name] = (root_transform, mid_transform, target_transform)
+    arm_bind, arm_operations = _prepare_bind_relative_arms(unit, bones, config, ik_indices)
+    arm_touched_indices = set()
     configured_transform_offsets = (
         {
             animation_to_transform[bone_name_to_index[name]]: offset
@@ -395,6 +404,7 @@ def modify_animation_with_world_compensation(
         animation_index: [] for animation_index in range(len(bones.names))
     }
     ik_corrections = 0
+    arm_retargets = 0
     ik_max_error_before = 0.0
     ik_max_error_after = 0.0
     ik_changed_animation_indices: set[int] = set()
@@ -421,6 +431,9 @@ def modify_animation_with_world_compensation(
                 local_transforms[transform_index] = sampled
 
         original_world = _calculate_world_transforms(local_transforms, unit.parents)
+        source_arm_locals = ({i: copy.deepcopy(local_transforms[i])
+                              for op in arm_operations.values() for i in op['indices']}
+                             if arm_operations else {})
         new_world_positions: dict[int, list[float]] = {}
         new_local_positions: dict[int, list[float]] = {}
         effective_local_positions: dict[int, list[float]] = {}
@@ -538,17 +551,26 @@ def modify_animation_with_world_compensation(
                 target = fk_targets[target_name]
                 before = _distance(current_world[target_transform].position, target)
                 target_world_rotation = list(current_world[target_transform].rotation)
+                if target_name in arm_operations:
+                    target, target_world_rotation, touched = _retarget_bind_relative_arm(
+                        local_transforms, unit, arm_bind, arm_operations[target_name],
+                        source_arm_locals, original_world)
+                    arm_touched_indices.update(touched)
+                    ik_changed_animation_indices.update(transform_to_animation[i] for i in touched)
+                    arm_retargets += 1
+                    current_world = _calculate_world_transforms(local_transforms, unit.parents)
+                    before = _distance(current_world[target_transform].position, target)
                 ik_max_error_before = max(ik_max_error_before, before)
-                _apply_two_bone_ik(
-                    local_transforms,
-                    unit.parents,
-                    root_transform,
-                    mid_transform,
-                    target_transform,
-                    target,
-                    target_world_rotation,
-                    preserve_bend_frame=target_name in ('l_hand', 'r_hand'),
-                )
+                # An already exact anatomical projection needs no iterative
+                # correction. Avoid manufacturing a bend/axial roll at the
+                # straight-arm singularity merely to clamp a zero residual.
+                if target_name not in arm_operations or before > 1e-7:
+                    _apply_two_bone_ik(
+                        local_transforms, unit.parents, root_transform,
+                        mid_transform, target_transform, target,
+                        target_world_rotation,
+                        preserve_bend_frame=target_name in ('l_hand', 'r_hand'),
+                    )
                 current_world = _calculate_world_transforms(local_transforms, unit.parents)
                 after = _distance(current_world[target_transform].position, target)
                 ik_max_error_after = max(ik_max_error_after, after)
@@ -560,6 +582,11 @@ def modify_animation_with_world_compensation(
                         if index in transform_to_animation
                     )
 
+        for transform_index in arm_touched_indices:
+            position = local_transforms[transform_index].position
+            new_local_positions[transform_index] = (_decompose_additive_position(arm_bind[transform_index], position)
+                                                   if animation.is_additive else list(position))
+
         for animation_index, transform_index in enumerate(animation_to_transform):
             generated_positions[animation_index].append(
                 (time, new_local_positions[transform_index])
@@ -568,7 +595,7 @@ def modify_animation_with_world_compensation(
             if animation.is_additive:
                 rotation = quat_normalize(
                     quat_multiply(
-                        quat_inverse(unit.transforms[transform_index].rotation),
+                        quat_inverse((arm_bind if transform_index in arm_touched_indices else unit.transforms)[transform_index].rotation),
                         rotation,
                     )
                 )
@@ -650,6 +677,11 @@ def modify_animation_with_world_compensation(
             animation.initial_bone_states[index].rotation = list(
                 generated_rotations[index][0][1]
             )
+            if animation_to_transform[index] in arm_touched_indices:
+                # Rebased frame-zero arm deltas must match their full-precision
+                # baked curves, not pick up a compressed-pose discontinuity.
+                animation.initial_bone_states[index].compress_rotation = False
+                animation.initial_bone_states[index].compress_position = False
 
     event_entries = [
         entry
@@ -708,6 +740,7 @@ def modify_animation_with_world_compensation(
         generated_position_keys=generated_key_count,
         sample_count=len(sample_times),
         ik_corrections=ik_corrections,
+        arm_retargets=arm_retargets,
         ik_max_error_before=ik_max_error_before,
         ik_max_error_after=ik_max_error_after,
     )
@@ -746,6 +779,103 @@ def _quat_from_to(source, target):
         return [axis[0], axis[1], axis[2], 0.0]
     axis = _cross(source, target)
     return quat_normalize([axis[0], axis[1], axis[2], 1.0 + dot])
+
+
+
+def _prepare_bind_relative_arms(unit, bones, config, ik_indices):
+    """Calibrate arm motion to geometric axes, without changing the shipped rest.
+
+    Generic/mixed callers retain their existing fk-target policy and bytes.
+    Only a prepared single-HD2 contract selects this branch.
+    """
+    operations = {}
+    names = {n: unit.name_hashes.index(h) for n, h in zip(bones.names, bones.hashes)}
+    bind = copy.deepcopy(unit.transforms) if any(
+        config.ik_chains[n].policy == "bind-relative-arm-v1" for n in ik_indices) else None
+    if bind is None:
+        return None, operations
+    for name, offset in config.offsets.items():
+        i = names[name]
+        bind[i].position = vec_add(bind[i].position, offset)
+        if config.distance_multipliers.get(name, 1.0) != 1.0:
+            raise ValueError("Bind-relative arm contracts cannot change distance multipliers")
+    for name, correction in config.rotation_compensations.items():
+        i = names[name]
+        # generate-config stores inverse(source-rest) * target-rest.
+        bind[i].rotation = quat_normalize(quat_multiply(unit.transforms[i].rotation, correction))
+    source_world = _calculate_world_transforms(unit.transforms, unit.parents)
+    target_world = _calculate_world_transforms(bind, unit.parents)
+    for name, chain in ik_indices.items():
+        if config.ik_chains[name].policy != "bind-relative-arm-v1":
+            continue
+        if name not in ('l_hand', 'r_hand'):
+            raise ValueError("Bind-relative policy is restricted to HD2 hand chains")
+        side = name[0]
+        expected = [side + '_shoulder', side + '_elbow']
+        if config.ik_chains[name].chain != expected:
+            raise ValueError("Bind-relative arms require shoulder -> elbow -> hand")
+        root, mid, end = chain
+        upper_length = _distance(unit.transforms[mid].position, [0., 0., 0.])
+        lower_length = _distance(unit.transforms[end].position, [0., 0., 0.])
+        target_upper = _distance(bind[mid].position, [0., 0., 0.])
+        target_lower = _distance(bind[end].position, [0., 0., 0.])
+        if min(upper_length, lower_length, target_upper, target_lower) < 1e-7:
+            raise ValueError("Degenerate bind-relative arm segment")
+        twists = {}
+        for suffix, parent in [('_shoulder_twist', root), ('_hand_twist', mid)]:
+            if side + suffix in names:
+                i = names[side + suffix]
+                if unit.parents[i] != parent:
+                    raise ValueError("Bind-relative twist has an unexpected parent")
+                twists[suffix] = i
+        operations[name] = dict(root=root, mid=mid, end=end, twists=twists,
+            indices=[root, mid, end, *twists.values()],
+            upper_axis=_quat_from_to(unit.transforms[mid].position, bind[mid].position),
+            lower_axis=_quat_from_to(unit.transforms[end].position, bind[end].position),
+            upper_ratio=target_upper / upper_length, lower_ratio=target_lower / lower_length,
+            source_world=source_world, target_world=target_world)
+    return bind, operations
+
+
+def _retarget_bind_relative_arm(local, unit, bind, op, source, source_world):
+    """Transfer articulation in anatomical axes; preserve bind and wrist frame.
+
+    Scaling rotated segment vectors (rather than adding XYZ offsets) avoids
+    short/collapsed/reversed segments when a clip changes its translations.
+    The elbow keeps the model's neutral bend, not an imposed native rest.
+    """
+    r, m, h = op['root'], op['mid'], op['end']
+    upper, lower = op['upper_axis'], op['lower_axis']
+    local[r].position = vec_add(bind[r].position, vec_sub(source[r].position, unit.transforms[r].position))
+    local[m].position = [v * op['upper_ratio'] for v in quat_rotate(upper, source[m].position)]
+    local[h].position = [v * op['lower_ratio'] for v in quat_rotate(lower, source[h].position)]
+    local[r].rotation = quat_normalize(quat_multiply(
+        quat_multiply(quat_multiply(quat_multiply(bind[r].rotation, upper),
+            quat_inverse(unit.transforms[r].rotation)), source[r].rotation), quat_inverse(upper)))
+    local[m].rotation = quat_normalize(quat_multiply(
+        quat_multiply(quat_multiply(quat_multiply(upper, source[m].rotation),
+            quat_inverse(unit.transforms[m].rotation)), quat_inverse(upper)), bind[m].rotation))
+    for suffix, i in op['twists'].items():
+        axis, ratio = (upper, op['upper_ratio']) if suffix == '_shoulder_twist' else (lower, op['lower_ratio'])
+        delta = quat_rotate(axis, vec_sub(source[i].position, unit.transforms[i].position))
+        local[i].position = vec_add(bind[i].position, [v * ratio for v in delta])
+        if suffix == '_shoulder_twist':
+            local[i].rotation = quat_normalize(quat_multiply(
+                quat_multiply(quat_multiply(quat_multiply(upper, source[i].rotation),
+                    quat_inverse(unit.transforms[i].rotation)), quat_inverse(upper)), bind[i].rotation))
+    current = _calculate_world_transforms(local, unit.parents, (h, *op['twists'].values()))
+    desired_hand_rotation = None
+    for i in [h, *([op['twists']['_hand_twist']] if '_hand_twist' in op['twists'] else [])]:
+        # Wrist/twist world frames come from the original motion, registered
+        # to the new rest. Parent compensation must not drag the palm around.
+        desired = quat_normalize(quat_multiply(quat_multiply(op['target_world'][i].rotation,
+            quat_inverse(op['source_world'][i].rotation)), source_world[i].rotation))
+        parent = unit.parents[i]
+        local[i].rotation = desired if parent is None else quat_normalize(
+            quat_multiply(quat_inverse(current[parent].rotation), desired))
+        if i == h:
+            desired_hand_rotation = desired
+    return list(current[h].position), desired_hand_rotation, op['indices']
 
 
 def _apply_two_bone_ik(

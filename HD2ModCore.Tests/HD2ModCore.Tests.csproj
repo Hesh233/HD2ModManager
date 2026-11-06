@@ -21,6 +21,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\HD2ModManager\Services\Hd2ModProcess.cs" Link="Hd2ModProcess.cs" />
+    <Compile Include="..\HD2ModManager\Services\VpkModelDecision.cs" Link="VpkModelDecision.cs" />
+    <Compile Include="..\HD2ModManager\Services\SingleSkeletonAnimationReport.cs" Link="SingleSkeletonAnimationReport.cs" />
     <Compile Include="..\HD2ModManager\ViewModels\BottomBarLayout.cs" Link="BottomBarLayout.cs" />
     <!-- 树的多选集合运算：纯逻辑、不碰 WPF，所以按文件链进来测。 -->
     <Compile Include="..\HD2ModManager\Controls\Trees\TreeSelectionMath.cs" Link="TreeSelectionMath.cs" />

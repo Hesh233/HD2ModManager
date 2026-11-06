@@ -1,4 +1,4 @@
-"""Unmodified attachment reference nodes, independent of Lua output nodes."""
+"""Independent HD2 references, regenerated Source mounts and model-specific Lua profiles."""
 import copy,struct
 from .formats import UnitData,BonesData,AnimationBoneState,AnimationEntry
 from .math3d import quat_inverse,quat_multiply,quat_rotate,vec_sub
@@ -346,7 +346,7 @@ def append_source_attachment_animation(result,configured,bones,unit,manifest,tim
                 result.entries.extend([AnimationEntry(0,4,start+i,time,p),AnimationEntry(0,5,start+i,time,q)])
 
 
-def runtime_outputs(avatar_raw, bone_raw, manifest, by_native_name):
+def runtime_outputs(avatar_raw, bone_raw, manifest, by_native_name, drivers=None):
     """Reuse the existing animation channels as references; expose unanimated outputs.
 
     Torso outputs inherit real native controller nodes. Left outputs inherit their
@@ -365,7 +365,7 @@ def runtime_outputs(avatar_raw, bone_raw, manifest, by_native_name):
     names, channel_hashes = list(bones.names), list(bones.hashes)
     source = {n['driver']: n for n in manifest['bones'] if n['driver']}
     rows, remap = [], {}
-    for driver in ('spine2', 'chest', 'l_shoulder', 'l_elbow', 'l_hand'):
+    for driver in (drivers or ('spine2', 'chest', 'l_shoulder', 'l_elbow', 'l_hand')):
         name = source[driver]['name']; old_hash = native.bone_name_hash(name)
         index = hashes.index(old_hash); output = len(hashes)
         private = '__hd2_b23_reference__' + name
@@ -383,7 +383,7 @@ def runtime_outputs(avatar_raw, bone_raw, manifest, by_native_name):
     changed = []
     # Keep the three animated arm references connected. Their fingers/helpers,
     # and the clavicle/neck subtrees, inherit the corresponding corrected output.
-    for i in range(107, 107 + len(manifest['bones'])):
+    for i in range(len(manifest['driverHashes']), count):
         if i not in remap and parents[i] in remap:
             parents[i] = remap[parents[i]]; changed.append(i)
     offset = struct.unpack_from('<I', avatar_raw, 52)[0]
@@ -408,8 +408,8 @@ def runtime_outputs(avatar_raw, bone_raw, manifest, by_native_name):
     parsed=UnitData.parse(revised)
     after=_calculate_world_transforms(parsed.transforms,parsed.parents)
     for i, before in enumerate(world):
-        assert max(abs(a-b) for a,b in zip(before.position,after[i].position))<1e-5
-        assert abs(sum(a*b for a,b in zip(before.rotation,after[i].rotation)))>1-1e-6
+        assert max(abs(a-b) for a,b in zip(before.position,after[i].position))<1e-5, ('runtime bind position',i,before.position,after[i].position)
+        assert abs(sum(a*b for a,b in zip(before.rotation,after[i].rotation)))>1-1e-6, ('runtime bind rotation',i)
     for row in rows:
         assert max(abs(a-b) for a,b in zip(after[row['outputIndex']].position,world[row['referenceIndex']].position))<1e-5
     n,lods=struct.unpack_from('<II',bone_raw)
@@ -424,6 +424,74 @@ def runtime_outputs(avatar_raw, bone_raw, manifest, by_native_name):
         animationChannelsAdded=0,animationBytesChanged=False,modelBytesChanged=False,
         originalNativeHierarchyPreserved=True,bindWorldsPreserved=True)
 
+
+def sidearm_right_outputs(avatar_raw,bone_raw,profile):
+    """Reuse runtime_outputs for 3 unanimated right-arm aliases, without rebaking.
+
+    Only Source right reference names and their helper/finger parents change.
+    Native 107 nodes, left/torso outputs and animation channel ORDER stay intact.
+    """
+    import math
+    from . import native_skeleton as native
+    from .math3d import quat_inverse_rotate
+    from .processor import _cross
+    if profile.get('rightGrip',{}).get('outputs'):
+        raise ValueError('Right arm outputs already compiled; do not append twice')
+    unit=UnitData.parse(avatar_raw)
+    pairs={r['name']:r for r in profile['sync']['pairs']}
+    drivers=('r_shoulder','r_elbow','r_hand')
+    source={d:copy.deepcopy(pairs[d]['source']) for d in drivers}
+    for n in source.values():
+        if n['index']<107 or unit.name_hashes[n['index']]!=native.bone_name_hash(n['name']):
+            raise ValueError('Right Source reference identity mismatch')
+    manifest={'bones':[dict(driver=d,name=source[d]['name']) for d in drivers],'driverHashes':[]}
+    revised,bones,rig=runtime_outputs(avatar_raw,bone_raw,manifest,{},drivers=drivers)
+    after=UnitData.parse(revised)
+    def node(index,name=None):
+        return dict(name=name,index=index,parent=after.parents[index],hash=after.name_hashes[index])
+    outputs={r['name']:node(r['outputIndex'],r['name']) for r in rig['rows']}
+    # Refresh every copied node descriptor and per-model Avatar correspondence.
+    def rewrite(value):
+        if isinstance(value,list):
+            for row in value:rewrite(row)
+        elif isinstance(value,dict):
+            name=value.get('name')
+            if 'avatarIndex' in value:
+                # This index/parent belongs to the unchanged BODY Unit, not Avatar.
+                if name in outputs:value['avatarIndex']=outputs[name]['index']
+            elif name in outputs and 'index' in value:
+                value.update(outputs[name])
+            elif 'index' in value and 'hash' in value and value['index']<len(after.parents):
+                if after.name_hashes[value['index']]==value['hash']:
+                    value['parent']=after.parents[value['index']]
+            for child in list(value.values()):
+                if isinstance(child,(dict,list)):rewrite(child)
+    rewrite(profile)
+    refs={r['driver']:node(r['referenceIndex'],r['referenceName']) for r in rig['rows']}
+    # Synchronization observes original animation inputs separately from outputs.
+    for d in drivers: pairs[d]['reference']=copy.deepcopy(refs[d])
+    nodes=[copy.deepcopy(pairs['r_clavicle']['source'])]+[refs[d] for d in drivers]
+    world=_calculate_world_transforms(unit.transforms,unit.parents)
+    a,b,c=[source[d]['index'] for d in drivers]
+    normal=_cross(vec_sub(world[b].position,world[a].position),vec_sub(world[c].position,world[b].position))
+    length=math.sqrt(sum(v*v for v in normal))
+    if length<=1e-8:raise ValueError('Degenerate right Source elbow reference')
+    hinge=quat_inverse_rotate(world[a].rotation,[v/length for v in normal])
+    na,nb,nc=[world[pairs[d]['native']['index']] for d in drivers]
+    forearm=quat_inverse_rotate(world[b].rotation,_cross(vec_sub(nb.position,na.position),vec_sub(nc.position,nb.position)))
+    right_outputs=[outputs[source[d]['name']] for d in drivers]
+    profile['rightGrip']=dict(enabled=True,nodes=nodes,outputs=right_outputs,hingeAxis=hinge,
+        forearmHingeAxis=forearm,softDistance=profile['leftGrip'].get('softDistance',.008),
+        reachPolicy=profile['leftGrip']['reachPolicy'],mode='native_sidearm_aim_unanimated_outputs')
+    profile['avatar']['count']=len(after.parents)
+    profile['avatar']['nodes'].extend(copy.deepcopy(nodes[1:]))
+    corrected={r['index'] for r in right_outputs}
+    profile['protected']=[r for r in profile['protected'] if r['index'] not in corrected]
+    # Native hierarchy/transform bytes and the proven left layout are unchanged.
+    assert after.parents[:107]==unit.parents[:107] and after.name_hashes[:107]==unit.name_hashes[:107]
+    rig.update(policy='native_sidearm_aim_right_outputs',nativeNodesUnchanged=True,
+        animationRebaked=False,modelRebaked=False,oldNodeCount=len(unit.parents))
+    return revised,bones,rig
 
 def _local_under(parent,child):
     from .math3d import quat_inverse_rotate
@@ -463,7 +531,7 @@ def calibrate_weapon_manifest(manifest,model_unit):
         desired[i]=wanted
         rows.append(dict(sourceName=source_name,manifestIndex=i,originalSourceIndex=manifest['bones'][i]['sourceIndex'],handIndex=h,native=mount,
             nativeIndex=names[mount],axes=axes,originalWorld=list(old_world[i].position),targetWorld=list(wanted.position)))
-    if not rows:raise ValueError('No original Source weapon bones to calibrate')
+    # Models without old weapon bones still receive the complete regenerated mount set.
     changed=set(desired)
     for i,node in enumerate(manifest['bones']):
         if i not in desired and node['parent'] in desired:changed.add(i)
@@ -507,7 +575,68 @@ def _rewrite_model_weapon_binds(raw,manifest):
     return bytes(revised)
 
 
-def prepare_native_model(manifest_path,model_directory,config_path):
+def _validate_prepared_native_model(manifest,folder):
+    """Read-only verification: never replace a committed library model."""
+    from pathlib import Path
+    from .archive import TocArchive
+    from .constants import UNIT_TYPE_ID
+    from .native_skeleton import row_pose
+    calibration=manifest.get('weaponGripCalibration',{})
+    rows=calibration.get('rows',[])
+    if calibration.get('version')!='converter-native-grip-v1':
+        raise ValueError('Native model is not grip-calibrated. Reimport the original VPK with the updated manager; '
+                         'Lua/animation generation cannot rewrite protected library files.')
+    indices=[row['manifestIndex'] for row in rows]
+    if len(indices)!=len(set(indices)) or any(i<0 or i>=len(manifest['bones']) for i in indices):
+        raise ValueError('Invalid native model grip-calibration metadata')
+    checked=0
+    for path in sorted(Path(folder).glob('*.patch_*')):
+        if not path.suffix.rsplit('_',1)[-1].isdigit():continue
+        side=lambda suffix:Path(str(path)+suffix).read_bytes() if Path(str(path)+suffix).exists() else b''
+        archive=TocArchive.parse_parts(path.read_bytes(),side('.gpu_resources'),side('.stream'))
+        for entry in archive.entries.values():
+            if entry.type_id!=UNIT_TYPE_ID:continue
+            unit=UnitData.parse(entry.toc_data)
+            # A decoded None also represents a corrupt active parent=65535.
+            # Reject old committed models instead of mixing them with new Lua.
+            offset=struct.unpack_from('<I',entry.toc_data,52)[0]
+            at=offset+16+128*len(unit.parents)
+            for i in range(len(unit.parents)):
+                flags,parent=struct.unpack_from('<HH',entry.toc_data,at+4*i)
+                if flags==1 and parent>=len(unit.parents):
+                    raise ValueError('Invalid native model raw parent entry at node '+str(i)+
+                        ': '+str(parent)+'. Reimport the original VPK with the updated manager; '
+                        'Lua/animation generation cannot repair protected library models: '+str(path))
+            world=_calculate_world_transforms(unit.transforms,unit.parents)
+            for row in rows:
+                node=manifest['bones'][row['manifestIndex']]
+                pose=world[unit.name_hashes.index(node['hash'])];expected=row_pose(node['world'])
+                if (max(abs(a-b) for a,b in zip(pose.position,row['targetWorld']))>1e-4
+                    or max(abs(a-b) for a,b in zip(pose.position,expected.position))>1e-4
+                    or abs(sum(a*b for a,b in zip(pose.rotation,expected.rotation)))<1-1e-5):
+                    raise ValueError('Native model grip calibration does not match its manifest: '+str(path))
+            for row in manifest.get('sourceAttachmentShadows',[]):
+                pose=world[unit.name_hashes.index(row['hash'])];expected=row_pose(row['worldMatrix'])
+                parent=unit.name_hashes.index(row['sourceAnchorHash'])
+                if unit.parents[unit.name_hashes.index(row['hash'])]!=parent or max(abs(a-b) for a,b in zip(pose.position,expected.position))>1e-4:
+                    raise ValueError('Source attachment calibration mismatch: '+row['standardName'])
+            checked+=1
+    if not checked:raise ValueError('No calibrated model Units found')
+    return dict(status='complete',alreadyCalibrated=True,readOnlyVerification=True,unitsChecked=checked,calibration=calibration)
+
+
+def _require_writable_calibration_targets(paths):
+    import stat
+    for path in paths:
+        if path.exists():
+            info=path.stat()
+            if (getattr(info,'st_file_attributes',0)&getattr(stat,'FILE_ATTRIBUTE_READONLY',1)
+                or not info.st_mode&stat.S_IWUSR):
+                raise PermissionError('Native grip calibration must run in writable staging before library import; '
+                                      'refusing to change read-only file: '+str(path))
+
+
+def prepare_native_model(manifest_path,model_directory,config_path,check_only=False):
     import json,hashlib,os
     from pathlib import Path
     from .archive import TocArchive,InlinePatchWriter
@@ -516,9 +645,13 @@ def prepare_native_model(manifest_path,model_directory,config_path):
     manifest_path=Path(manifest_path);folder=Path(model_directory);manifest=json.loads(manifest_path.read_text(encoding='utf-8-sig'))
     cfg=resolve_native_config(config_path,manifest)
     if not cfg['native_skeleton'].get('calibrate_weapon_bones',False):return dict(status='skipped',reason='explicit calibration disabled')
-    if manifest.get('weaponGripCalibration'):
-        return dict(status='complete',alreadyCalibrated=True,calibration=manifest['weaponGripCalibration'])
+    if check_only or manifest.get('weaponGripCalibration'):
+        if cfg['native_skeleton'].get('attachment_mode')=='source-lua-native-hd2-v1' and not manifest.get('sourceAttachmentCalibration'):
+            raise ValueError('Legacy swapped model: reimport the VPK to regenerate all Source mounts before library commit')
+        return _validate_prepared_native_model(manifest,folder)
     paths=[p for p in sorted(folder.glob('*.patch_*')) if p.suffix.rsplit('_',1)[-1].isdigit()]
+    _require_writable_calibration_targets([manifest_path,folder/'weapon-grip-calibration.json']
+        +[Path(str(p)+suffix) for p in paths for suffix in ['','.gpu_resources','.stream']])
     archives=[];sample=None
     for path in paths:
         side=lambda suffix:Path(str(path)+suffix).read_bytes() if Path(str(path)+suffix).exists() else b''
@@ -527,24 +660,33 @@ def prepare_native_model(manifest_path,model_directory,config_path):
             if e.type_id==UNIT_TYPE_ID and sample is None:sample=UnitData.parse(e.toc_data)
     if sample is None:raise ValueError('No converted model Units')
     calibration=calibrate_weapon_manifest(manifest,sample);files=[]
+    if cfg['native_skeleton'].get('attachment_mode')=='source-lua-native-hd2-v1':prepare_source_attachment_manifest(manifest)
     for path,archive in archives:
         external={key:(bytes(e.gpu_data),bytes(e.stream_data)) for key,e in archive.entries.items()}
         for e in archive.entries.values():
-            if e.type_id==UNIT_TYPE_ID:e.toc_data=bytearray(_rewrite_model_weapon_binds(e.toc_data,manifest))
+            if e.type_id==UNIT_TYPE_ID:
+                e.toc_data=bytearray(_rewrite_model_weapon_binds(e.toc_data,manifest))
+                if manifest.get('sourceAttachmentCalibration'):e.toc_data=append_model_source_mounts(e.toc_data,manifest)
         counts={}
         for e in archive.entries.values():counts[e.type_id]=counts.get(e.type_id,0)+1
-        temp=Path(str(path)+'.calibrated');writer=InlinePatchWriter(archive,temp,counts,standalone=True)
+        temp=Path(str(path)+'.calibrated')
         try:
-            for e in archive.entries.values():writer.append(e)
-            rebuilt=writer.finish()
-        finally:writer.close()
-        for source,suffix in zip(rebuilt,['','.gpu_resources','.stream']):
-            os.replace(source,Path(str(path)+suffix))
-        completed=TocArchive.parse_parts(path.read_bytes(),Path(str(path)+'.gpu_resources').read_bytes(),Path(str(path)+'.stream').read_bytes())
-        assert all((bytes(completed.entries[key].gpu_data),bytes(completed.entries[key].stream_data))==value for key,value in external.items()),'external mesh payload changed'
+            writer=InlinePatchWriter(archive,temp,counts,standalone=True)
+            try:
+                for e in archive.entries.values():writer.append(e)
+                rebuilt=writer.finish()
+            finally:writer.close()
+            # Verify the temporary payload before publishing any replacement.
+            completed=TocArchive.parse_parts(*(Path(part).read_bytes() for part in rebuilt))
+            assert all((bytes(completed.entries[key].gpu_data),bytes(completed.entries[key].stream_data))==value for key,value in external.items()),'external mesh payload changed'
+            for source,suffix in zip(rebuilt,['','.gpu_resources','.stream']):
+                os.replace(source,Path(str(path)+suffix))
+        finally:
+            for suffix in ['','.gpu_resources','.stream']:
+                Path(str(temp)+suffix).unlink(missing_ok=True)
         files.append(dict(path=str(path),sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
     manifest_path.write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
-    report=dict(status='complete',pipelineVersion='1.0.9',calibration=calibration,files=files,
+    report=dict(status='complete',pipelineVersion='1.0.13',calibration=calibration,files=files,
         meshNormalsUvWeightsUnchanged=True,sourceVpkUnmodified=True)
     (folder/'weapon-grip-calibration.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
     return report
@@ -553,10 +695,11 @@ def prepare_native_model(manifest_path,model_directory,config_path):
 def model_main(argv=None):
     import argparse,json
     p=argparse.ArgumentParser();p.add_argument('--manifest',required=True);p.add_argument('--model-directory',required=True);p.add_argument('--config',required=True)
-    a=p.parse_args(argv);print(json.dumps(prepare_native_model(a.manifest,a.model_directory,a.config)));return 0
+    p.add_argument('--check-only',action='store_true',help='Validate calibrated library files without rewriting them')
+    a=p.parse_args(argv);print(json.dumps(prepare_native_model(a.manifest,a.model_directory,a.config,a.check_only)));return 0
 
 
-def build_transfer_package(manifest_path, model_directory, game_data, output, config_path=None):
+def build_transfer_package(manifest_path, model_directory, game_data, output, config_path=None, attachment_config=None, mod_directory=None):
     """Build a model-specific profile and its required Avatar/Bones companion for the GUI."""
     import json,hashlib,tomllib
     from pathlib import Path
@@ -567,20 +710,10 @@ def build_transfer_package(manifest_path, model_directory, game_data, output, co
     if output.exists() and any(output.iterdir()):raise FileExistsError('Choose an empty attachment output directory')
     output.mkdir(parents=True,exist_ok=True)
     manifest=native.load_manifest(Path(manifest_path));model_directory=Path(model_directory)
-    from .native_config import resolve_native_config,apply_runtime_policy
+    from .native_config import resolve_native_config,apply_runtime_policy,apply_grip_fixes,PIPELINE_VERSION
     config=resolve_native_config(config_path,manifest) if config_path else {}
-    sections=json.loads((model_directory/'sections.json').read_text(encoding='utf-8-sig'))
-    body_ids={int(row['fileId'],16) for row in sections['units'] if row['slot']!='Helmet'}
-    model_units={}
-    for path in sorted(model_directory.glob('*.patch_*')):
-        if path.suffix.rsplit('_',1)[-1].isdigit():
-            def side(suffix):
-                p=Path(str(path)+suffix)
-                return p.read_bytes() if p.exists() else b''
-            archive=TocArchive.parse_parts(path.read_bytes(),side('.gpu_resources'),side('.stream'))
-            for (file_id,type_id),entry in archive.entries.items():
-                if type_id==UNIT_TYPE_ID and file_id in body_ids:
-                    model_units[f'{file_id:016x}']=UnitData.parse(entry.toc_data)
+    settings=read_attachment_fix_settings(attachment_config or Path(__file__).with_name('attachment-fix.json'))
+    model_units,discovery=collect_model_units(manifest,model_directory,mod_directory)
     store=PackageStore(Path(game_data));index=ResourceIndex(store,output/'resource-index.sqlite3',{UNIT_TYPE_ID,BONE_TYPE_ID})
     try:
         index.load_or_build();cache={}
@@ -589,6 +722,7 @@ def build_transfer_package(manifest_path, model_directory, game_data, output, co
         _,bone_entry=native.resolve_inline(index,store,unit.bones_ref,BONE_TYPE_ID,cache)
         template=config.get('native_skeleton',{}).get('avatar_template')
         if template:unit_entry=native.load_avatar_template((Path(config_path).parent/template).resolve(),unit_entry)
+        resolve_source_attachment_channels(manifest,unit,BonesData.parse(bone_entry.toc_data))
         targets=json.loads((Path(__file__).parent/'weapon_grip_targets.json').read_text(encoding='utf8'))['targets']
         profile,avatar,bones,rig=transfer_profile(unit_entry.toc_data,bone_entry.toc_data,manifest,model_units,targets,
             config.get('native_skeleton',{}).get('grip_soft_distance',.008))
@@ -597,6 +731,24 @@ def build_transfer_package(manifest_path, model_directory, game_data, output, co
             profile['variant']=manifest['boneNamespace']+'-B23-1.0.8-calibrated-v1'
         contract=validate_attachment_transfer_contract(profile,UnitData.parse(avatar),BonesData.parse(bones),manifest,
             config.get('attachment_swap') if config.get('native_skeleton',{}).get('attachment_swap') else None)
+        if manifest.get('sourceAttachmentCalibration'):
+            expanded=UnitData.parse(avatar)
+            def mount_node(name):
+                row=next(r for r in manifest['sourceAttachmentShadows'] if r['standardName']==name)
+                i=expanded.name_hashes.index(row['hash'])
+                parent=expanded.parents[i]
+                if expanded.name_hashes[parent]!=row['sourceAnchorHash']:
+                    raise ValueError('Source mount must remain under its own Source anchor: '+name)
+                return dict(name=row['name'],index=i,parent=parent,hash=row['hash'])
+            profile['sourceRightMount']=mount_node('attach_hand_r')
+            profile['variant']=manifest['boneNamespace']+'-B23-1.0.9-source-mounts-v1'
+            contract['sourceMounts']=dict(count=21,parentPolicy='own-source-anchor',attachmentSwap=False)
+            for row in profile['attachments']:row['sourceMount']=mount_node(row['node']['name'])
+        apply_grip_fixes(profile)
+        avatar,bones,right_rig=sidearm_right_outputs(avatar,bones,profile)
+        rig['rightSidearm']=right_rig
+        filter_attachment_profile(profile,settings)
+        (output/'attachment-fix.json').write_text(json.dumps(settings,ensure_ascii=False,indent=2),encoding='utf-8')
         (output/'source-skeleton.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf8')
         def lua(v):
             if v is None:return 'nil'
@@ -613,9 +765,9 @@ def build_transfer_package(manifest_path, model_directory, game_data, output, co
         for source,data in ((unit_entry,avatar),(bone_entry,bones)):
             entry=copy.deepcopy(source);entry.toc_data=bytearray(data);writer.append(entry)
         files=writer.finish()
-        report=dict(status='complete',gameTested=False,sourceBones=len(manifest['bones']),
-            modelScale=manifest.get('modelScale'),modelResources=sorted(model_units),
-            avatarNodes=profile['avatar']['count'],weaponTargets=len(targets),attachments=len(profile['attachments'])+1,
+        report=dict(status='complete',pipelineVersion=PIPELINE_VERSION,gameTested=False,sourceBones=len(manifest['bones']),
+            modelScale=manifest.get('modelScale'),modelResources=sorted(model_units),modelDiscovery=discovery,
+            avatarNodes=profile['avatar']['count'],weaponTargets=len(targets),attachments=len(profile['attachments'])+int(profile['rightAttachmentEnabled']),attachmentMode=profile['attachmentMode'],attachmentConfigSha256=hashlib.sha256((output/'attachment-fix.json').read_bytes()).hexdigest(),
             headDescendants=False,rig=rig,attachmentContract=contract,files=[dict(name=p.name,sha256=hashlib.sha256(p.read_bytes()).hexdigest()) for p in files])
         (output/'attachment-build-report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf8')
         return report
@@ -626,8 +778,185 @@ def main(argv=None):
     import argparse,json
     p=argparse.ArgumentParser(description='Compile model-specific B23 attachment runtime configuration')
     for name in ('manifest','model-directory','game-data','output'):p.add_argument('--'+name,required=True)
-    p.add_argument('--config')
+    p.add_argument('--config');p.add_argument('--attachment-config');p.add_argument('--mod-directory')
     a=p.parse_args(argv)
-    print(json.dumps(build_transfer_package(a.manifest,a.model_directory,a.game_data,a.output,a.config),ensure_ascii=False))
+    print(json.dumps(build_transfer_package(a.manifest,a.model_directory,a.game_data,a.output,a.config,a.attachment_config,a.mod_directory),ensure_ascii=False))
     return 0
 
+# Canonical engine mounts supported by the existing B23 Source attachment adapter.
+# Head descendants are deliberately never exposed as writable targets.
+def source_attachment_drivers():
+    return {name:driver for names,driver in (
+        (('attach_hand_r','attach_weapon'),'r_hand'), (('attach_hand_l',),'l_hand'),
+        (('attach_samplepouch','attach_intelpad','target_designator','attach_knife'),'spine1'),
+        (('sling',),'spine2'), (('backpack','support_mg','support',*[f'cape{i}' for i in range(1,9)]),'chest'),
+        (('hellpad_socket',),'l_elbow'), (('pistol',),'r_thigh')) for name in names}
+
+
+def prepare_source_attachment_manifest(manifest):
+    """Recompute ALL Source mounts from converter axes, never old VPK mount worlds."""
+    from . import native_skeleton as native
+    from .motion_skeleton import source_local,matrix
+    by_driver={n['driver']:i for i,n in enumerate(manifest['bones']) if n['driver']}
+    hashes=manifest['driverHashes'];names={n:hashes.index(native.bone_name_hash(n))
+        for n in set(by_driver)|set(source_attachment_drivers())|{'root','boss'} if native.bone_name_hash(n) in hashes}
+    bind=[native.row_pose(row['values']) for row in manifest['driverWorld']]
+    source_bind=[native.local_pose(source_local(n,i,manifest)) for i,n in enumerate(manifest['bones'])]
+    refs,_=native._reference_rotations(manifest['bones'],source_bind,
+        [native.row_pose(n['world']) for n in manifest['bones']],bind,names,manifest)
+    rows=[]
+    for name,driver in source_attachment_drivers().items():
+        if name not in names or driver not in by_driver:
+            raise ValueError('Required Source attachment/anchor unavailable: '+name+'/'+driver)
+        si=by_driver[driver];anchor=names[driver];index=names[name]
+        axes=quat_multiply(quat_inverse(refs[si]),bind[anchor].rotation)
+        pose=source_attachment_pose(bind,dict(index=index,driverAnchorIndex=anchor,axisCorrection=axes))
+        source_world=native.row_pose(manifest['bones'][si]['world'])
+        world=WorldTransform([a+b for a,b in zip(source_world.position,quat_rotate(source_world.rotation,pose.position))],
+            quat_multiply(source_world.rotation,pose.rotation),[1.,1.,1.])
+        reference='__hd2_source_mount__'+manifest['boneNamespace']+'_'+name
+        rows.append(dict(index=index,name=reference,hash=native.bone_name_hash(reference),standardName=name,
+            driver=driver,driverAnchorIndex=anchor,sourceAnchorHash=manifest['bones'][si]['hash'],
+            sourceParent=len(hashes)+si,axisCorrection=axes,localMatrix=matrix(pose),worldMatrix=matrix(world,True),
+            animationChannel=None,maskChannel=None))
+    manifest['sourceAttachmentShadows']=rows
+    manifest['sourceAttachmentCalibration']=dict(version='converter-all-non-head-v1',count=len(rows),headDescendants=False)
+    # Use configured-chain relative poses, not the historical blended native-chain trial.
+    manifest.pop('attachmentReferenceMode',None)
+    return rows
+
+
+def append_model_source_mounts(raw,manifest):
+    """Append unweighted Source mount nodes; all existing indices and mesh bytes stay fixed."""
+    from .motion_skeleton import matrix
+    unit=UnitData.parse(raw);local=list(unit.transforms);parents=list(unit.parents);hashes=list(unit.name_hashes)
+    for row in manifest.get('sourceAttachmentShadows',[]):
+        if row['hash'] in hashes:raise ValueError('Source mounts already present; reconvert before changing the pipeline')
+        from .native_skeleton import local_pose
+        parent=hashes.index(row['sourceAnchorHash']);m=row['localMatrix']
+        pose=local_pose(dict(rotation=m[:9],position=m[9:12],scale=m[12:15]))
+        local.append(pose);parents.append(parent);hashes.append(row['hash'])
+    offset=struct.unpack_from('<I',raw,52)[0];world=_calculate_world_transforms(local,parents)
+    block=bytearray(struct.pack('<I',len(local))+raw[offset+4:offset+16])
+    # UnitData decodes both self-parents and out-of-range sentinel parents as
+    # None and discards the first uint16. Re-encoding every old node as
+    # (1, 65535) makes the engine index parent matrix 65535 and breaks AQ import.
+    # Preserve the converter's raw roots/detached nodes and bind matrices;
+    # only the newly appended, explicitly parented helpers get new records.
+    count=len(unit.parents);local_start=offset+16
+    world_start=local_start+64*count;entries_start=world_start+64*count
+    block+=raw[local_start:world_start]
+    block+=b''.join(struct.pack('<16f',*matrix(p)) for p in local[count:])
+    block+=raw[world_start:entries_start]
+    block+=b''.join(struct.pack('<16f',*matrix(p,True)) for p in world[count:])
+    block+=raw[entries_start:entries_start+4*count]
+    block+=b''.join(struct.pack('<HH',1,p) for p in parents[count:])
+    block+=struct.pack(f'<{len(hashes)}I',*hashes)
+    result=bytearray(raw);result.extend(bytes(-len(result)%16));struct.pack_into('<I',result,52,len(result));result.extend(block)
+    checked=UnitData.parse(result)
+    assert checked.name_hashes[:len(unit.parents)]==unit.name_hashes
+    assert checked.parents[:len(unit.parents)]==unit.parents
+    return result
+
+
+def resolve_source_attachment_channels(manifest,unit,bones):
+    for row in manifest.get('sourceAttachmentShadows',[]):
+        h=unit.name_hashes[row['index']]
+        row['animationChannel']=bones.hashes.index(h) if h in bones.hashes else None
+        row['maskChannel']=bones.names.index(row['driver'])
+    return manifest
+
+
+def read_attachment_fix_settings(path):
+    import json
+    from pathlib import Path
+    path=Path(path);settings=json.loads(path.read_text(encoding='utf-8-sig'))
+    if settings.get('version')!=1 or not isinstance(settings.get('enabled'),bool):
+        raise ValueError('Invalid attachment-fix.json schema')
+    if settings.get('excludeHeadDescendants') is not True:
+        raise ValueError('Head descendants cannot be enabled for attachment correction')
+    names=settings.get('bones')
+    if not isinstance(names,list) or any(not isinstance(n,str) for n in names) or len(set(names))!=len(names):
+        raise ValueError('Attachment bones must be a unique list of canonical names')
+    if set(names)-set(source_attachment_drivers()):raise ValueError('Unknown or head attachment requested: '+repr(set(names)-set(source_attachment_drivers())))
+    return settings
+
+
+def filter_attachment_profile(profile,settings):
+    enabled=set(settings['bones']) if settings['enabled'] else set()
+    profile['attachments']=[r for r in profile['attachments'] if r['node']['name'] in enabled]
+    profile['rightAttachmentEnabled']='attach_hand_r' in enabled
+    if 'attach_hand_l' not in enabled:profile['leftGrip']['enabled']=False
+    if profile.get('rightGrip') and 'attach_hand_r' not in enabled:profile['rightGrip']['enabled']=False
+    profile['attachmentFixSettings']=settings
+    profile['attachmentMode']='source-lua-native-hd2-v1'
+    return profile
+
+
+def collect_model_units(manifest,model_directory,mod_directory=None):
+    """Collect verified Source carriers, not every target slot's native hide/proxy Unit.
+
+    A target sections.json describes the WHOLE rekey patch (including native
+    minified shells). Slot=Torso is not proof that a Unit carries this VPK rig.
+    Explicit sourceUnit provenance and any partial Source signature still fail
+    closed; native-only auxiliary Units are not eligible runtime models.
+    """
+    import json
+    from pathlib import Path
+    from .archive import TocArchive
+    from .constants import UNIT_TYPE_ID
+    model_directory=Path(model_directory)
+    source_rows=json.loads((model_directory/'sections.json').read_text(encoding='utf-8-sig'))['units']
+    source_by_id={int(r['fileId'],16):r for r in source_rows}
+    body_ids={i for i,r in source_by_id.items() if r['slot']!='Helmet'}
+    helmet_ids=set(source_by_id)-body_ids
+    signature={n['hash'] for n in manifest['bones'] if n['driver'] in ('spine1','r_shoulder','r_elbow','r_hand','l_hand')}
+    if len(signature)!=5:raise ValueError('Source model requires five distinct body/hand signature nodes')
+    source_hashes={n['hash'] for n in manifest['bones']}
+    folders=[model_directory]
+    overwrite=Path(mod_directory)/'Overwrite' if mod_directory else None
+    if overwrite and overwrite.is_dir():folders += [overwrite]+sorted(p for p in overwrite.rglob('*') if p.is_dir())
+    models={};source_seen=set();skipped=[];target_ids=set()
+    for folder in folders:
+        is_source=folder==model_directory
+        section_file=folder/'sections.json'
+        # Nested patch families may share the root Overwrite section/provenance map.
+        if not is_source and not section_file.is_file():
+            parent=folder.parent
+            while overwrite and parent.is_relative_to(overwrite):
+                if (parent/'sections.json').is_file():section_file=parent/'sections.json';break
+                if parent==overwrite:break
+                parent=parent.parent
+        rows=json.loads(section_file.read_text(encoding='utf-8-sig'))['units'] if section_file.is_file() else []
+        by_id={int(r['fileId'],16):r for r in rows}
+        for path in sorted(folder.glob('*.patch_*')):
+            if not path.suffix.rsplit('_',1)[-1].isdigit():continue
+            def side(suffix):
+                p=Path(str(path)+suffix);return p.read_bytes() if p.exists() else b''
+            archive=TocArchive.parse_parts(path.read_bytes(),side('.gpu_resources'),side('.stream'))
+            for (file_id,type_id),entry in archive.entries.items():
+                if type_id!=UNIT_TYPE_ID:continue
+                resource=f'{file_id:016x}';row=by_id.get(file_id,{})
+                link=row.get('sourceUnit')
+                try:source_id=int(link,16) if link is not None else None
+                except (TypeError,ValueError):raise ValueError(f'Invalid sourceUnit provenance for {resource}: {path}')
+                if row.get('slot')=='Helmet' or (is_source and file_id in helmet_ids) or source_id in helmet_ids:
+                    skipped.append(dict(resource=resource,path=str(path),reason='helmet'));continue
+                if is_source and file_id not in body_ids:continue
+                parsed=UnitData.parse(entry.toc_data);hashes=set(parsed.name_hashes)
+                if source_id is not None and source_id not in body_ids:
+                    raise ValueError(f'Target Unit {resource} references an unknown Source body {link}: {path}')
+                if not signature.issubset(hashes):
+                    if is_source or source_id in body_ids or file_id in body_ids or hashes & source_hashes:
+                        missing=sorted(signature-hashes)
+                        raise ValueError(f'Target body Unit {resource} does not belong to this Source rig; '
+                            f'sourceUnit={link}, missingSignature={missing}, patch={path}')
+                    skipped.append(dict(resource=resource,path=str(path),reason='non_source_auxiliary'))
+                    continue
+                models[resource]=parsed
+                if is_source:source_seen.add(file_id)
+                else:target_ids.add(resource)
+    if body_ids-source_seen:
+        raise ValueError('Missing verified Source body Units: '+','.join(f'{i:016x}' for i in sorted(body_ids-source_seen)))
+    return models,dict(sourceBodies=len(source_seen),targetBodies=sorted(target_ids),skippedUnits=skipped,
+        policy='verified_source_carriers_only',sourceOwnershipGate=True)

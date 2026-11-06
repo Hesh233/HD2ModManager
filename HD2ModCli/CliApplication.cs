@@ -2572,6 +2572,7 @@ public static class CliApplication
 					{
 						components = invocation.Options.Components,
 						sourceSkeleton = invocation.Options.SourceSkeleton,
+						singleHd2Skeleton = invocation.Options.SingleHd2Skeleton,
 						modelScale = invocation.Options.ModelScale,
 						matcap = invocation.Options.Matcap,
 						matcapGain = invocation.Options.MatcapGain,
@@ -3518,7 +3519,8 @@ public static class CliApplication
 		var avatar = await ResolveAvatarTransformInfoAsync(options, gameData).ConfigureAwait(false);
 		var rig = SourceRetargetPipeline.LoadRigFromTransformInfo(avatar, ResolveBoneHashPath(options, workspace));
 		var native = options.SourceSkeleton ? NativeSourceSkeleton.Convert(inputs, rig, avatar, options.ModelScale) : null;
-		var retarget = native?.Result ?? SourceRetargetPipeline.Run(inputs, rig, options: new RetargetOptions { ModelScale = options.ModelScale });
+		var single = options.SingleHd2Skeleton ? SingleHd2Skeleton.Convert(inputs, rig, avatar, options.ModelScale) : null;
+		var retarget = native?.Result ?? single?.Result ?? SourceRetargetPipeline.Run(inputs, rig, options: new RetargetOptions { ModelScale = options.ModelScale });
 
 		var split = SourceSegmentation.Split(
 			inputs.Model, inputs.Geometry, new BodyRegionResolver(rig), retarget.Resolved);
@@ -3661,6 +3663,7 @@ public static class CliApplication
 		if (segmentationNotes.Count != 0)
 			package = package with { Warnings = [.. package.Warnings, .. segmentationNotes] };
 		if (native is not null && package.IsValid) native.WriteManifest(outputDirectory);
+		if (single is not null && package.IsValid) single.WriteManifest(outputDirectory);
 
 		// 顺手产出 `sections.json`：这个 patch 里每个 unit 的每个 section 落在 TOC 的哪个偏移、
 		// 原本的 numIndices 是多少。管理器的"衣物装饰组件"树靠它画，烘焙靠它写回原值。
@@ -8314,7 +8317,8 @@ Unit 数据视图（只读；直接解析 Patch 内的 Unit 网格与骨骼，�
 	                   （转换器会在报告与 stderr 上明确警告）。
 	                   token 形如 vpk-060d479e4bc677d0，用于"只重转一批里的某一个包"。
 	    --source-skeleton  保留 L4D2 原生骨架，产出 source-skeleton.json；须配套生成动画工程
-	    --model-scale <倍率>  模型整体大小倍率，默认 1，范围 (0, 10]；原生模式同步缩放骨架与几何
+	    --single-hd2-skeleton  单 HD2 骨架：模型与绑定骨位同步转换，配套原 batch 动画
+	    --model-scale <倍率>  模型整体大小倍率，默认 1，范围 (0, 10]；骨架模式同步缩放骨架与几何
 	    --reuse-model <旧产物的 custom-model.json>
 	                   沿用那份记下的素体 key 与 unit id 基。重构建（管理器里的「重构建」按钮）
 	                   靠它把 unit id 接上——否则 id 重新随机，已登记的映射与件表全部失效。

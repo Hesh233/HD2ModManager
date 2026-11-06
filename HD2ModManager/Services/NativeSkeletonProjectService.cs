@@ -12,6 +12,7 @@ internal static class NativeSkeletonProjectService
     internal static string ResolveConfig(string modDirectory)
     {
         var paths = new[] { Path.Combine(modDirectory, "config.toml"),
+            Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName, "config.toml"),
             Path.Combine(AppContext.BaseDirectory, "config.toml"),
             Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "config.toml") };
         return paths.FirstOrDefault(File.Exists)
@@ -66,8 +67,8 @@ if 'model_scale' not in native:
 print(scale)
 """, snapshot, savedScale.ToString("R", System.Globalization.CultureInfo.InvariantCulture)], cancellationToken);
             if (scaleResult.ExitCode != 0) throw new InvalidDataException(Hd2ModProcess.Explain(scaleResult, "模型倍率配置"));
-            // 与 WriteConfigSnapshot 同源：旧快照缺 attachment_swap 键时强制补 true，
-            // 保证挂点骨骼交换与同步动作一致（显式 false 尊重原配置）。
+            // 与 WriteConfigSnapshot 同源：旧快照缺 attachment_swap 键时强制关闭互换，
+            // HD2/VPK 挂点各自跟随自己的骨架，VPK 挂点由 Lua 动态修正。
             File.WriteAllText(snapshot, VpkAnimationBuildService.EnsureAttachmentSwapDefault(
                 File.ReadAllText(snapshot, Encoding.UTF8)), new UTF8Encoding(false));
             var modelScale = double.Parse(scaleResult.Output.Trim(), System.Globalization.CultureInfo.InvariantCulture);

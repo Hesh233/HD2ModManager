@@ -475,7 +475,12 @@ def decompress_position(position) -> list[float]:
 
 
 def compress_rotation(rotation) -> int:
-    largest_index = max(range(4), key=lambda index: rotation[index])
+    # The omitted component is reconstructed POSITIVE. q and -q represent
+    # the same rotation; selecting max(value) mis-encodes negative identity
+    # (and other negative-dominant quaternions) as a roughly 120-degree pose.
+    largest_index = max(range(4), key=lambda index: abs(rotation[index]))
+    if rotation[largest_index] < 0.0:
+        rotation = [-component for component in rotation]
     result = largest_index
     for offset, shift in ((1, 2), (2, 12), (3, 22)):
         value = rotation[(largest_index + offset) % 4]

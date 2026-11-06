@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import struct
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from .archive import PackageStore, ResourceIndex, TocArchive, TocEntry
@@ -333,24 +335,24 @@ def build_batch_entries(
     add_unit: bool = False,
     only_additive: bool = False,
     only_non_additive: bool = False,
+    threads: int = 1,
 ) -> BatchBuildResult:
+    if isinstance(threads, bool) or not isinstance(threads, int) or not 1 <= threads <= 16:
+        raise ValueError("threads must be an integer between 1 and 16")
     result = BatchBuildResult()
     unit_entries: dict[tuple[int, int], TocEntry] = {}
     patched_units: dict[int, UnitData] = {}
     successful_unit_keys: set[tuple[int, int]] = set()
-    for job_index, job in enumerate(jobs, start=1):
-        if progress:
-            progress("animation", job_index, len(jobs), str(job.animation_id))
+
+    def prepare_job(job):
+        # ResourceIndex/PackageStore have mutable LRU caches. Resolve resources
+        # and patch shared Units on the caller thread, in original job order.
         try:
             job_config = job.config or config
-            _, animation_entry = resource_index.resolve(
-                job.animation_id, ANIMATION_TYPE_ID
-            )
+            _, animation_entry = resource_index.resolve(job.animation_id, ANIMATION_TYPE_ID)
             animation = AnimationData.parse(animation_entry.toc_data)
-            if only_additive and not animation.is_additive:
-                continue
-            if only_non_additive and animation.is_additive:
-                continue
+            if (only_additive and not animation.is_additive) or (only_non_additive and animation.is_additive):
+                return None, None
             processing_unit = job.unit
             if add_unit and job.unit_id is not None:
                 unit_key = (job.unit_id, UNIT_TYPE_ID)
@@ -358,11 +360,8 @@ def build_batch_entries(
                     _, unit_entry = resource_index.resolve(job.unit_id, UNIT_TYPE_ID)
                     unit_resource = UnitData.parse(unit_entry.toc_data)
                     patched_unit_data = patch_unit_positions(
-                        unit_entry.toc_data,
-                        unit_resource,
-                        job.bones,
-                        job_config.offsets,
-                        job_config.distance_multipliers,
+                        unit_entry.toc_data, unit_resource, job.bones,
+                        job_config.offsets, job_config.distance_multipliers,
                     )
                     patched_unit_entry = copy.deepcopy(unit_entry)
                     patched_unit_entry.toc_data = bytearray(patched_unit_data)
@@ -372,43 +371,80 @@ def build_batch_entries(
                     patched_units[job.unit_id] = UnitData.parse(patched_unit_data)
                 if animation.is_additive:
                     processing_unit = patched_units[job.unit_id]
-            modification = modify_animation_with_world_compensation(
-                animation,
-                job.bones,
-                processing_unit,
-                job_config,
-                allow_additive=allow_additive,
-                apply_offsets_to_additive=False,
-                apply_rotate_multipliers=apply_rotate_multipliers,
-                apply_rotation_compensations=apply_rotation_compensations,
-                apply_ik_correction=apply_ik_correction,
-            )
-            modified_entry = copy.deepcopy(animation_entry)
-            modified_entry.toc_data = bytearray(animation.to_bytes())
-            modified_entry.gpu_data = bytearray()
-            modified_entry.stream_data = bytearray()
-            result.entries.append(modified_entry)
-            result.animations.append(
-                BatchAnimationResult(
+            return (animation_entry, animation, processing_unit, job_config), None
+        except Exception as error:
+            return None, error
+
+    def process_job(job, prepared):
+        data, error = prepared
+        if error is None and data is None:
+            return None, None, None
+        if error is None:
+            try:
+                animation_entry, animation, processing_unit, job_config = data
+                modification = modify_animation_with_world_compensation(
+                    animation, job.bones, processing_unit, job_config,
+                    allow_additive=allow_additive,
+                    apply_offsets_to_additive=False,
+                    apply_rotate_multipliers=apply_rotate_multipliers,
+                    apply_rotation_compensations=apply_rotation_compensations,
+                    apply_ik_correction=apply_ik_correction,
+                )
+                modified_entry = copy.deepcopy(animation_entry)
+                modified_entry.toc_data = bytearray(animation.to_bytes())
+                modified_entry.gpu_data = bytearray()
+                modified_entry.stream_data = bytearray()
+                return modified_entry, BatchAnimationResult(
                     animation_id=job.animation_id,
                     package_name=job.animation_package,
                     modification=modification,
-                )
-            )
+                ), None
+            except Exception as failure:
+                error = failure
+        return None, None, BatchIssue(
+            f"animation {job.animation_id}", f"Failed to modify animation: {error}", True,
+        )
+
+    def collect(job_index, job, outcome):
+        entry, animation_result, issue = outcome
+        if issue is not None:
+            result.issues.append(issue)
+        if entry is not None:
+            result.entries.append(entry)
+            result.animations.append(animation_result)
             if add_unit and job.unit_id is not None:
                 successful_unit_keys.add((job.unit_id, UNIT_TYPE_ID))
-        except Exception as error:
-            result.issues.append(
-                BatchIssue(
-                    f"animation {job.animation_id}",
-                    f"Failed to modify animation: {error}",
-                    True,
-                )
-            )
+        if progress:
+            progress("animation", job_index, len(jobs), str(job.animation_id))
+
+    if threads == 1:
+        for job_index, job in enumerate(jobs, start=1):
+            collect(job_index, job, process_job(job, prepare_job(job)))
+    elif jobs:
+        # Bound the prepared animations to 2x parallelism, instead of eagerly
+        # parsing the entire game. Collect/write only on the caller thread so
+        # output bytes, issue ordering and progress remain deterministic.
+        with ThreadPoolExecutor(max_workers=threads, thread_name_prefix="hd2-animation") as executor:
+            pending = deque()
+            remaining = iter(enumerate(jobs, start=1))
+
+            def submit_next():
+                item = next(remaining, None)
+                if item is None:
+                    return False
+                job_index, job = item
+                pending.append((job_index, job, executor.submit(process_job, job, prepare_job(job))))
+                return True
+
+            for _ in range(threads * 2):
+                if not submit_next():
+                    break
+            while pending:
+                job_index, job, future = pending.popleft()
+                collect(job_index, job, future.result())
+                submit_next()
     result.entries = [
-        unit_entries[key]
-        for key in unit_entries
-        if key in successful_unit_keys
+        unit_entries[key] for key in unit_entries if key in successful_unit_keys
     ] + result.entries
     return result
 

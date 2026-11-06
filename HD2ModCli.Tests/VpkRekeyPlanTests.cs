@@ -238,6 +238,50 @@ public sealed class VpkRekeyPlanTests
         Assert.DoesNotContain(plan.Mappings, item => item.Source?.PartKind == UnitMeshPartKind.Helmet);
     }
 
+    [Fact]
+    public void BuildPlan_MergesSharedPhysicalUnitsAcrossArchives()
+    {
+        var shared = Part(0x40, UnitMeshPartKind.Torso, UnitMeshPartLayer.Armor, UnitMeshBodyVariant.Stocky);
+        var first = new EquipmentUnitCatalogEntry(ArmorArchive, "Armor", "B-08", [shared]);
+        var second = new EquipmentUnitCatalogEntry("cccccccccccccccc", "Armor", "FS-38", [shared]);
+
+        var (plan, _, _) = CliVpkRekey.BuildPlan(Source(), [first, second]);
+
+        Assert.True(plan.CanContinue);
+        var mapping = Assert.Single(plan.Mappings);
+        Assert.Equal([ArmorArchive, second.ArchiveId], mapping.UsedByArchiveIds);
+        Assert.Equal(["B-08", "FS-38"], mapping.UsedByDisplayNames);
+    }
+
+    [Fact]
+    public void BuildPlan_MapsSharedUnitOnceAcrossBodyVariantsAndMeshFacts()
+    {
+        var shared = Part(0x40, UnitMeshPartKind.Torso, UnitMeshPartLayer.Armor, UnitMeshBodyVariant.Stocky);
+        var (plan, _, _) = CliVpkRekey.BuildPlan(Source(), [Target(shared,
+            shared with { BodyVariant = UnitMeshBodyVariant.Slim, MeshInfoIndex = 1 })]);
+
+        Assert.True(plan.CanContinue);
+        Assert.Single(plan.Mappings);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void BuildPlan_BlocksConflictingSourcesForSharedUnit(bool acrossArchives)
+    {
+        var shared = Part(0x40, UnitMeshPartKind.Torso, UnitMeshPartLayer.Armor, UnitMeshBodyVariant.Any);
+        var conflicting = shared with { PartKind = UnitMeshPartKind.LeftArm };
+        var targets = acrossArchives
+            ? new[] { Target(shared), new EquipmentUnitCatalogEntry("cccccccccccccccc", "Armor", "Other", [conflicting]) }
+            : new[] { Target(shared, conflicting) };
+
+        var (plan, _, _) = CliVpkRekey.BuildPlan(Source(), targets);
+
+        Assert.False(plan.CanContinue);
+        Assert.Single(plan.Mappings);
+        Assert.Contains(plan.Issues, issue => issue.Code == "VpkRekeySharedTargetConflict");
+    }
+
     private static EquipmentUnitCatalogEntry ThreeLayerArmour()
         => new(ArmorArchive, "Armor", "三层护甲",
         [

@@ -21,6 +21,7 @@ class App:
         self.root.minsize(640, 330)
         self.running = False
         self.game_data = tk.StringVar(value=DEFAULT_GAME_DATA)
+        self.animation_threads = tk.StringVar(value="2")
         self.status = tk.StringVar(value="就绪")
         self.buttons: list[ttk.Button] = []
         self._build_ui()
@@ -58,7 +59,13 @@ class App:
         ]
         for row, (label, command) in enumerate(actions):
             button = ttk.Button(button_frame, text=label, command=command)
-            button.grid(row=row, column=0, sticky="ew", padx=12, pady=5)
+            button.grid(row=row, column=0, columnspan=1 if command == self.export_all else 2,
+                        sticky="ew", padx=12, pady=5)
+            if command == self.export_all:
+                thread_frame = ttk.Frame(button_frame)
+                thread_frame.grid(row=row, column=1, padx=(0, 12), pady=5)
+                ttk.Label(thread_frame, text="线程数：").pack(side=tk.LEFT)
+                ttk.Entry(thread_frame, textvariable=self.animation_threads, width=5).pack(side=tk.LEFT)
             self.buttons.append(button)
 
         ttk.Label(frame, textvariable=self.status, relief=tk.SUNKEN, anchor="w").grid(
@@ -161,9 +168,14 @@ class App:
         )
 
     def export_all(self) -> None:
+        threads = self.animation_threads.get().strip()
+        if not threads.isascii() or not threads.isdecimal() or not 1 <= int(threads) <= 16:
+            messagebox.showerror("参数错误", "全量动画打包线程数必须为 1–16 之间的整数。")
+            return
         self.run_cli(
             [
                 "batch", "--keyword", KEYWORD, "--config", str(self.app_dir / "config.toml"),
+                "--threads", str(int(threads)),
                 "--allow-additive", "--rotate-multipliers", "true", "--force",
             ],
             "全量导出 mod 文件",

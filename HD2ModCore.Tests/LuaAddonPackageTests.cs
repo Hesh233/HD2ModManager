@@ -1,4 +1,4 @@
-using HD2ModCore.Infrastructure;
+﻿using HD2ModCore.Infrastructure;
 
 namespace HD2ModCore.Tests;
 
@@ -49,14 +49,93 @@ public sealed class LuaAddonPackageTests
 	{
 		Assert.Throws<InvalidOperationException>(() => PhysBoneLuaSource.ComposeAttachmentFixPackage());
 		var source = LuaAddonCatalog.AttachmentFix("return {testProfile=true}").Source;
-		Assert.Contains("local M = {VERSION = '1.0.8'}", source, StringComparison.Ordinal);
+		Assert.Contains("local M = {VERSION = '1.0.13'}", source, StringComparison.Ordinal);
 		Assert.Contains("options.transfer.new(engine", source, StringComparison.Ordinal);
 		Assert.Contains("experimentalPoseIntent", source, StringComparison.Ordinal);
+        Assert.Contains("cfg.rightAttachmentEnabled", source, StringComparison.Ordinal);
+        Assert.Contains("spec.sourceMount", source, StringComparison.Ordinal);
 		Assert.Contains("performance.strictConsumers", source, StringComparison.Ordinal);
 		Assert.Contains("return {testProfile=true}", source, StringComparison.Ordinal);
 		Assert.DoesNotContain("-- INSERT ", source, StringComparison.Ordinal);
 		Assert.DoesNotContain("M.GRIP_PAIRS = {}", source, StringComparison.Ordinal);
 		Assert.DoesNotContain("local PhysBoneRuntime =", source, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void AttachmentFix_AdapterAndTransferVersionsMatchInComposedEntry()
+	{
+		// Testing Transfer.new directly bypasses install's version gate.
+		var source = LuaAddonCatalog.AttachmentFix("return {testProfile=true}").Source;
+		var transfer = source.IndexOf("local Transfer=(function()", StringComparison.Ordinal);
+		var adapter = source.IndexOf("local AttachmentRuntime=(function()", StringComparison.Ordinal);
+		var profile = source.IndexOf("local profile=(function()", StringComparison.Ordinal);
+		Assert.True(transfer >= 0 && adapter > transfer && profile > adapter);
+		const string pattern = @"VERSION\s*=\s*'([^']+)'";
+		var transferVersion = System.Text.RegularExpressions.Regex.Match(source[transfer..adapter], pattern);
+		var adapterVersion = System.Text.RegularExpressions.Regex.Match(source[adapter..profile], pattern);
+		Assert.True(transferVersion.Success && adapterVersion.Success);
+		Assert.Equal(transferVersion.Groups[1].Value, adapterVersion.Groups[1].Value);
+	}
+
+	[Fact]
+	public void AttachmentFix_Test07UsesChefMissionScopeAndLiveGripMarkers()
+	{
+		var source = LuaAddonCatalog.AttachmentFix("return {testProfile=true}").Source;
+		Assert.Contains("inMission=loader.in_mission,world=loader.world", source, StringComparison.Ordinal);
+        Assert.Contains("sceneContext.firstPerson=viewGuard.sample", source, StringComparison.Ordinal);
+		Assert.Contains("options.armMath, options.sceneContext", source, StringComparison.Ordinal);
+		Assert.Contains("ambiguous_underbarrel_link", source, StringComparison.Ordinal);
+		Assert.Contains("live_right_ik_to_registered_hand", source, StringComparison.Ordinal);
+		Assert.Contains("performance.snapshotPoseCache", source, StringComparison.Ordinal);
+		Assert.Contains("performance.sparseMembership", source, StringComparison.Ordinal);
+		Assert.DoesNotContain("self.nameIds", source, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void AttachmentFix_SidearmNativePathAndRightOutputsAreExplicit()
+	{
+		var source = LuaAddonCatalog.AttachmentFix("return {testProfile=true}").Source;
+		Assert.Contains("preserve_native_held_path_sync_source_right_arm", source, StringComparison.Ordinal);
+		Assert.Contains("right_output_contract_required", source, StringComparison.Ordinal);
+		Assert.Contains("right_world_readback", source, StringComparison.Ordinal);
+		Assert.Contains("record.right", source, StringComparison.Ordinal);
+		Assert.Contains("native_observer", source, StringComparison.Ordinal);
+		Assert.Contains("skinMatricesObserved=false", source, StringComparison.Ordinal);
+		Assert.Contains("cylinder_swivel", source, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void AttachmentFix_FirstPersonBypassesAllWritesAndUsesLiveViewProof()
+	{
+		var source = LuaAddonCatalog.AttachmentFix("return {testProfile=true}").Source;
+		Assert.Contains("fp_camera_matches_main_view", source, StringComparison.Ordinal);
+		Assert.Contains("World", source, StringComparison.Ordinal);
+		Assert.Contains("debug_camera_pose", source, StringComparison.Ordinal);
+		Assert.Contains("if view_bypass(frame,now) then return end", source, StringComparison.Ordinal);
+		Assert.Contains("self:release(members(false))", source, StringComparison.Ordinal);
+		Assert.Contains("all_attachment_arm_and_body_outputs", source, StringComparison.Ordinal);
+		Assert.DoesNotContain("-- INSERT FIRST PERSON GUARD", source, StringComparison.Ordinal);
+	}
+
+
+	[Fact]
+	public void AttachmentFix_FirstPersonKeepsCacheMaintenanceSeparateFromPoseWrites()
+	{
+		var source = LuaAddonCatalog.AttachmentFix("return {testProfile=true}").Source;
+		Assert.Contains("sceneContext.fpWorld=viewGuard.world", source, StringComparison.Ordinal);
+		var start = source.IndexOf("    local function fp_presentation(", StringComparison.Ordinal);
+		var end = source.IndexOf("    local function view_bypass(", start, StringComparison.Ordinal);
+		Assert.True(start >= 0 && end > start);
+		var maintenance = source[start..end];
+		Assert.Contains("identity(item);W.update_unit(item.world,item.unit)", maintenance, StringComparison.Ordinal);
+		Assert.Contains("refresh(a,'avatar')", maintenance, StringComparison.Ordinal);
+		Assert.Contains("refresh(item,'model')", maintenance, StringComparison.Ordinal);
+		Assert.Contains("fp_presentation", maintenance, StringComparison.Ordinal);
+		Assert.Contains("mission~=true then return end", maintenance, StringComparison.Ordinal);
+		Assert.Contains("visibilityWritten=false,linksChanged=false", maintenance, StringComparison.Ordinal);
+		foreach (var forbidden in new[] { "set_local_pose(", "set_world_pose(", "set_visibility(", "link_unit(", "unlink_unit(", "set_animation_state_machine(" })
+			Assert.DoesNotContain(forbidden, maintenance, StringComparison.Ordinal);
+		Assert.True(maintenance.IndexOf("refresh(a,'avatar')", StringComparison.Ordinal) < maintenance.IndexOf("refresh(item,'model')", StringComparison.Ordinal));
 	}
 
 	[Fact]

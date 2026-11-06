@@ -36,12 +36,13 @@ internal static class VpkAnimationBuildService
         Directory.CreateDirectory(outputRoot);
         var snapshot = configPath ?? Path.Combine(outputRoot, "config.toml");
         if (configPath is null) await WriteConfigSnapshotAsync(snapshot, ReadManifestScale(manifest), modDirectory, cancellationToken);
-        await PrepareNativeModelAsync(modDirectory, snapshot, cancellationToken);
+        await PrepareNativeModelAsync(modDirectory, snapshot, cancellationToken, checkOnly: true);
         var calibration = Path.Combine(outputRoot, "calibration");
         var result = await Hd2ModProcess.RunAsync(runner,
             ["-X", "utf8", script, "attachment-runtime", "--manifest", manifest,
              "--model-directory", Path.GetDirectoryName(manifest)!, "--game-data", gameData,
-             "--output", calibration, "--config", snapshot], cancellationToken).ConfigureAwait(false);
+             "--output", calibration, "--config", snapshot, "--attachment-config", ResolveAttachmentConfig(modDirectory),
+             "--mod-directory", modDirectory], cancellationToken).ConfigureAwait(false);
         if (result.ExitCode != 0) throw new InvalidOperationException(Hd2ModProcess.Explain(result, "挂点修正生成"));
         using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
             Path.Combine(calibration, "attachment-build-report.json"), cancellationToken));
@@ -57,6 +58,8 @@ internal static class VpkAnimationBuildService
         };
         var exported = LuaAddonPackageExport.Export(outputRoot, feature);
         var patches = Path.Combine(exported, "patch版");
+        foreach (var name in new[] { "attachment-fix.json", "attachment-profile.json" })
+            File.Copy(Path.Combine(calibration, name), Path.Combine(patches, name), true);
         foreach (var path in Directory.EnumerateFiles(patches, "*.patch_0*").ToArray())
             File.Move(path, path.Replace(".patch_0", ".patch_4", StringComparison.Ordinal));
         foreach (var path in Directory.EnumerateFiles(Path.Combine(calibration, "native-parenting")))
@@ -69,8 +72,9 @@ internal static class VpkAnimationBuildService
         string modDirectory,
         string outputRoot,
         Action<string, int, int, string>? onProgress,
-        CancellationToken cancellationToken, int? sampleCount = null)
+        CancellationToken cancellationToken, int? sampleCount = null, int threads = AnimationThreadCount.Default)
     {
+        AnimationThreadCount.Validate(threads);
         var manifest = FindManifest(modDirectory);
         var runner = Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "runtime", "python.exe");
         var script = Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "main.py");
@@ -88,7 +92,7 @@ internal static class VpkAnimationBuildService
                 throw new IOException("动画输出目录必须为空，不覆盖已有工程。");
             var snapshot = Path.Combine(working, "config.toml");
             await WriteConfigSnapshotAsync(snapshot, ReadManifestScale(manifest), modDirectory, cancellationToken);
-            await PrepareNativeModelAsync(modDirectory, snapshot, cancellationToken);
+            await PrepareNativeModelAsync(modDirectory, snapshot, cancellationToken, checkOnly: true);
             var arguments = new List<string>
             {
                 "-X", "utf8", script, "native-project",
@@ -96,6 +100,7 @@ internal static class VpkAnimationBuildService
                 "--config", snapshot,
                 "--game-data", gameData,
                 "--output", outputRoot,
+                "--threads", threads.ToString(CultureInfo.InvariantCulture),
             };
             if (sampleCount is not null) arguments.AddRange(["--sample-count", sampleCount.Value.ToString(CultureInfo.InvariantCulture)]);
             var result = await Hd2ModProcess.RunAsync(runner, arguments, cancellationToken, onProgress)
@@ -148,8 +153,8 @@ internal static class VpkAnimationBuildService
     /// <summary>
     /// 取与「原生骨架转换」同源的 config.toml，并把 <c>native_skeleton.model_scale</c>
     /// 强制对齐到清单里模型实际用的倍率——Python 侧两边不一致会直接拒绝构建。
-    /// <c>attachment_swap</c> 缺键时强制补 true：ResolveConfig 优先读 Mod 目录自带的旧快照，
-    /// 缺键会静默跳过挂点骨骼交换，让原比例模型与同步动作的挂点行为分叉；显式 false 仍然尊重。
+    /// <c>attachment_swap</c> 缺键时强制设为 false：ResolveConfig 优先读 Mod 目录自带的旧快照，
+    /// 旧配置中的 true 也禁止沿用；模型挂点与动画挂点不得互换。
     /// </summary>
     internal static async Task WriteConfigSnapshotAsync(string snapshotPath, double modelScale, string modDirectory,
         CancellationToken cancellationToken, string? sourceConfig = null)
@@ -163,14 +168,29 @@ internal static class VpkAnimationBuildService
         if (result.ExitCode != 0) throw new InvalidDataException(Hd2ModProcess.Explain(result, "校准配置快照"));
     }
 
-    internal static async Task PrepareNativeModelAsync(string modDirectory, string configPath, CancellationToken cancellationToken)
+    /// <summary>Only writable staging/export directories may be calibrated. Library consumers pass checkOnly.</summary>
+    internal static async Task PrepareStagedNativeModelAsync(string modDirectory, CancellationToken cancellationToken,
+        string? sourceConfig = null)
+    {
+        var manifest = FindManifest(modDirectory);
+        var snapshot = Path.Combine(Path.GetDirectoryName(manifest)!, "config.toml");
+        await WriteConfigSnapshotAsync(snapshot, ReadManifestScale(manifest), modDirectory, cancellationToken, sourceConfig);
+        await PrepareNativeModelAsync(modDirectory, snapshot, cancellationToken);
+    }
+
+    internal static async Task PrepareNativeModelAsync(string modDirectory, string configPath, CancellationToken cancellationToken,
+        bool checkOnly = false)
     {
         var manifest = FindManifest(modDirectory);
         var runner = Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "runtime", "python.exe");
         var script = Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "main.py");
-        var result = await Hd2ModProcess.RunAsync(runner,
-            ["-X", "utf8", script, "prepare-native-model", "--manifest", manifest,
-             "--model-directory", Path.GetDirectoryName(manifest)!, "--config", configPath], cancellationToken);
+        var arguments = new List<string>
+        {
+            "-X", "utf8", script, "prepare-native-model", "--manifest", manifest,
+            "--model-directory", Path.GetDirectoryName(manifest)!, "--config", configPath
+        };
+        if (checkOnly) arguments.Add("--check-only");
+        var result = await Hd2ModProcess.RunAsync(runner, arguments, cancellationToken);
         if (result.ExitCode != 0) throw new InvalidDataException(Hd2ModProcess.Explain(result, "原武器骨准确握点重算"));
     }
 
@@ -185,10 +205,63 @@ internal static class VpkAnimationBuildService
     }
 
     internal static string EnsureAttachmentSwapDefault(string text)
-        => Regex.IsMatch(text, @"(?m)^\s*attachment_swap\s*=") ? text
-            : Regex.IsMatch(text, @"(?m)^\s*\[native_skeleton\]")
-                ? Regex.Replace(text, @"(?m)^(\s*\[native_skeleton\][^\n]*)$", "$1\nattachment_swap = true")
-                : text + "\n[native_skeleton]\nattachment_swap = true\n";
+    {
+        // Force rejected legacy true values off; do not let an old library snapshot re-enable swaps.
+        if (Regex.IsMatch(text, @"(?m)^\s*attachment_swap\s*="))
+            return Regex.Replace(text, @"(?m)^(\s*attachment_swap\s*=).*$", "$1 false");
+        return Regex.IsMatch(text, @"(?m)^\s*\[native_skeleton\]")
+            ? Regex.Replace(text, @"(?m)^(\s*\[native_skeleton\][^\n]*)$", "$1\nattachment_swap = false")
+            : text + "\n[native_skeleton]\nattachment_swap = false\n";
+    }
+
+    internal static string ResolveAttachmentConfig(string modDirectory)
+    {
+        // User-editable policy lives beside the manager, or explicitly beside an individual model.
+        // Never silently override a newly edited global policy with an old generated snapshot.
+        foreach (var path in new[] { Path.Combine(modDirectory, "attachment-fix.json"),
+            Path.Combine(AppContext.BaseDirectory, "config", "attachment-fix.json"),
+            Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "attachment-fix.json") })
+            if (File.Exists(path)) return path;
+        throw new FileNotFoundException("缺少 attachment-fix.json 挂点修正配置，请更新完整管理器。");
+    }
+
+    internal static async Task PrepareSingleModelAsync(string modDirectory, CancellationToken cancellationToken)
+    {
+        var runner = Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "runtime", "python.exe");
+        var script = Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "main.py");
+        var result = await Hd2ModProcess.RunAsync(runner,
+            ["-X", "utf8", script, "single-hd2-project", "prepare-model", "--model-directory", modDirectory,
+             "--game-data", SettingsService.GetGameDataFolder(), "--config", NativeSkeletonProjectService.ResolveConfig(modDirectory)], cancellationToken);
+        if (result.ExitCode != 0) throw new InvalidDataException(Hd2ModProcess.Explain(result, "单 HD2 骨架配置生成"));
+    }
+
+    internal static async Task<string> BuildSingleAsync(string modDirectory, string outputRoot,
+        Action<string, int, int, string>? onProgress, CancellationToken cancellationToken, int? sampleCount = null, int threads = AnimationThreadCount.Default)
+    {
+        AnimationThreadCount.Validate(threads);
+        var payload = Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName);
+        if (!File.Exists(Path.Combine(payload, "single-skeleton.json"))) payload = modDirectory;
+        if (!File.Exists(Path.Combine(payload, "single-skeleton.json")))
+            throw new InvalidDataException("单骨架模型缺少生成配置，请重新导入 VPK；不能混用双骨架模型。");
+        var runner = Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "runtime", "python.exe");
+        var script = Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "main.py");
+        var arguments = new List<string> { "-X", "utf8", script, "single-hd2-project", "build",
+            "--model-directory", payload, "--game-data", SettingsService.GetGameDataFolder(), "--output", outputRoot,
+            "--threads", threads.ToString(CultureInfo.InvariantCulture) };
+        if (sampleCount is not null) arguments.AddRange(["--sample-count", sampleCount.Value.ToString(CultureInfo.InvariantCulture)]);
+        var result = await Hd2ModProcess.RunAsync(runner, arguments, cancellationToken, onProgress);
+        if (result.ExitCode != 0) throw new InvalidDataException(Hd2ModProcess.Explain(result, "单 HD2 骨架动画生成"));
+        SingleSkeletonAnimationReport.Validate(File.ReadAllText(Path.Combine(outputRoot, "build-report.json"), Encoding.UTF8), allowSample: sampleCount is not null);
+        var runtime = Path.Combine(outputRoot, "runtime");
+        var name = Path.GetFileName(modDirectory);
+        if (name.StartsWith(VpkImportService.SingleModelPrefix, StringComparison.Ordinal)) name = name[VpkImportService.SingleModelPrefix.Length..];
+        name = VpkImportService.SingleAnimationPrefix + "(" + name + ")";
+        File.WriteAllText(Path.Combine(runtime, "manifest.json"), JsonSerializer.Serialize(new { Version = 1,
+            Guid = new Guid(System.Security.Cryptography.MD5.HashData(Encoding.UTF8.GetBytes("single-animation:" + name))),
+            Name = name, Description = sampleCount is null ? "[全量动作文件]" : "[抽样动作文件：不可用于全量部署]" }), new UTF8Encoding(false));
+        File.Copy(Path.Combine(outputRoot, "build-report.json"), Path.Combine(runtime, "build-report.json"));
+        return runtime;
+    }
 
     private static void VerifyReport(string reportPath)
     {

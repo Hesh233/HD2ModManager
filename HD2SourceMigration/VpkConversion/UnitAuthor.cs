@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical;
 using HD2SourceModel;
@@ -221,14 +222,32 @@ public sealed class UnitAuthor
 			return new(null, null, null, diagnostics);
 		}
 
+		// Rebuild relocates MeshInfo by copying donor headers. Updating only the
+		// in-memory bounds above therefore left stale donor bounds in the actual package.
+		var authoredToc = rebuilt.Output.TocData.ToArray();
+		var authoredMeshes = rebuilt.Model.Meshes.Select(mesh =>
+		{
+			if (!boundsByMesh.TryGetValue(mesh.Index, out var bounded)) return mesh;
+			WriteSerializedCullingBounds(authoredToc, mesh.Offset, bounded.CullingBounds.Values);
+			return mesh with { CullingBounds = bounded.CullingBounds };
+		}).ToArray();
 		// 槽位是变长记录，只能拼字节；见 UnitCustomizationRewriter 的说明。
 		var (tocData, model) = UnitCustomizationRewriter.Rewrite(
-			rebuilt.Model, rebuilt.Output.TocData, request.Customization, diagnostics);
+			rebuilt.Model with { Meshes = authoredMeshes }, authoredToc, request.Customization, diagnostics);
 		if (diagnostics.Count != 0)
 			return new(null, null, null, diagnostics);
 
 		return new(tocData, rebuilt.Output.GpuData, model, []);
 	}
+
+    internal static void WriteSerializedCullingBounds(byte[] toc, uint meshOffset, IReadOnlyList<float> bounds)
+    {
+        if (bounds.Count != 7 || bounds.Any(v => !float.IsFinite(v)))
+            throw new ArgumentException("Mesh bounds require seven finite floats.", nameof(bounds));
+        for (var k = 0; k < 7; k++)
+            BinaryPrimitives.WriteSingleLittleEndian(toc.AsSpan(
+                checked((int)meshOffset + 8 + k * sizeof(float)), sizeof(float)), bounds[k]);
+    }
 
 	private sealed record BuiltRawMesh(
 		UnitRawMeshData Raw,

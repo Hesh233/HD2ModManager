@@ -147,6 +147,8 @@
     -->
     <EmbeddedResource Include="..\HD2PhysBoneCompat\src\attachment_fix_runtime.lua"
                       Link="PhysBone\attachment_fix_runtime.lua" />
+    <EmbeddedResource Include="..\HD2PhysBoneCompat\src\native_first_person_guard.lua"
+                      Link="PhysBone\native_first_person_guard.lua" />
     <EmbeddedResource Include="..\HD2PhysBoneCompat\src\native_grip_transfer_test.lua"
                       Link="PhysBone\native_grip_transfer_test.lua" />
     <EmbeddedResource Include="..\HD2PhysBoneCompat\src\native_grip_transfer_test_entry.lua"

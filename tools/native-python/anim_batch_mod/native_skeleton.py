@@ -220,6 +220,47 @@ def append_bones(data, manifest):
         + b''.join(name.encode('utf-8') + b'\0' for name in [*bones.names, *(n['name'] for n in nodes)]))
 
 
+
+def source_blend_mask_owners(bones,manifest):
+    """Mask channels follow driver names or the actual published parent graph.
+
+    Source exports can contain valid disconnected Armature/helper roots with
+    no HD2 driver. append_unit/source_parent publish those under native Unit
+    node 0; inherit that parent's Bones channel by HASH, not Unit index/name.
+    Do not remove the root or replace its mask with an arbitrary hips/zero mask.
+    """
+    indices={name:i for i,name in enumerate(bones.names)}
+    by_hash={h:i for i,h in enumerate(bones.hashes)}
+    native_count=len(manifest['driverHashes']);nodes=manifest['bones'];motion=layers(manifest)
+    def channel(driver):
+        if driver not in indices:raise ValueError('Missing blend-mask driver channel: '+str(driver))
+        return indices[driver]
+    owners=[]
+    for i,node in enumerate(nodes):
+        if node['driver'] is not None:owner=channel(node['driver'])
+        else:
+            parent=source_parent(i,node,manifest,native_count)
+            if parent<native_count:
+                h=manifest['driverHashes'][parent]
+                if h not in by_hash:
+                    raise ValueError('Unmapped Source root '+node['name']+' has no animated published-parent mask channel')
+                owner=by_hash[h]
+            elif parent<native_count+len(nodes):
+                pi=parent-native_count
+                if pi>=i:raise ValueError('Source mask parent must precede its child: '+node['name'])
+                owner=owners[pi]
+            else:
+                mi=parent-native_count-len(nodes)
+                if not 0<=mi<len(motion):raise ValueError('Invalid published Source mask parent: '+node['name'])
+                owner=channel(motion[mi]['driver'])
+        owners.append(owner)
+    for row in motion+shadows(manifest):
+        owner=channel(row['driver']) if row in motion else row['maskChannel']
+        if not isinstance(owner,int) or not 0<=owner<len(bones.names):raise ValueError('Invalid attachment mask channel')
+        owners.append(owner)
+    return owners
+
+
 def append_state_machine_masks(data, bones, manifest):
     """Relocate only the blend-mask table; all states/events/unknown blocks retain their offsets."""
     validate_manifest(manifest)
@@ -230,19 +271,7 @@ def append_state_machine_masks(data, bones, manifest):
         return bytearray(data), 0
     if offset < 76 or offset + 4 + count * 4 > len(data) or struct.unpack_from('<I', data, offset)[0] != count:
         raise ValueError('Invalid StateMachine blend-mask table')
-    indices = {name: i for i, name in enumerate(bones.names)}
-    owners = []
-    for node in manifest['bones']:
-        if node['driver'] is not None:
-            owners.append(indices[node['driver']])
-        elif node['parent'] is not None:
-            owners.append(owners[node['parent']])
-        else:
-            raise ValueError('Source root has no blend-mask driver')
-    for row in layers(manifest)+shadows(manifest):
-        owner=indices[row['driver']] if row in layers(manifest) else row['maskChannel']
-        if not isinstance(owner,int) or not 0<=owner<len(bones.names):raise ValueError('Invalid attachment mask channel')
-        owners.append(owner)
+    owners = source_blend_mask_owners(bones,manifest)
     table = bytearray(struct.pack('<I', count) + b'\0' * (count * 4))
     for i in range(count):
         relative = struct.unpack_from('<I', data, offset + 4 + 4 * i)[0]
@@ -805,6 +834,8 @@ def finalize_native_animation(animation,bones,unit,manifest,options,times,arm_re
             final.entries.sort(key=lambda e:e.time)
             data,extra=compact_constant_tracks(final.to_bytes());removed+=extra
             metrics['attachment_swap']['stage']='after-final-arm-reference'
+    final.entries.sort(key=lambda e:e.time)
+    data,extra=compact_constant_tracks(final.to_bytes());removed+=extra
     metrics['constant_keys_removed']=removed
     return data,metrics
 
@@ -913,7 +944,9 @@ def load_avatar_template(path, original):
     return entry
 
 
-def build_project(manifest_path, config_path, game_data, output, sample_count=None):
+def build_project(manifest_path, config_path, game_data, output, sample_count=None, threads=None):
+    if threads is not None and (isinstance(threads, bool) or not isinstance(threads, int) or not 1 <= threads <= 16):
+        raise ValueError("threads must be an integer between 1 and 16")
     manifest_path, config_path, output = map(Path, (manifest_path, config_path, output))
     manifest = load_manifest(manifest_path)
     from .native_config import resolve_native_config
@@ -924,10 +957,10 @@ def build_project(manifest_path, config_path, game_data, output, sample_count=No
     fps = options.get('fps', 30)
     if isinstance(fps, bool) or not isinstance(fps, int) or not 1 <= fps <= 120:
         raise ValueError('[native_skeleton].fps must be an integer between 1 and 120')
-    workers = options.get('workers', 4)
+    workers = threads if threads is not None else options.get('workers', 4)
     if isinstance(workers, bool) or not isinstance(workers, int) or not 1 <= workers <= 16:
         raise ValueError('[native_skeleton].workers must be an integer between 1 and 16')
-    allowed = {'fps', 'workers', 'apply_driver_config', 'rotate_multipliers', 'rotation_compensation', 'ik_correction', 'model_scale', 'align_standard_grips', 'align_standard_feet','grip_target','stable_grip_pole','grip_soft_distance','foot_y_degrees','avatar_template','arm_reference_archive','preserve_arm_reference_clavicles','attachment_swap','calibration_preset','runtime_policy','calibrate_weapon_bones','use_model_preset'}
+    allowed = {'fps', 'workers', 'apply_driver_config', 'rotate_multipliers', 'rotation_compensation', 'ik_correction', 'model_scale', 'align_standard_grips', 'align_standard_feet','grip_target','stable_grip_pole','grip_soft_distance','foot_y_degrees','avatar_template','arm_reference_archive','preserve_arm_reference_clavicles','attachment_swap','calibration_preset','runtime_policy','calibrate_weapon_bones','use_model_preset','attachment_mode'}
     if set(options) - allowed:
         raise ValueError(f'Unknown native_skeleton settings: {sorted(set(options)-allowed)}')
     if not isinstance(options.get('stable_grip_pole',False),bool):
@@ -951,7 +984,7 @@ def build_project(manifest_path, config_path, game_data, output, sample_count=No
     arm_reference_archive = options.get('arm_reference_archive')
     if arm_reference_archive is not None and (not isinstance(arm_reference_archive, str) or not arm_reference_archive.strip()):
         raise ValueError('native_skeleton.arm_reference_archive must be a nonempty path')
-    for key in allowed - {'fps', 'workers', 'model_scale','grip_target','grip_soft_distance','foot_y_degrees','avatar_template','arm_reference_archive','calibration_preset','runtime_policy'}:
+    for key in allowed - {'fps', 'workers', 'model_scale','grip_target','grip_soft_distance','foot_y_degrees','avatar_template','arm_reference_archive','calibration_preset','runtime_policy','attachment_mode'}:
         if key in options and not isinstance(options[key], bool):
             raise ValueError(f'native_skeleton.{key} must be true or false')
     # 挂点对调（B22）：[attachment_swap] 表驱动「动画侧节点级互换」；开关在
@@ -959,6 +992,10 @@ def build_project(manifest_path, config_path, game_data, output, sample_count=No
     swap_config=attachment_swap_plan(options.get('attachment_swap_config') or config_document.get('attachment_swap',{}),
         options.get('attachment_swap',False))
     options = dict(options)
+    if options.get('attachment_mode')=='source-lua-native-hd2-v1' and swap_config:
+        raise ValueError('Managed Source/Lua route forbids attachment swap')
+    if options.get('attachment_mode') not in (None,'source-lua-native-hd2-v1'):
+        raise ValueError('Unsupported native attachment mode')
     options['attachment_swap_config'] = swap_config
     config = ModConfig.load(config_path)
     if output.exists() and any(output.iterdir()):
@@ -966,7 +1003,7 @@ def build_project(manifest_path, config_path, game_data, output, sample_count=No
     output.mkdir(parents=True, exist_ok=True)
     shutil.copy2(config_path, output/'config.toml')
     (output/'source-skeleton.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
-    report = {'status': 'building', 'game_tested': False, 'animations': [], 'files': [],
+    report = {'status': 'building', 'threads': workers, 'game_tested': False, 'animations': [], 'files': [],
               'attachment_swap_contract': 'v2-after-arm-reference-scaled-parent',
               'source_bones': len(manifest['bones']), 'config_sha256': hashlib.sha256(config_path.read_bytes()).hexdigest()}
     def save_report():
@@ -994,6 +1031,8 @@ def build_project(manifest_path, config_path, game_data, output, sample_count=No
         _, bones_entry = resolve(unit.bones_ref, BONE_TYPE_ID)
         bones = BonesData.parse(bones_entry.toc_data)
         ensure_hand_references(manifest,unit,bones)
+        from .attachment_skeleton import resolve_source_attachment_channels
+        resolve_source_attachment_channels(manifest,unit,bones)
         (output/'source-skeleton.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
         _, state = resolve(unit.state_machine_ref, STATE_MACHINE_TYPE_ID)
         animation_ids = sorted(set(parse_state_machine_animation_ids(state.toc_data)))
@@ -1053,6 +1092,11 @@ def build_project(manifest_path, config_path, game_data, output, sample_count=No
         state_entry.toc_data = patched_state
         write_chunk([state_entry])  # current-game masks belong to the animation companion, never the model package
         report['blend_masks_extended'] = mask_count
+        mask_owners=source_blend_mask_owners(bones,manifest) if mask_count else []
+        report['unmapped_root_masks']=[dict(name=n['name'],sourceName=n.get('sourceName'),
+            sourceIndex=i,publishedParent=source_parent(i,n,manifest,len(manifest['driverHashes'])),
+            ownerChannel=mask_owners[i],ownerName=bones.names[mask_owners[i]])
+            for i,n in enumerate(manifest['bones']) if mask_count and n['parent'] is None and n['driver'] is None]
         report['state_machine'] = str(state.file_id)
         entries = []
         with ProcessPoolExecutor(max_workers=workers) as executor:
@@ -1112,9 +1156,11 @@ def main(argv=None):
     parser.add_argument('--game-data', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--sample-count',type=int,help='Diagnostic only: select 1..32 clips, never production default')
+    from .cli import parse_thread_count
+    parser.add_argument('--threads', type=parse_thread_count, help='Parallel animation workers (1..16); overrides config workers')
     args = parser.parse_args(argv)
     try:
-        report = build_project(args.manifest, args.config, args.game_data, args.output,args.sample_count)
+        report = build_project(args.manifest, args.config, args.game_data, args.output,args.sample_count,args.threads)
         print(json.dumps({'status': report['status'], 'animations': len(report['animations']), 'output': str(args.output)}, ensure_ascii=False))
         return 0
     except Exception as error:

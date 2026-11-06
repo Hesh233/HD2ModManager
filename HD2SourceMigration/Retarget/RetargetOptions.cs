@@ -35,7 +35,7 @@ public enum RetargetSkeleton
 	/// 玩家看到的就是这里摆出来的网格。生产配置。</summary>
 	Native,
 
-	/// <summary>snap 后的 rest。idle 帧会拖拽网格（缺脚跟、脚踝撕裂、长脖子、裙子裂开）。仅供 A/B。</summary>
+	/// <summary>snap 后的 rest。idle 帧会拖拽网格（缺脚跟、脚踝撕裂、长脖子、裙子裂开）。只有配套同步骨位/骨轴的动画才能发货；原版动画会产生错位。</summary>
 	Snap,
 }
 
@@ -90,6 +90,9 @@ public sealed record RetargetOptions
 	/// <summary>统一缩放；<c>0</c> = 由"脚底 → 头关节"推出。</summary>
 	public double Scale { get; init; }
 
+	/// <summary>Keep source-sized rigs grounded instead of re-anchoring their head to the template.</summary>
+	public bool AnchorAtGround { get; init; }
+
 	/// <summary>在自动身高适配之后应用的整体模型倍率；默认 1。</summary>
 	public double ModelScale { get; init; } = 1;
 
@@ -105,6 +108,9 @@ public sealed record RetargetOptions
 
 	// ---- 3 / 4b: 骨架 ------------------------------------------------------
 	public RetargetSkeleton Skeleton { get; init; } = RetargetSkeleton.Native;
+
+	/// <summary>Fit the unanimated head-tip helper; single batch must retain its original local offset.</summary>
+	public bool SnapHeadTip { get; init; } = true;
 
 	/// <summary>把轴对称 delta 烘进工作 rest。</summary>
 	public bool AxisDeltas { get; init; } = true;

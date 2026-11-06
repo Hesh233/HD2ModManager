@@ -6,6 +6,32 @@ using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 
 try
 {
+if(args[0]=="--audit-single-model")
+{
+    await SingleHd2ModelAudit.RunAsync(args);return;
+}
+if(args[0]=="--rekey-existing-vpk")
+{
+    await VpkRekeyRecovery.RunAsync(args);return;
+}
+if(args[0]=="--verify-vpk-reimport")
+{
+    await VpkImportSimulation.VerifyReimportAsync(args);return;
+}
+if(args[0]=="--simulate-vpk-import-target")
+{
+    var target = args[5];
+    var forwarded = args.Take(5).Concat(args.Skip(6)).ToArray();
+    await VpkImportSimulation.RunAsync(forwarded, targetArchive:target);return;
+}
+if(args[0]=="--simulate-vpk-import-single")
+{
+    await VpkImportSimulation.RunAsync(args, single:true);return;
+}
+if(args[0]=="--simulate-vpk-import")
+{
+    await VpkImportSimulation.RunAsync(args);return;
+}
 if(args[0]=="--simulate-vpk")
 {
     var published=Path.GetFullPath(args[1]);var output=Path.GetFullPath(args[2]);
@@ -41,11 +67,16 @@ if(args[0]=="--simulate-vpk")
     };
     var assembly=AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(published,"HD2ModManager.dll"));
     var service=assembly.GetType("HD2ModManager.Services.VpkAnimationBuildService",true)!;
+    // This legacy CLI-only simulation has no VpkImportService staging boundary.
+    await (Task)service.GetMethod("PrepareStagedNativeModelAsync",BindingFlags.NonPublic|BindingFlags.Static)!
+        .Invoke(null,[model,CancellationToken.None,null])!;
     var lua=(Task<string>)service.GetMethod("BuildAttachmentFixAsync",BindingFlags.NonPublic|BindingFlags.Static)!
         .Invoke(null,[model,Path.Combine(output,"attachment"),CancellationToken.None,null])!;
     var luaDirectory=await lua;
-    var animation=(Task<string>)service.GetMethod("BuildAsync",BindingFlags.NonPublic|BindingFlags.Static)!
-        .Invoke(null,[model,Path.Combine(output,"animations"),null,CancellationToken.None,(int?)sampleCount])!;
+    var animationMethod=service.GetMethod("BuildAsync",BindingFlags.NonPublic|BindingFlags.Static)!;
+    object?[] animationArguments=[model,Path.Combine(output,"animations"),null,CancellationToken.None,(int?)sampleCount];
+    if(animationMethod.GetParameters().Length==6) animationArguments=[..animationArguments,2];
+    var animation=(Task<string>)animationMethod.Invoke(null,animationArguments)!;
     var runtime=await animation;
     var package=Path.Combine(output,"animation-package");Directory.CreateDirectory(package);
     foreach(var file in Directory.EnumerateFiles(runtime))File.Copy(file,Path.Combine(package,Path.GetFileName(file)));

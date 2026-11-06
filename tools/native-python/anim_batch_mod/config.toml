@@ -19,10 +19,9 @@ apply_driver_config = true
 rotate_multipliers = true
 rotation_compensation = false
 ik_correction = true
-# 挂点对调（2026-11-05 B22）：动画侧节点级互换。引擎挂点(attach_hand_r/l)逐帧携带
-# test01/test02 武器骨互换前的世界位置（policy=position 只换位置、保留原生朝向；
-# pose 连朝向一起互换），武器骨携带原生挂点路径——两侧挂点职责在打包动画里对调。
-attachment_swap = true
+# HD2 mounts keep HD2 tracks; Source mounts are recalculated and corrected by Lua.
+attachment_swap = false
+attachment_mode = "source-lua-native-hd2-v1"
 
 [attachment_swap]
 policy = "position"
@@ -227,3 +226,11 @@ r_ring_finger2 = [-0.0004485900522965213, -0.14780870724711243, 7.15818749940848
 r_middle_finger3 = [1.259403048452343e-06, 1.4757799388141844e-07, -5.814034490878722e-07, 0.9999999999990271]
 l_ring_finger3 = [-1.0019005110312347e-06, 1.0856580196551833e-05, 8.96321316556925e-07, 0.9999999999401639]
 l_middle_finger3 = [1.3403493924202263e-06, -2.8365559634009602e-05, 2.923227089814425e-06, 0.9999999995925266]
+
+# Single VPK -> HD2 skeleton route. Uses the ORIGINAL batch processor, not native-v15/B23.
+[single_skeleton]
+rotate_multipliers = true
+# Required whenever the converted single model changes HD2 bind axes.
+rotation_compensation = true
+ik_correction = true
+allow_additive = true

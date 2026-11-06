@@ -263,11 +263,7 @@ internal static class CliVpkRekey
 		// Overwrite 是"顶掉同名 patch"的一层：旧变体必须先清掉，否则 sidecar 会与新 TOC 不配。
 		foreach (var stale in Directory.EnumerateFiles(destinationDirectory, Path.GetFileName(produced) + "*"))
 			DeleteQuietly(stale);
-		foreach (var suffix in new[] { "", ".gpu_resources", ".stream" })
-		{
-			var from = produced + suffix;
-			if (File.Exists(from)) File.Copy(from, destination + suffix, overwrite: true);
-		}
+		CopyPatchFamily(produced, destination);
 
 		// 来源 Unit → 目标 Unit。开关表与烘焙都要用它，所以先算一次。
 		var unitMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -340,6 +336,17 @@ internal static class CliVpkRekey
 			TargetNames = selected.Select(entry => entry.DisplayName).Distinct(StringComparer.Ordinal).ToArray(),
 			HeadMerge = headMergeState,
 		};
+	}
+
+	// Explicit empty sidecars prevent the deployment resolver falling back to the old source family.
+	internal static void CopyPatchFamily(string source, string destination)
+	{
+		File.Copy(source, destination, overwrite: true);
+		foreach (var suffix in new[] { ".gpu_resources", ".stream" })
+		{
+			if (File.Exists(source + suffix)) File.Copy(source + suffix, destination + suffix, overwrite: true);
+			else File.WriteAllBytes(destination + suffix, []);
+		}
 	}
 
 	/// <summary>
@@ -464,19 +471,35 @@ internal static class CliVpkRekey
 	{
 		var snapshot = await CliEquipmentFacts.LoadAsync(paths, cancellationToken).ConfigureAwait(false);
 		var facts = CliEquipmentFacts.Project(snapshot, null, null);
-		var self = facts.Kits.FirstOrDefault(kit =>
-			kit.ArchiveId.Equals(archiveId, StringComparison.OrdinalIgnoreCase));
-		if (self is null)
-			return [archiveId];
+		return ExpandTargetKit(facts.Kits, archiveId);
+	}
 
-		var siblings = facts.Kits
-			.Where(kit => kit.SetId == self.SetId
-				&& !kit.ArchiveId.Equals(archiveId, StringComparison.OrdinalIgnoreCase)
-				&& (kit.Category.Equals("Armor", StringComparison.OrdinalIgnoreCase)
-					|| kit.Category.Equals("Helmet", StringComparison.OrdinalIgnoreCase)))
+	/// <summary>配套身份由 DLC + set + 相反装备类别确定；setId 本身并不唯一。</summary>
+	internal static IReadOnlyList<string> ExpandTargetKit(
+		IReadOnlyList<CliEquipmentFactKit> kits, string archiveId)
+	{
+		var selves = kits.Where(kit => kit.ArchiveId.Equals(archiveId, StringComparison.OrdinalIgnoreCase)).ToArray();
+		if (selves.Length == 0) return [archiveId];
+		if (selves.Select(kit => (kit.DlcId, kit.SetId, Category: kit.Category.ToLowerInvariant())).Distinct().Count() != 1)
+			throw new CliUserException("TargetKitAmbiguous", $"目标归档 {archiveId} 对应多个装备身份，请显式指定护甲和头盔归档。");
+		var self = selves[0];
+		var oppositeCategory = self.Category.ToLowerInvariant() switch
+		{
+			"armor" => "Helmet",
+			"helmet" => "Armor",
+			_ => null,
+		};
+		if (oppositeCategory is null || self.SetId == 0) return [archiveId];
+		var siblings = kits
+			.Where(kit => kit.SetId == self.SetId && kit.DlcId == self.DlcId
+				&& kit.Category.Equals(oppositeCategory, StringComparison.OrdinalIgnoreCase)
+				&& !kit.ArchiveId.Equals(archiveId, StringComparison.OrdinalIgnoreCase))
 			.Select(kit => kit.ArchiveId)
 			.Distinct(StringComparer.OrdinalIgnoreCase)
 			.ToArray();
+		if (siblings.Length > 1)
+			throw new CliUserException("TargetKitAmbiguous",
+				$"{self.DisplayName} 的 DLC/set 下存在多个配套 {oppositeCategory}：{string.Join("、", siblings)}。请显式指定护甲和头盔归档，不能自动选择全部装备。");
 		return [archiveId, .. siblings];
 	}
 
@@ -584,6 +607,9 @@ internal static class CliVpkRekey
 	{
 		var mappings = new List<CrossArmorTransferMapping>();
 		var notes = new List<string>();
+		var issues = new List<CoreIssue>();
+		// Direct reuse writes one whole payload per physical Unit, even across archives/body variants.
+		var mappedUnitIndices = new Dictionary<AssetKey, int>();
 
 		// 头身合并：能不能做、落在哪两层，全由**目标护甲自己有多少层**算出来（见 ResolveHeadBodyMerge）。
 		// 第三个返回值说明"这一次实际发生了什么"：开关打开不等于合并成功。
@@ -615,11 +641,6 @@ internal static class CliVpkRekey
 			var isMergeArmour = merge is not null
 				&& target.ArchiveId.Equals(merge.ArmourArchiveId, StringComparison.OrdinalIgnoreCase);
 
-			// 映射的单位是 **unit**，不是 (部位, 身形) 组合。注册素体里同一个 unit 常常同时
-			// 挂在 body 0 和 body 1 上（"合并为 Any"之前的形状），按件遍历就会给同一个目标
-			// unit 生成两条映射，计划校验直接以 DuplicateTargetMapping 拒掉整份计划。
-			// A unit is the unit of work: two pieces sharing one unit must map once.
-			var mappedUnits = new HashSet<AssetKey>();
 			var fallbackNotedKinds = new HashSet<UnitMeshPartKind>();
 
 			// **每个部位落在哪一层**：按 Undergarment → Armor → Accessory 的顺序找，
@@ -693,9 +714,6 @@ internal static class CliVpkRekey
 					continue;
 				}
 
-				if (!mappedUnits.Add(part.UnitAssetKey))
-					continue;
-
 				// 承载层现在**总是**该部位存在的最外层（外层优先）。这条说明留着是因为
 				// 它是排查依据：哪个部位由哪一层承载，直接决定进游戏会不会被剔除代理挡住。
 				// 头盔不算——它天生就只有一层；头身合并时它由 ResolveHeadBodyMerge 单独说明。
@@ -724,6 +742,25 @@ internal static class CliVpkRekey
 					UsedByDisplayNames: [target.DisplayName],
 					IsManual: false,
 					IsSuppressed: false);
+				if (mappedUnitIndices.TryGetValue(part.UnitAssetKey, out var existingIndex))
+				{
+					var existing = mappings[existingIndex];
+					if (existing.Source!.UnitAssetKey != matched.UnitAssetKey
+						|| existing.Source.MeshInfoIndex != matched.MeshInfoIndex)
+					{
+						issues.Add(new CoreIssue(CoreIssueSeverity.Error, "VpkRekeySharedTargetConflict",
+							$"共享目标 Unit 0x{part.UnitAssetKey.FileId:x16} 被分配给不同来源："
+							+ $"{string.Join("、", existing.UsedByDisplayNames)} / {target.DisplayName}。请分别更换目标，不能取第一条覆盖冲突。"));
+						continue;
+					}
+					mappings[existingIndex] = existing with
+					{
+						UsedByArchiveIds = [.. existing.UsedByArchiveIds.Concat(mapping.UsedByArchiveIds).Distinct(StringComparer.OrdinalIgnoreCase)],
+						UsedByDisplayNames = [.. existing.UsedByDisplayNames.Concat(mapping.UsedByDisplayNames).Distinct(StringComparer.Ordinal)],
+					};
+					continue;
+				}
+				mappedUnitIndices.Add(part.UnitAssetKey, mappings.Count);
 				mappings.Add(mapping);
 			}
 		}
@@ -754,7 +791,7 @@ internal static class CliVpkRekey
 			targets,
 			mappings,
 			Impacts: [],
-			Issues: []), notes, headMergeState);
+			Issues: issues), notes, headMergeState);
 	}
 
 	/// <summary>头身合并的落点：哪件护甲、哪件头盔，身体与头各在哪一层。</summary>

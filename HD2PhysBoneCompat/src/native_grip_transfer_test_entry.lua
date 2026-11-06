@@ -9,6 +9,9 @@ end)()
 local Transfer=(function()
 -- INSERT TRANSFER MODULE
 end)()
+local FirstPersonGuard=(function()
+-- INSERT FIRST PERSON GUARD
+end)()
 local AttachmentRuntime=(function()
 -- INSERT ATTACHMENT ADAPTER
 end)()
@@ -28,7 +31,11 @@ local function log(line)
         if urgent or now-lastFlush>=0.5 then handle:flush();lastFlush=now end
     end
 end
-local made,runtime=pcall(AttachmentRuntime.install,stingray,{profile=profile,logger=log,armMath=ArmMath,transfer=Transfer})
+local sceneContext={inMission=loader.in_mission,world=loader.world}
+local viewGuard=FirstPersonGuard.new(stingray,sceneContext)
+sceneContext.firstPerson=viewGuard.sample
+sceneContext.fpWorld=viewGuard.world
+local made,runtime=pcall(AttachmentRuntime.install,stingray,{profile=profile,logger=log,armMath=ArmMath,transfer=Transfer,sceneContext=sceneContext})
 if not made then handle:close();error(runtime) end
 __hd2_grip_b23=runtime
 local function stop(reason)

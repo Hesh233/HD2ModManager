@@ -330,51 +330,66 @@ namespace HD2ModManager.Services
                             await PromptAndApplyTargetArmorAsync(modelGuid!, modDirectory, ct)
                                 .ConfigureAwait(false);
 
-                            // 挂点对调（2026-11-05）：选择「制作原骨架护甲」后，同时产出
-                            // [骨骼挂点修正] 独立 lua 包并作为独立 Mod 入库（与 [原比例混合动画]
-                            // 同一套命名/回滚语义）。它对应的是原骨架模型本身，不依赖是否
-                            // 生成骨架动画。配置与 Avatar/Bones 补丁按本模型生成，复用 B23 运行时。
                             var modelBaseName = Path.GetFileName(modDirectory);
-                            var gripFixName = VpkImportService.NativeGripFixPrefix
-                                + (modelBaseName.StartsWith(VpkImportService.NativeModelPrefix, StringComparison.Ordinal)
-                                    ? modelBaseName[VpkImportService.NativeModelPrefix.Length..]
-                                    : modelBaseName);
-                            var gripFixRoot = Path.Combine(Path.GetTempPath(),
-                                "hd2gripx-" + Guid.NewGuid().ToString("N")[..8]);
-                            Directory.CreateDirectory(gripFixRoot);
-                            var gripFixExported = await VpkAnimationBuildService.BuildAttachmentFixAsync(
-                                modDirectory, gripFixRoot, ct).ConfigureAwait(false);
-                            var gripFixPackageDirectory = Path.Combine(gripFixRoot, gripFixName);
-                            Directory.Move(Path.Combine(gripFixExported, "patch版"), gripFixPackageDirectory);
-                            RewriteLuaPackageIdentity(gripFixPackageDirectory, gripFixName);
-                            var gripFixGuids = await ImportPathAsync(
-                                gripFixPackageDirectory,
-                                ct,
-                                notifyLibraryChanged: false,
-                                refreshDerivedData: false,
-                                allowVpkConversion: false).ConfigureAwait(false);
-                            guids.AddRange(gripFixGuids);
-                            affected.AddRange(LastAffectedNodeIds);
-                            conflicts |= LastImportHasOptionPathConflicts;
-                            VpkImportService.DeleteQuietly(gripFixRoot);
-                            LogService.Info($"骨骼挂点修正包「{gripFixName}」已作为独立 Mod 导入"
-                                + "（包含本模型的 Lua 与配套骨架；头部子节点保留原生行为）。");
+                            // Only dual Source/HD2 models need the model-specific attachment Lua companion.
+                            if (!package.SingleHd2Skeleton)
+                            {
+                                // 双骨架路线：同时产出
+                                // [骨骼挂点修正] 独立 lua 包并作为独立 Mod 入库（与 [原比例混合动画]
+                                // 同一套命名/回滚语义）。它对应的是原骨架模型本身，不依赖是否
+                                // 生成骨架动画。配置与 Avatar/Bones 补丁按本模型生成，复用 B23 运行时。
+                                var gripFixName = VpkImportService.NativeGripFixPrefix
+                                    + (modelBaseName.StartsWith(VpkImportService.NativeModelPrefix, StringComparison.Ordinal)
+                                        ? modelBaseName[VpkImportService.NativeModelPrefix.Length..]
+                                        : modelBaseName);
+                                var gripFixRoot = Path.Combine(Path.GetTempPath(),
+                                    "hd2gripx-" + Guid.NewGuid().ToString("N")[..8]);
+                                Directory.CreateDirectory(gripFixRoot);
+                                var gripFixExported = await VpkAnimationBuildService.BuildAttachmentFixAsync(
+                                    modDirectory, gripFixRoot, ct).ConfigureAwait(false);
+                                var gripFixPackageDirectory = Path.Combine(gripFixRoot, gripFixName);
+                                Directory.Move(Path.Combine(gripFixExported, "patch版"), gripFixPackageDirectory);
+                                RewriteLuaPackageIdentity(gripFixPackageDirectory, gripFixName);
+                                var gripFixGuids = await ImportPathAsync(
+                                    gripFixPackageDirectory,
+                                    ct,
+                                    notifyLibraryChanged: false,
+                                    refreshDerivedData: false,
+                                    allowVpkConversion: false).ConfigureAwait(false);
+                                guids.AddRange(gripFixGuids);
+                                affected.AddRange(LastAffectedNodeIds);
+                                conflicts |= LastImportHasOptionPathConflicts;
+                                VpkImportService.DeleteQuietly(gripFixRoot);
+                                LogService.Info($"骨骼挂点修正包「{gripFixName}」已作为独立 Mod 导入"
+                                    + "（包含本模型的 Lua 与配套骨架；头部子节点保留原生行为）。");
 
+                            }
                             if (!package.WantsNativeAnimation) continue;
-                            _onProgress?.Invoke($"正在为 {Path.GetFileName(modDirectory)} 生成原比例骨架动画", null);
-                            var animationRuntime = await VpkAnimationBuildService.BuildAsync(
+                            var animationKind = package.SingleHd2Skeleton ? "单骨架" : "原比例混合";
+                            _onProgress?.Invoke($"正在为 {Path.GetFileName(modDirectory)} 生成{animationKind}动画", null);
+                            // Both routes feed the same progress bar. Unknown-size phases are
+                            // indeterminate; animation records carry the actual completed/total.
+                            Action<string, int, int, string> animationProgress = (phase, done, total, text) =>
+                                _onProgress?.Invoke(text, total == 0 ? null : (double)done / total);
+                            var animationBuildRoot = Path.Combine(Path.GetTempPath(), "hd2animations-" + Guid.NewGuid().ToString("N")[..8]);
+                            var animationRuntime = await (package.SingleHd2Skeleton
+                                ? VpkAnimationBuildService.BuildSingleAsync(
+                                    modDirectory, Path.Combine(animationBuildRoot, "build"),
+                                    animationProgress, ct, threads: package.AnimationThreads)
+                                : VpkAnimationBuildService.BuildAsync(
                                 modDirectory,
-                                Path.Combine(Path.GetTempPath(),
-                                    "hd2anim-" + Guid.NewGuid().ToString("N")[..8], "runtime"),
-                                (phase, done, total, text) =>
-                                    _onProgress?.Invoke(text, total == 0 ? null : (double)done / total),
-                                ct).ConfigureAwait(false);
-                            var animationName = VpkImportService.NativeAnimationName(modelBaseName);
+                                Path.Combine(animationBuildRoot, "build"),
+                                animationProgress,
+                                ct, threads: package.AnimationThreads)).ConfigureAwait(false);
+                            var animationName = package.SingleHd2Skeleton
+                                ? VpkImportService.SingleAnimationPrefix + "(" + (modelBaseName.StartsWith(VpkImportService.SingleModelPrefix, StringComparison.Ordinal)
+                                    ? modelBaseName[VpkImportService.SingleModelPrefix.Length..] : modelBaseName) + ")"
+                                : VpkImportService.NativeAnimationName(modelBaseName);
                             var animationPackageDirectory = Path.Combine(Path.GetDirectoryName(animationRuntime)!, animationName);
                             Directory.CreateDirectory(animationPackageDirectory);
                             foreach (var file in Directory.EnumerateFiles(animationRuntime))
                                 File.Copy(file, Path.Combine(animationPackageDirectory, Path.GetFileName(file)), overwrite: true);
-                            VpkAnimationBuildService.WriteAnimationIdentity(animationPackageDirectory, modelBaseName);
+                            if (!package.SingleHd2Skeleton) VpkAnimationBuildService.WriteAnimationIdentity(animationPackageDirectory, modelBaseName);
                             var animationGuids = await ImportPathAsync(
                                 animationPackageDirectory,
                                 ct,
@@ -384,7 +399,7 @@ namespace HD2ModManager.Services
                             guids.AddRange(animationGuids);
                             affected.AddRange(LastAffectedNodeIds);
                             conflicts |= LastImportHasOptionPathConflicts;
-                            VpkImportService.DeleteQuietly(Path.GetDirectoryName(Path.GetDirectoryName(animationRuntime)!)!);
+                            VpkImportService.DeleteQuietly(animationBuildRoot);
                             LogService.Info($"骨架动画「{animationName}」已作为独立 Mod 导入，与 {modelBaseName} 成套启用/停用。");
                         }
                     }

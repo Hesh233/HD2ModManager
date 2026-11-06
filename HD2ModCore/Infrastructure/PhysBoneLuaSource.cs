@@ -109,6 +109,7 @@ public static class PhysBoneLuaSource
 		var source = Read("PhysBone.native_grip_transfer_test_entry.lua")
 			.Replace("-- INSERT LEGACY ARM MATH", math, StringComparison.Ordinal)
 			.Replace("-- INSERT TRANSFER MODULE", Read("PhysBone.native_grip_transfer_test.lua"), StringComparison.Ordinal)
+			.Replace("-- INSERT FIRST PERSON GUARD", Read("PhysBone.native_first_person_guard.lua"), StringComparison.Ordinal)
 			.Replace("-- INSERT ATTACHMENT ADAPTER", LoadAttachmentFix(), StringComparison.Ordinal)
 			.Replace("-- INSERT TRANSFER PROFILE", profileSource, StringComparison.Ordinal);
         source = source.Replace("\r\n", "\n", StringComparison.Ordinal);

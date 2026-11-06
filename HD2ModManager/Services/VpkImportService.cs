@@ -54,7 +54,9 @@ public sealed record VpkProducedPackage(
 	string? UpdateTargetDirectory = null,
 	string? UpdateTargetName = null,
 	string? ReportJson = null,
-	int UpdateCandidateCount = 1)
+	int UpdateCandidateCount = 1,
+    bool SingleHd2Skeleton = false,
+    int AnimationThreads = AnimationThreadCount.Default)
 {
 	public bool IsUpdate => UpdateTargetDirectory is not null;
 }
@@ -134,6 +136,8 @@ public sealed class VpkImportService
 	/// 挂点修正包用 <c>[骨骼挂点修正]</c>（2026-11-05 挂点对调拆分新增）。</summary>
 	public const string NativeModelPrefix = "[原比例模型]";
 	public const string NativeAnimationPrefix = "[原比例混合动画]";
+    public const string SingleModelPrefix = "[单骨架模型]";
+    public const string SingleAnimationPrefix = "[单骨架动画]";
     public static string NativeAnimationName(string modelName)
     {
         var name = modelName.StartsWith(NativeModelPrefix, StringComparison.Ordinal) ? modelName[NativeModelPrefix.Length..] : modelName;
@@ -340,10 +344,12 @@ public sealed class VpkImportService
 			{
 				var decision = await requestModelDecisions(job.GroupName, cancellationToken).ConfigureAwait(false);
 				if (decision is null) throw new OperationCanceledException("已取消模型导入。", cancellationToken);
-				if (decision.UseNativeSkeleton
+				if (decision.BuildsSkeletonPackage
 					&& (!double.IsFinite(decision.ModelScale) || decision.ModelScale <= 0 || decision.ModelScale > 10))
 					throw new InvalidDataException("模型大小倍率必须大于 0 且不超过 10。");
-				decisions[job.VpkPath] = decision;
+				if (decision.BuildsSkeletonPackage && decision.GenerateAnimation)
+                    AnimationThreadCount.Validate(decision.AnimationThreads);
+                decisions[job.VpkPath] = decision;
 			}
 		}
 		else
@@ -363,7 +369,7 @@ public sealed class VpkImportService
 			? job with
 			{
 				ModelScale = decision.ModelScale,
-				DirectoryPrefix = decision.UseNativeSkeleton ? NativeModelPrefix : null,
+				DirectoryPrefix = decision.UseNativeSkeleton ? NativeModelPrefix : decision.SingleHd2Skeleton ? SingleModelPrefix : null,
 			}
 			: job).ToList();
 		var index = 0;
@@ -388,7 +394,16 @@ public sealed class VpkImportService
 				// 是真会发生的（实测八人包里就有一份重复的「手套Gloves关」）。两次都换进
 				// 同一个目录，后一个会静默盖掉前一个 —— 那正是我们要消灭的那种"看不出来"的错。
 				var existing = VpkSourceIdentity.FindExistingMod(_paths.ModsDirectory, job.VpkPath);
-				if (existing is not null && !updatedTargets.Add(Path.GetFullPath(existing.Directory)))
+				if (existing is not null && job.IsModel && decisions.TryGetValue(job.VpkPath, out var requestedMode)
+                    && requestedMode.BuildsSkeletonPackage)
+                {
+                    var existingPayload = Path.Combine(existing.Directory, ModNodePayloadLayout.VpkPatchDirectoryName);
+                    var existingDual = File.Exists(Path.Combine(existingPayload, "source-skeleton.json"));
+                    var existingSingle = File.Exists(Path.Combine(existingPayload, "single-skeleton.json"));
+                    if ((requestedMode.UseNativeSkeleton && !existingDual) || (requestedMode.SingleHd2Skeleton && !existingSingle))
+                        existing = null; // Keep the other family and its target mappings intact.
+                }
+                if (existing is not null && !updatedTargets.Add(Path.GetFullPath(existing.Directory)))
 					existing = null;
 				string? reuseModelPath = null;
 				if (existing is not null)
@@ -405,12 +420,28 @@ public sealed class VpkImportService
 					executable, job.VpkPath, raw,
 					job.MaterialSourceListPath, switchListPath, job.IdNamespaceSource, job.IsModel,
 					cancellationToken, onProgress, job.ModelScale,
-					job.DirectoryPrefix is not null, job.DirectoryPrefix, reuseModelPath).ConfigureAwait(false);
+					decisions.TryGetValue(job.VpkPath, out var conversionDecision) && conversionDecision.UseNativeSkeleton, job.DirectoryPrefix, reuseModelPath, conversionDecision?.SingleHd2Skeleton == true).ConfigureAwait(false);
 				if (result.PatchDirectory is null)
 				{
 					items.Add(new VpkImportItem(job.VpkPath, VpkImportOutcome.Skipped, null,
 						result.FailureReason ?? "这个 VPK 里没有 HD2 能用的资源，因此没有产出 patch。", 0, 0, 0, result.Notes));
 					continue;
+				}
+
+				// Calibrate before import/swap: the library protects committed files as read-only.
+				// The snapshot travels with the payload; later Lua/animation builds only validate it.
+				if (job.DirectoryPrefix is not null)
+				{
+                    if (decisions[job.VpkPath].SingleHd2Skeleton)
+                        await VpkAnimationBuildService.PrepareSingleModelAsync(result.PatchDirectory, cancellationToken).ConfigureAwait(false);
+                    else
+                    {
+					onStage?.Invoke($"正在入库前校准原武器骨：{name}");
+					await VpkAnimationBuildService.PrepareStagedNativeModelAsync(
+						result.PatchDirectory, cancellationToken,
+						existing is null ? null : NativeSkeletonProjectService.ResolveConfig(existing.Directory))
+						.ConfigureAwait(false);
+                    }
 				}
 
 				if (existing is not null)
@@ -421,10 +452,15 @@ public sealed class VpkImportService
 						: null;
 					produced.Add(new VpkProducedPackage(
 						result.PatchDirectory, job.GroupName, job.IsModel,
+						NativeModelDirectory: job.DirectoryPrefix is not null ? result.PatchDirectory : null,
+						WantsNativeAnimation: job.DirectoryPrefix is not null
+							&& decisions.TryGetValue(job.VpkPath, out var updateDecision) && updateDecision.GenerateAnimation,
 						UpdateTargetDirectory: existing.Directory,
 						UpdateTargetName: existing.Name,
 						ReportJson: result.ReportJson,
-						UpdateCandidateCount: existing.CandidateCount));
+						UpdateCandidateCount: existing.CandidateCount,
+                        SingleHd2Skeleton: decisions.TryGetValue(job.VpkPath, out var updatedMode) && updatedMode.SingleHd2Skeleton,
+                        AnimationThreads: updatedMode?.AnimationThreads ?? AnimationThreadCount.Default));
 					items.Add(new VpkImportItem(job.VpkPath, VpkImportOutcome.Converted, existing.Name, null,
 						result.Units, result.Materials, result.Textures,
 						extraNote is null
@@ -457,7 +493,9 @@ public sealed class VpkImportService
 				produced.Add(new VpkProducedPackage(target, job.GroupName, job.IsModel,
 					NativeModelDirectory: job.DirectoryPrefix is not null ? target : null,
 					WantsNativeAnimation: job.DirectoryPrefix is not null
-						&& decisions.TryGetValue(job.VpkPath, out var wantAnimation) && wantAnimation.GenerateAnimation));
+						&& decisions.TryGetValue(job.VpkPath, out var wantAnimation) && wantAnimation.GenerateAnimation,
+                    SingleHd2Skeleton: decisions.TryGetValue(job.VpkPath, out var newMode) && newMode.SingleHd2Skeleton,
+                    AnimationThreads: newMode?.AnimationThreads ?? AnimationThreadCount.Default));
 				items.Add(new VpkImportItem(job.VpkPath, VpkImportOutcome.Converted, directoryName, null,
 					result.Units, result.Materials, result.Textures, result.Notes));
 			}
@@ -771,7 +809,8 @@ public sealed class VpkImportService
 		double modelScale = 1,
 		bool sourceSkeleton = false,
 		string? nativePrefix = null,
-		string? reuseModelPath = null)
+		string? reuseModelPath = null,
+        bool singleHd2Skeleton = false)
 	{
 		Directory.CreateDirectory(outputRoot);
 		var arguments = new List<string>
@@ -819,16 +858,20 @@ public sealed class VpkImportService
 		if (!string.IsNullOrWhiteSpace(componentSourceListPath))
 			arguments.AddRange(["--component-source-list", componentSourceListPath]);
 
+		if (singleHd2Skeleton) arguments.Add("--single-hd2-skeleton");
+
 		// 原骨架路线：保留 L4D2 来源骨架（产出 source-skeleton.json 清单，配套动画靠它）；
 		// 素体显示名带前缀，护甲映射页里也能一眼认出这是原比例模型。
 		if (sourceSkeleton)
 		{
 			arguments.Add("--source-skeleton");
-			if (isModel && !string.IsNullOrWhiteSpace(nativePrefix))
-				arguments.AddRange(["--name", nativePrefix + Path.GetFileNameWithoutExtension(vpkPath)]);
+			
 		}
 
-		var (exitCode, output, error) = await RunCliAsync(executable, arguments, cancellationToken, onProgress).ConfigureAwait(false);
+		if (isModel && !string.IsNullOrWhiteSpace(nativePrefix))
+            arguments.AddRange(["--name", nativePrefix + Path.GetFileNameWithoutExtension(vpkPath)]);
+
+        var (exitCode, output, error) = await RunCliAsync(executable, arguments, cancellationToken, onProgress).ConfigureAwait(false);
 		if (string.IsNullOrWhiteSpace(output))
 		{
 			throw new InvalidDataException(

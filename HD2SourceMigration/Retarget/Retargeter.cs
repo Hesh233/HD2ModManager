@@ -233,7 +233,8 @@ public sealed partial class Retargeter
 
 		Vec3 AlignPoint(Vec3 point) => _alignment.Transform((point - _sole) * _scale);
 		var headAligned = AlignPoint(_sourceHeadJoint);
-		_translation = (headHd2 + new Vec3(0, 0, _options.HeadOffset)) - headAligned;
+		_translation = _options.AnchorAtGround ? Vec3.Zero
+            : (headHd2 + new Vec3(0, 0, _options.HeadOffset)) - headAligned;
 		var aligned = new Vec3[_sourcePoints.Length];
 		for (var i = 0; i < aligned.Length; i++)
 			aligned[i] = AlignPoint(_sourcePoints[i]) + _translation;
@@ -544,7 +545,7 @@ public sealed partial class Retargeter
 				_newHead[$"{side}_toe"] = ball + ((ball - _newHead[$"{side}_foot"]) * 0.35);
 		}
 
-		if (_byName.ContainsKey("head_tip"))
+		if (_options.SnapHeadTip && _byName.ContainsKey("head_tip"))
 			_newHead["head_tip"] = _newHead["head"] + (_newHead["head"] - _newHead["neck"]);
 	}
 

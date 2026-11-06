@@ -2,7 +2,7 @@
 from pathlib import Path
 import argparse,hashlib,json,re,tomllib
 
-PIPELINE_VERSION='1.0.9'
+PIPELINE_VERSION='1.0.15'
 
 def preset_root():
     here=Path(__file__).resolve().parent
@@ -13,7 +13,7 @@ def preset_root():
 def resolve_native_config(path,manifest=None,managed_defaults=False):
     path=Path(path).resolve();d=tomllib.loads(path.read_text(encoding='utf-8-sig'));n=d.setdefault('native_skeleton',{})
     if managed_defaults:
-        for key,value in dict(calibration_preset='native-v15',runtime_policy='b23-1.0.8',calibrate_weapon_bones=True,use_model_preset=True,preserve_arm_reference_clavicles=True).items():n.setdefault(key,value)
+        for key,value in dict(calibration_preset='native-v15',runtime_policy='b23-1.0.8',calibrate_weapon_bones=True,use_model_preset=True,preserve_arm_reference_clavicles=True).items():n[key]=value
     if n.get('calibration_preset'):
         if n['calibration_preset']!='native-v15':raise ValueError('Unknown native calibration preset')
         root=preset_root();preset=json.loads((root/'preset.json').read_text(encoding='utf-8-sig'))
@@ -43,7 +43,8 @@ def _value(value):
 def write_snapshot(source,output,model_scale=None,manifest=None):
     source=Path(source);output=Path(output);d=resolve_native_config(source,manifest,managed_defaults=True);n=d['native_skeleton']
     if model_scale is not None:n['model_scale']=model_scale
-    n.setdefault('attachment_swap',True)
+    n['attachment_swap']=False
+    n['attachment_mode']='source-lua-native-hd2-v1'
     text=source.read_text(encoding='utf-8-sig')
     header=re.search(r'^\[native_skeleton\][^\r\n]*',text,re.M)
     if not header:text+='\n[native_skeleton]\n';header=re.search(r'^\[native_skeleton\][^\r\n]*',text,re.M)
@@ -71,6 +72,18 @@ def apply_runtime_policy(cfg,version='b23-1.0.8'):
     cfg['leftGrip']['intent']=policy['intent'];cfg['consumers'].update(policy['fixedConsumers'])
     cfg['sync']['enabled']=False;cfg['logSeconds']=1.;cfg['maxRecords']=5000
     cfg['runtimePolicyVersion']=version
+    return cfg
+
+def apply_grip_fixes(cfg,version='test07-1.0.11'):
+    """Incremental test07 policy for NEW packages; frozen 1.0.8 inputs stay unchanged."""
+    if version not in ('test07-1.0.10','test07-1.0.11'):raise ValueError('Unsupported grip fix version')
+    policy=json.loads((preset_root()/('grip-fixes-'+version.removeprefix('test07-')+'.json')).read_text(encoding='utf-8-sig'))
+    cfg['gripFixes']=policy['gripFixes'];cfg['missionGuard']=policy['missionGuard']
+    cfg.setdefault('performance',{}).update(policy['performance'])
+    cfg.setdefault('consumers',{}).update(policy['fixedConsumers'])
+    cfg.setdefault('allowedConsumers',{}).update({k:True for k in policy['fixedConsumers']})
+    cfg['gripFixVersion']=policy['version']
+    if policy.get('sidearmDiagnostics'):cfg['sidearmDiagnostics']=policy['sidearmDiagnostics']
     return cfg
 
 def main(argv=None):

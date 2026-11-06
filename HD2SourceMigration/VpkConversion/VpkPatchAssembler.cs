@@ -475,7 +475,7 @@ public sealed class VpkPatchAssembler
 		// ①b 把 jiggle 骨的**合成节点**追加进 TransformInfo（必须在建网格之前）。
 		// 网格是按 `NameHashes[目标骨下标]` 取哈希的：合成骨不进表，那条路径就会拿到越界下标，
 		// 表现是"骨哈希 … 不在外壳扩展后的 TransformInfo 里"。追加只影响末尾，原生下标一个不动。
-		var transformInfo = retarget?.SourceNativeTransforms
+		var transformInfo = retarget?.SingleHd2Transforms ?? retarget?.SourceNativeTransforms
 			?? UnitTransformInfoAppender.Append(avatarTransformInfo!, retarget?.ExtraBones);
 		if (transformInfo is not null && retarget?.ExtraBones is { Count: > 0 })
 		{

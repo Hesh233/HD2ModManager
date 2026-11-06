@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "enabled": true,
+  "bones": [
+    "attach_hand_r",
+    "attach_hand_l",
+    "attach_weapon",
+    "attach_samplepouch",
+    "attach_intelpad",
+    "target_designator",
+    "attach_knife",
+    "sling",
+    "backpack",
+    "support_mg",
+    "support",
+    "cape1",
+    "cape2",
+    "cape3",
+    "cape4",
+    "cape5",
+    "cape6",
+    "cape7",
+    "cape8",
+    "hellpad_socket",
+    "pistol"
+  ],
+  "excludeHeadDescendants": true
+}

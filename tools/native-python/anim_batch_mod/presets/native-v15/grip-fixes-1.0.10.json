@@ -1,0 +1,144 @@
+{
+  "version": "test07-1.0.10",
+  "gripFixes": {
+    "underbarrel": true,
+    "sidearmRightIK": true,
+    "sidearms": {
+      "027dec442cc26a90": {
+        "designation": "P-44",
+        "name": "Mist"
+      },
+      "05e4e5c2db6e44a2": {
+        "designation": "P-2",
+        "name": "Peacemaker"
+      },
+      "0b882808c6f498e8": {
+        "designation": "P-35",
+        "name": "Re-educator"
+      },
+      "14d5d4506056c7a4": {
+        "designation": "P-33",
+        "name": "Missile Pistol"
+      },
+      "1a437158e1b8d2a1": {
+        "designation": "P-113",
+        "name": "Verdict"
+      },
+      "2b28e17ffed05f7c": {
+        "designation": "SG-22",
+        "name": "Bushwhacker"
+      },
+      "3575aabc5f1f9326": {
+        "designation": "P-19",
+        "name": "Redeemer"
+      },
+      "3f92ba65ef65cca9": {
+        "designation": "P-72",
+        "name": "Crisper"
+      },
+      "416d053372c4e433": {
+        "designation": "LAS-58",
+        "name": "TALON"
+      },
+      "4d58c77087b774c5": {
+        "designation": "M6C/SOCOM",
+        "name": "Pistol"
+      },
+      "52e4334e6a128caf": {
+        "designation": "GP-31",
+        "name": "Grenade Pistol"
+      },
+      "73d84eaae8c75342": {
+        "designation": "LAS-44",
+        "name": "Nova"
+      },
+      "7b06196e90154c88": {
+        "designation": "LAS-7",
+        "name": "Dagger"
+      },
+      "8d3d52a3b2f19402": {
+        "designation": "P-4",
+        "name": "Senator"
+      },
+      "9eb160830321bfd6": {
+        "designation": "GP-20",
+        "name": "Ultimatum"
+      },
+      "aa69a60d74a3ec54": {
+        "designation": "PLAS-15",
+        "name": "Loyalist"
+      },
+      "bde1f2534280300d": {
+        "designation": "P-41",
+        "name": "Ombudsman"
+      },
+      "c780bcd79547da0f": {
+        "designation": "P-69",
+        "name": "Veto"
+      },
+      "cf8934ff6567a42d": {
+        "designation": "P-92",
+        "name": "Warrant"
+      },
+      "d6b1fb05b9109353": {
+        "designation": "P-11",
+        "name": "Stim Pistol"
+      },
+      "dbb6c961c59fadc1": {
+        "designation": "P/40-K",
+        "name": "Bolt Pistol"
+      },
+      "e91f569c2ad8af01": {
+        "designation": "P-34",
+        "name": "Breacher"
+      },
+      "f992ce97577c8a7f": {
+        "designation": "VG-70",
+        "name": "Variable"
+      }
+    }
+  },
+  "missionGuard": {
+    "enabled": true,
+    "policy": "Chef.in_mission AND Chef.world; fail closed"
+  },
+  "performance": {
+    "transactionIdentity": true,
+    "cacheNodeChecks": true,
+    "sparseMembership": true,
+    "negativeResourceCache": true,
+    "scanLogSeconds": 5,
+    "snapshotPoseCache": true
+  },
+  "fixedConsumers": {
+    "b96cc3b704a76464": {
+      "kind": "linked_item",
+      "resource": "b96cc3b704a76464",
+      "count": 7,
+      "root": 5,
+      "order": 2,
+      "nodes": [
+        {
+          "name": "StingrayEntityRoot",
+          "index": 0
+        },
+        {
+          "name": "FbxAxisSystem_ConvertNode",
+          "index": 1
+        },
+        {
+          "name": "collision",
+          "index": 3
+        },
+        {
+          "name": "c_collision",
+          "index": 4
+        },
+        {
+          "name": "game_mesh",
+          "index": 5
+        }
+      ]
+    }
+  }
+}

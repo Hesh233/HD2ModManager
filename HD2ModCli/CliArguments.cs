@@ -140,7 +140,8 @@ public sealed record CliGlobalOptions(
 	// 源侧 `$no_draw`（"这一块不画"）怎么落地：show（默认，照常显示）/ hide（几何保留+不显示）/ drop。
 	string? NoDraw = null,
 	bool SourceSkeleton = false,
-	double ModelScale = 1);
+	double ModelScale = 1,
+	bool SingleHd2Skeleton = false);
 
 public sealed record CliInvocation(IReadOnlyList<string> Command, CliGlobalOptions Options);
 
@@ -184,6 +185,7 @@ public static class CliArgumentParser
 		string? unitIds = null;
 		string? reuseModel = null;
 		bool sourceSkeleton = false;
+		bool singleHd2Skeleton = false;
 		double modelScale = 1;
 		string? headMerge = null;
 		string? vpkList = null;
@@ -315,6 +317,9 @@ public static class CliArgumentParser
 					break;
 				case "--reuse-model":
 					reuseModel = ReadValue(args, ref index, argument);
+					break;
+				case "--single-hd2-skeleton":
+					singleHd2Skeleton = true;
 					break;
 				case "--source-skeleton":
 					sourceSkeleton = true;
@@ -574,7 +579,9 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, metalCutout, cutoutTemplate, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs, alphaExperiment, ditherScale, ditherDensity, ditherPattern, normalFlipY, noDraw, sourceSkeleton, modelScale));
+		if (sourceSkeleton && singleHd2Skeleton)
+			throw new CliUserException("SkeletonRouteConflict", "--single-hd2-skeleton 与 --source-skeleton 不能混用。");
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, metalCutout, cutoutTemplate, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs, alphaExperiment, ditherScale, ditherDensity, ditherPattern, normalFlipY, noDraw, sourceSkeleton, modelScale, singleHd2Skeleton));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

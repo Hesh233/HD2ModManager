@@ -188,6 +188,11 @@ public static class VpkRebuildService
 			if (report?.IdNamespace is { Length: > 0 } token)
 				arguments.AddRange(["--id-namespace-token", token]);
 			arguments.AddRange(settings.ToArguments());
+            var dualSkeleton = File.Exists(Path.Combine(payloadDirectory, "source-skeleton.json"));
+            var singleSkeleton = File.Exists(Path.Combine(payloadDirectory, "single-skeleton.json"));
+            if (dualSkeleton && singleSkeleton) throw new InvalidDataException("模型包含两条骨架路线，请重新导入。");
+            if (dualSkeleton) arguments.Add("--source-skeleton");
+            if (singleSkeleton) arguments.Add("--single-hd2-skeleton");
 			if (reuseModel is not null)
 				arguments.AddRange(["--reuse-model", reuseModel]);
 			arguments.Add("--json");
@@ -213,6 +218,13 @@ public static class VpkRebuildService
 					"新产物里没有 sections.json：组件树与 section 开关都靠它，"
 					+ $"继续替换只会得到一个关不掉任何东西的 Mod。临时产物保留在：{stagingRoot}", notes);
 			}
+
+            // Generate/validate skeleton metadata in writable staging, never after protected commit.
+            if (dualSkeleton)
+                await VpkAnimationBuildService.PrepareStagedNativeModelAsync(produced, cancellationToken,
+                    NativeSkeletonProjectService.ResolveConfig(modDirectory)).ConfigureAwait(false);
+            else if (singleSkeleton)
+                await VpkAnimationBuildService.PrepareSingleModelAsync(produced, cancellationToken).ConfigureAwait(false);
 
 			var fresh = VpkConversionReport.TryParse(conversion.Output);
 			var units = fresh?.UnitCount ?? 0;

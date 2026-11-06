@@ -49,6 +49,13 @@ def parse_bool(value):
     raise argparse.ArgumentTypeError("expected true or false")
 
 
+def parse_thread_count(value):
+    text = str(value).strip()
+    if not text.isascii() or not text.isdecimal() or not 1 <= int(text) <= 16:
+        raise argparse.ArgumentTypeError("threads must be an integer between 1 and 16")
+    return int(text)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Modify one or many HD2 animations and build one patch."
@@ -152,6 +159,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Build or validate the local resource index, then exit",
     )
+    parser.add_argument("--threads", type=parse_thread_count, default=1,
+                        help="Batch only: animation processing threads (1..16, default: 1)")
     parser.add_argument(
         "--skip-errors",
         action="store_true",
@@ -660,6 +669,7 @@ def run_batch(args, store, resource_index, config, keyword) -> None:
         if current == 1 or current == total or current % 25 == 0:
             print(f"Processing {stage}s: [{current}/{total}] {label}")
 
+    print(f"Animation processing threads: {args.threads}")
     build = build_batch_entries(
         resource_index,
         discovery.jobs,
@@ -672,6 +682,7 @@ def run_batch(args, store, resource_index, config, keyword) -> None:
         only_additive=getattr(args, "only_additive", False),
         only_non_additive=getattr(args, "only_non_additive", False),
         progress=build_progress,
+        threads=args.threads,
     )
     print_issues(build.issues)
     if build.fatal_issues and not args.skip_errors:
