@@ -43,7 +43,7 @@ local M = {}
 -- 2.1.1：外置导出声明 Chef 的 render/shutdown/on_stop，日志走加载器允许的目录。
 -- 2.1.2：从独立 VPK 参考骨选择挂点姿态，保留原生瞄准控制节点。
 -- 2.1.3：按最终模型布局识别护甲；配置影子链先融合再映射挂点，记录 render 回读与双手诊断。
-M.VERSION = "2.1.9"
+M.VERSION = "2.2.1"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -58,34 +58,63 @@ local originalRender  -- 挂载前的 render（链式调用，不吞掉别人）
 -- ---------------------------------------------------------------------------
 
 --- 默认日志路径。`options.logPath` 可覆盖，`options.log == false` 可彻底静默。
+--- <para>
+--- 2026-11-07 多路径回退：部署的 Chef 1.4.1 包内运行时身份是 `CowboyBingusModLoader`，
+--- 旧组合器只认 `'Chef Shared Loader'` 字符串 ⇒ logPath 没传 ⇒ 回退 `%LOCALAPPDATA%`
+--- ⇒ **被 loader 的 io 沙箱（lock_files/WDIR 白名单）静默拦截，游戏内零日志**。
+--- 现在按顺序试：options.logPath → loader.log_directory（任何 loader，只要给了）→
+--- LOCALAPPDATA。哪个能打开用哪个，并把实际路径记进首行。
+--- </para>
 local function defaultLogPath(options)
-	local path = options and options.logPath
-	if path ~= nil then return path end
 	if options and options.log == false then return nil end
+	local candidates = {}
+	if options and type(options.logPath) == "string" and #options.logPath > 0 then
+		candidates[#candidates + 1] = options.logPath
+	end
+	-- 任何提供 log_directory 的 loader（Chef / Bingus / 其它同族）都在其白名单内。
+	local loader = rawget(_G, "__hd2_loader")
+	if type(loader) == "table" and type(rawget(loader, "log_directory")) == "string"
+		and #rawget(loader, "log_directory") > 0 then
+		candidates[#candidates + 1] = rawget(loader, "log_directory") .. "/hd2physbone_compact.log"
+	end
 	local base = os.getenv("LOCALAPPDATA")
-	if type(base) == "string" and #base > 0 then return base .. "\\hd2physbone.log" end
+	if type(base) == "string" and #base > 0 then candidates[#candidates + 1] = base .. "\\hd2physbone_compact.log" end
+	for _, path in ipairs(candidates) do
+		local ok, handle = pcall(io.open, path, "a")
+		if ok and handle ~= nil then
+			pcall(function() handle:close() end)
+			return path
+		end
+	end
 	return nil
 end
 
 --- 造一个 logger。返回 `log, context`。
 --- <para>
---- 两个刻意的选择：
----   ① **追加**而不是覆盖。覆盖式会把上一次启动的证据抹掉，于是"这次和上次哪里不一样"
----      永远无从对比——2026-11-01 排查就卡在这里（日志只剩最后 30 秒）。
----   ② 每行带**时间戳 + 帧号**。没有帧号，跨会话的"30 帧后全灭"这种时序规律看不出来。
---- 帧号由 `drive` 每帧写进 `context.frame`：compat 会直接调 `session.logger`，
---- 只能靠这个共享表把上下文带进去。
---- </para>
+--- 最新会话独立compact文件，90秒活动驱动窗口/128KiB上限。
+--- 旧hd2physbone.log不改写；逐帧求解不受录制停止影响，错误限流。
 local function makeLogger(options)
 	local handle = nil
 	local path = defaultLogPath(options)
 	if path then
-		local ok, h = pcall(io.open, path, "a")
+		local ok, h = pcall(io.open, path, "w")
 		if ok then handle = h end
 	end
 	local debugEnabled = options ~= nil and options.debug == true
-	local context = { frame = 0 }
-	local function emit(text)
+	local context = { frame = 0, bytes = 0, suppressed = 0, active = false }
+    local maxSeconds=options.logRecordSeconds or 90
+    local maxBytes=options.logMaxBytes or 131072
+    assert(type(maxSeconds)=='number' and maxSeconds==maxSeconds and maxSeconds>=0 and maxSeconds<=3600,'invalid_log_duration')
+    assert(type(maxBytes)=='number' and maxBytes==maxBytes and maxBytes>=8192 and maxBytes<=10485760,'invalid_log_size')
+    local lastError={}
+    local function now()
+        local ok,v=pcall(function()return S.Application.time_since_launch()end)
+        return ok and type(v)=='number' and v==v and v or 0
+    end
+	context.activate=function()if not context.started then context.started=now() end end
+    local function emit(text,tail)
+        if context.bytes+#text+1>(tail and maxBytes or maxBytes-1024) then context.suppressed=context.suppressed+1;return end
+        context.bytes=context.bytes+#text+1
 		if handle ~= nil then
 			pcall(function() handle:write(text, "\n") handle:flush() end)
 		end
@@ -94,12 +123,38 @@ local function makeLogger(options)
 			if type(real) == "function" then pcall(real, text) end
 		end
 	end
+	-- 会话头：实际落盘路径 + 版本，一眼分清"哪次会话、写到了哪"。
+	-- 保留"时间戳 + 帧号"前缀（日志格式契约：runtime-harness 首行断言 + 时序可读性）。
+	emit(string.format("%s f%-7d ==== 会话开始 %s | 运行时 %s | 日志路径: %s",
+		os.date("%H:%M:%S"), 0, os.date("%Y-%m-%d %H:%M:%S"), M.VERSION or "?", path or "(无——所有候选路径都打不开)"))
 	local function log(fmt, ...)
 		if handle == nil and not debugEnabled then return end
-		local body = select("#", ...) > 0 and string.format(fmt, ...) or fmt
-		emit(string.format("%s f%-7d %s", os.date("%H:%M:%S"), context.frame, body))
+        local t=now()
+        if context.active and not context.started then context.started=t end
+        local critical=fmt:find('[错误]',1,true) or fmt:find('[失败]',1,true) or fmt:find('[警告]',1,true)
+        local expired=context.started and t-context.started>=maxSeconds
+        if not critical and (expired or context.bytes>maxBytes-4096) then
+            context.suppressed=context.suppressed+1
+            if not context.stopped then
+                context.stopped=true;emit(string.format('%s f%d pb log_stop seconds=%g bytes=%d',os.date('%H:%M:%S'),context.frame,maxSeconds,context.bytes))
+            end
+            return
+        end
+        if critical then
+            local last=lastError[fmt]
+            if last and t>=last and t-last<(options.logErrorIntervalSeconds or 2) then context.suppressed=context.suppressed+1;return end
+            lastError[fmt]=t
+        end
+        local body = select("#", ...) > 0 and string.format(fmt, ...) or fmt
+        body=body:gsub('%[physbone%]','pb')
+        if #body>2048 then body='pb long_record bytes='..#body end
+        emit(string.format("%s f%d %s", os.date("%H:%M:%S"), context.frame, body))
 	end
-	return log, context
+	context.close=function()
+        emit(string.format('%s f%d pb log_summary bytes=%d suppressed=%d',os.date('%H:%M:%S'),context.frame,context.bytes,context.suppressed),true)
+        if handle then pcall(function()handle:flush();handle:close()end);handle=nil end
+    end
+    return log, context
 end
 
 local function try(...)
@@ -638,6 +693,7 @@ local function tryAttach(runtime)
 				end
 			end
 			local session = Compat.attach(S, entry.unit, entry.rig, attachOptions)
+			session.evaluateDrivers = not (runtime.options ~= nil and runtime.options.evaluateDrivers == true)
 			session.rigSource = entry.path
 			session.unitTag = entry.tag
 			session.attachFrame = frame
@@ -804,6 +860,8 @@ local function drive(runtime)
 	local options = runtime.options
 	local logger = runtime.logger
 	runtime.logContext.frame = frame
+    runtime.logContext.active = runtime.sessions and #runtime.sessions>0 or false
+    if runtime.logContext.active then runtime.logContext.activate() end
 	Compat.begin_frame(frame)
 
 	-- dt 用引擎自己的时间差，不写死 1/60。
@@ -1037,16 +1095,16 @@ local function drive(runtime)
 	-- 阶段心跳：每 N 帧一行，证明驱动块确实被进入过，并给出当帧的关键事实。
 	-- 上一轮出现过"phase 明明是 live 但 update 从不执行"，没有这条就无法区分
 	-- "没进块"和"进了块但走了别的分支"。
-	local heartbeat = options.heartbeatFrames or 120
+	local heartbeat = options.heartbeatFrames or 600
 	if (runtime.driveFrames % heartbeat) == 0 then
 		local chains = 0
 		for _, session in ipairs(runtime.sessions) do chains = chains + #session.sessions end
-		logger("[physbone] 驱动心跳 unit=%d 链=%d 玩家=%d 分帧=%d 本帧驱动=%d dt=%.4f 本帧 写入=%d 跳过=%d 引擎调用=%d 累计/帧=%.0f 静止链=%d 偏离绑定峰值=%.1f°(史上%.1f°) 最离谱=%s(限%.0f°) 同拍重复=%d",
+		logger("[physbone] hb u=%d c=%d p=%d stride=%d run=%d dt=%.4f w=%d skip=%d calls=%d avg=%.0f static=%d peak=%.1f max=%.1f bone=%s lim=%.0f repeat=%d",
 			#runtime.sessions, chains, #(runtime.avatars or {}), runtime.driveStride or 1, attempted,
 			runtime.dt or 0, written, skippedSame, engineCalls,
 			runtime.callsAccum / runtime.driveFrames, staticChains, framePeakDeg,
 			runtime.peakAngle or 0,
-			worstName ~= nil and tostring(worstName) or "-", worstLimit,
+			worstName ~= nil and (tostring(worstName):match("_phys_(%d+)_") or tostring(worstName)) or "-", worstLimit,
 			runtime.repeatCalls or 0)
 	end
 
@@ -1195,6 +1253,7 @@ function M.uninstall()
 		pcall(Compat.release, session)
 	end
 	runtime.sessions = nil
+    if runtime.logContext and runtime.logContext.close then runtime.logContext.close() end
 	rawset(_G, "render", originalRender)
 	rawset(_G, INSTALL_KEY, nil)
 	state = nil

@@ -80,6 +80,39 @@ public sealed record SourceJiggleBone(
 	}
 }
 
+/// <summary>
+/// 一条 QuatInterp 触发规则，来自 <c>mstudioquatinterpinfo_t</c>（48 字节）。
+/// <para>
+/// 这是 VRD（<c>$proceduralbones</c>）driver 骨的"姿态 → 输出"对照表：控制骨姿态落在
+/// <paramref name="Trigger"/> 附近（半球对齐，容差 <paramref name="InvTolerance"/> 的倒数，
+/// 弧度制）时，按权重混入 <paramref name="Rotation"/>。L4D2 幸存者用它做手腕朝向修正与
+/// 裙摆随大腿姿态形变。
+/// </para>
+/// </summary>
+/// <param name="InvTolerance">预计算的 1/容差（弧度）。实测主流值 0.6366 = 1/(π/2)，即 ±45° 半角权重覆盖。</param>
+/// <param name="Trigger">触发四元数 xyzw（单位），表达在 <b>driver 骨父级的局部空间</b>（Source 轴约定）。</param>
+/// <param name="Position">driver 骨局部 bind 位置（英寸，源单位）。实测本类资产里恒等于 bind 位置。</param>
+/// <param name="Rotation">该触发姿态下的输出局部旋转 xyzw（单位）；第一条规则的 Rotation = bind 姿态。</param>
+public sealed record SourceQuatInterpTrigger(
+	float InvTolerance,
+	float[] Trigger,
+	float[] Position,
+	float[] Rotation);
+
+/// <summary>
+/// 一根 QuatInterp driver 骨的定义（<c>mstudioquatinterp_t</c>，proctype=2）。
+/// <para>
+/// 与 jiggle（proctype=5）同为程序骨：jiggle 是"自己晃"，driver 是"跟着控制骨摆姿态"。
+/// 运行时语义见 v11 已实机验证的实现（native_attachments.lua 的 <c>M.quatinterp</c>）：
+/// 控制骨世界旋转转到 driver 骨父级空间后，对触发规则做半球对齐加权混合。
+/// </para>
+/// </summary>
+/// <param name="ControlIndex">控制骨下标（姿态观测源，如手腕规则看 Hand、裙骨看 Thigh）。</param>
+/// <param name="Triggers">触发规则数组；至少 1 条。</param>
+public sealed record SourceQuatInterpBone(
+	int ControlIndex,
+	IReadOnlyList<SourceQuatInterpTrigger> Triggers);
+
 /// <summary>源模型里的一根骨骼。</summary>
 /// <param name="Index">骨骼数组下标；顶点权重引用的就是这个值。</param>
 /// <param name="Name">
@@ -96,7 +129,8 @@ public sealed record SourceBone(
 	Mat4 PoseToBone,
 	Mat4 WorldBind,
 	SourceJiggleBone? Jiggle,
-	string? Namespace = null)
+	string? Namespace = null,
+	SourceQuatInterpBone? QuatInterp = null)
 {
 	public bool HasName => !string.IsNullOrEmpty(Name);
 
@@ -236,6 +270,9 @@ public sealed record SourceModelDocument(
 	IReadOnlyList<SourceModelDiagnostic> Diagnostics)
 {
 	public IEnumerable<SourceBone> JiggleBones => Bones.Where(bone => bone.Jiggle is not null);
+
+	/// <summary>QuatInterp driver 骨（VRD 的"姿态驱动"半边，见 <see cref="SourceQuatInterpBone"/>）。</summary>
+	public IEnumerable<SourceBone> QuatInterpBones => Bones.Where(bone => bone.QuatInterp is not null);
 
 	/// <summary>
 	/// mdl 头部声明的材质目录（<c>cdtextures</c>），**有序**：引擎按这个顺序解析材质名。

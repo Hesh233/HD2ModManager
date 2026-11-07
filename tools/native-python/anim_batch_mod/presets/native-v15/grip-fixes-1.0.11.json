@@ -97,7 +97,11 @@
         "name": "Variable"
       }
     },
-    "nativeSidearmAim": true
+    "nativeSidearmAim": true,
+    "reachableRightIK": {
+      "cf8934ff6567a42d": true
+    },
+    "revision": "test01-weapons-20261107"
   },
   "missionGuard": {
     "enabled": true,
@@ -140,11 +144,193 @@
           "index": 5
         }
       ]
+    },
+    "129e5fb1b13c2018": {
+      "kind": "weapon_optic",
+      "resource": "129e5fb1b13c2018",
+      "count": 12,
+      "nodes": [
+        {
+          "name": "StingrayEntityRoot",
+          "index": 0,
+          "parent": null,
+          "hash": 1243096897
+        },
+        {
+          "name": "FbxAxisSystem_ConvertNode",
+          "index": 1,
+          "parent": 0,
+          "hash": 2133911068
+        },
+        {
+          "name": "skeleton",
+          "index": 5,
+          "parent": 2,
+          "hash": 2539449277
+        },
+        {
+          "name": "boss",
+          "index": 6,
+          "parent": 5,
+          "hash": 2601604451
+        },
+        {
+          "name": "attach_offset",
+          "index": 7,
+          "parent": 6,
+          "hash": 2424383272
+        },
+        {
+          "name": "game_mesh",
+          "index": 8,
+          "parent": 2,
+          "hash": 828166497
+        }
+      ],
+      "root": 5,
+      "order": 2
+    },
+    "20c03774d6e1d87f": {
+      "kind": "weapon_magazine",
+      "resource": "20c03774d6e1d87f",
+      "count": 13,
+      "nodes": [
+        {
+          "name": "StingrayEntityRoot",
+          "index": 0,
+          "parent": null,
+          "hash": 1243096897
+        },
+        {
+          "name": "FbxAxisSystem_ConvertNode",
+          "index": 1,
+          "parent": 0,
+          "hash": 2133911068
+        },
+        {
+          "name": "skeleton",
+          "index": 5,
+          "parent": 2,
+          "hash": 2539449277
+        },
+        {
+          "name": "root",
+          "index": 6,
+          "parent": 5,
+          "hash": 3167719909
+        },
+        {
+          "name": "game_mesh",
+          "index": 9,
+          "parent": 2,
+          "hash": 828166497
+        }
+      ],
+      "root": 5,
+      "order": 2
+    },
+    "b9c209b4f99b5335": {
+      "kind": "weapon_underbarrel",
+      "resource": "b9c209b4f99b5335",
+      "count": 24,
+      "nodes": [
+        {
+          "name": "StingrayEntityRoot",
+          "index": 0,
+          "parent": null,
+          "hash": 1243096897
+        },
+        {
+          "name": "FbxAxisSystem_ConvertNode",
+          "index": 1,
+          "parent": 0,
+          "hash": 2133911068
+        },
+        {
+          "name": "skeleton",
+          "index": 5,
+          "parent": 2,
+          "hash": 2539449277
+        },
+        {
+          "name": "root",
+          "index": 6,
+          "parent": 5,
+          "hash": 3167719909
+        },
+        {
+          "name": "boss",
+          "index": 7,
+          "parent": 6,
+          "hash": 2601604451
+        },
+        {
+          "name": "IK_left",
+          "index": 11,
+          "parent": 7,
+          "hash": 1741246027
+        },
+        {
+          "name": "game_mesh",
+          "index": 19,
+          "parent": 2,
+          "hash": 828166497
+        }
+      ],
+      "root": 5,
+      "order": 1
+    },
+    "fc1f0a3b3fc97238": {
+      "kind": "weapon_magazine",
+      "resource": "fc1f0a3b3fc97238",
+      "count": 15,
+      "nodes": [
+        {
+          "name": "StingrayEntityRoot",
+          "index": 0,
+          "parent": null,
+          "hash": 1243096897
+        },
+        {
+          "name": "FbxAxisSystem_ConvertNode",
+          "index": 1,
+          "parent": 0,
+          "hash": 2133911068
+        },
+        {
+          "name": "skeleton",
+          "index": 5,
+          "parent": 2,
+          "hash": 2539449277
+        },
+        {
+          "name": "root",
+          "index": 6,
+          "parent": 5,
+          "hash": 3167719909
+        },
+        {
+          "name": "game_mesh",
+          "index": 11,
+          "parent": 2,
+          "hash": 828166497
+        }
+      ],
+      "root": 5,
+      "order": 2
     }
   },
   "sidearmDiagnostics": {
     "enabled": true,
     "intervalSeconds": 1.0,
-    "maxSamplesPerPath": 180
+    "maxSamplesPerPath": 180,
+    "resources": {
+      "129e5fb1b13c2018": true,
+      "20c03774d6e1d87f": true,
+      "b9c209b4f99b5335": true,
+      "fc1f0a3b3fc97238": true,
+      "a8a91eb54892b6b2": true,
+      "cf8934ff6567a42d": true
+    }
   }
 }

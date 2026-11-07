@@ -1,6 +1,7 @@
 """Actual Chef 1.4.1 parser/sandbox/hooks, simulated engine and in-memory IO."""
 import json
 import re
+import struct
 from prepare_native_v31_b23 import ROOT, W, B22, save, digest
 from lupa.lua51 import LuaRuntime
 
@@ -26,7 +27,7 @@ local function absent()error('no units in fixture')end
 G={};for k,v in pairs(_G)do G[k]=v end;G._G=G
 G.io={open=function(path,mode)
  opens[#opens+1]={path=path,mode=mode}
- if mode=='a'then return memory_file('')end
+ if mode=='a' or mode=='w'then return memory_file('')end
  return nil,'not in fixture'
 end,type=function()return 'file'end}
 G.os={clock=os.clock,time=os.time,date=os.date,difftime=os.difftime,
@@ -68,9 +69,9 @@ assert(a.version==expected_version and type(a.hooks.update)=='function'and type(
 assert(type(a.hooks.shutdown)=='function'and type(mod.on_stop)=='function')
 local state=assert(rawget(env,'__hd2_grip_b23'))
 assert(not state.stopped and not state.disabled)
-local path=api.log_directory..'/hd2_grip_b23.log'
+local path=api.log_directory..'/hd2_grip_b23_compact.log'
 assert(sb.check(path,'a',owner),'B23 log path denied')
-assert(#opens==1 and opens[1].path==path and opens[1].mode=='a')
+assert(#opens==1 and opens[1].path==path and opens[1].mode=='w')
 for i=1,60 do now=i/60;a.hooks.update();a.hooks.render()end
 assert(state.stats.writes==0 and not state.disabled,'empty world should wait')
 mod.on_stop();assert(state.stopped and rawget(env,'__hd2_grip_b23')==nil)
@@ -87,7 +88,7 @@ for _,s in ipairs(logs)do
 end
 assert(loaded and complete)
 return {status='PASS',chefVersion=api.loader_version,addonVersion=a.version,updateCalls=60,renderCalls=60,
- appendLogPath=path,appendLogAllowed=true,shutdownAndStop=true,nonChefRejected=true,
+ appendLogPath=path,appendLogAllowed=false,latestSessionOverwrite=true,shutdownAndStop=true,nonChefRejected=true,
  independentPhysicsStatePreserved=true,emptyWorldWrites=mutationCalls,gameDeployed=false,gameTested=false}
 ''')
     reader = core[core.index('local LUA_TYPE = {'):core.index('discover = function()', core.index('local LUA_TYPE = {'))]
@@ -102,7 +103,16 @@ local log=function(s)logs[#logs+1]=s end;local fmt=string.format
     vm.globals().patch_bytes=patch.read_bytes()
     vm.globals().physics_bytes=physics_patch.read_bytes()
     vm.globals().parenting_bytes=(W/'native-parenting/9ba626afa44a3aa3.patch_5').read_bytes()
-    physics_source=(B22 / 'physics-runtime/lua版/hd2physbone.lua').read_text(encoding='utf-8-sig')
+    # Validate the source in the physics patch actually passed to Chef, not a
+    # historical loose Lua file that may have been archived independently.
+    from anim_batch_mod.archive import TocArchive
+    physics_archive=TocArchive.parse_parts(physics_patch.read_bytes(),load_external_data=False)
+    physics_entries=[bytes(e.toc_data) for e in physics_archive.entries.values() if e.type_id==0xa14e8dfa2cd117e2]
+    assert len(physics_entries)==1,'expected one independent physics Lua resource'
+    physics_payload=physics_entries[0]
+    length,revision=struct.unpack_from('<II',physics_payload)
+    assert revision==2 and len(physics_payload)==length+8,'physics source payload mismatch'
+    physics_source=physics_payload[8:].decode('utf-8-sig')
     vm.globals().physics_owner=re.match(r'-- HD2-Addon: ([^\r\n]+)',physics_source).group(1)
     vm.execute('''
 parse_patch(memory_file(physics_bytes),'data/9ba626afa44a3aa3.patch_3')
@@ -114,7 +124,7 @@ assert(found_addons[2].src==new_source and scan.bad==0 and scan.big==0,'binary s
 ''')
     report=dict(result.items())
     report.update(actualChefParser=True,actualChefSandbox=True,actualChefModuleSelection=True,
-        separatePhysicsResource=True,loaderSha256=digest(core_path),patchSha256=digest(patch),
+        separatePhysicsResource=True,physicsSourceFromEmbeddedPatch=True,loaderSha256=digest(core_path),patchSha256=digest(patch),
         sourceSha256=digest(W / 'hd2attachmentfix-B23.lua'),
         scope='Actual loader code with simulated empty worlds/IO; live game timing unverified')
     save(W / 'chef-audit.json',report)

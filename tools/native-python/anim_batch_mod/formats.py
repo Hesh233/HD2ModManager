@@ -247,8 +247,10 @@ class AnimationEntry:
             bone = ((header[0] & 0xF0) >> 4) | ((header[1] & 0x3F) << 4)
             time = ((header[0] & 0x0F) << 16) | (header[3] << 8) | header[2]
 
+        rotation_bits = None
         if entry_type == 3:
-            values = decompress_rotation(reader.uint32())
+            rotation_bits = reader.uint32()
+            values = decompress_rotation(rotation_bits)
         elif entry_type == 2:
             values = decompress_position([reader.uint16() for _ in range(3)])
         elif entry_type == 1:
@@ -263,7 +265,11 @@ class AnimationEntry:
             values = []
         else:
             raise BinaryFormatError(f"Unsupported animation entry type/subtype {entry_type}/{subtype}")
-        return cls(type=entry_type, subtype=subtype, bone=bone, time=time, data2=values)
+        entry = cls(type=entry_type, subtype=subtype, bone=bone, time=time, data2=values)
+        if rotation_bits is not None:
+            entry._original_rotation_bits = rotation_bits
+            entry._original_rotation_value = tuple(values)
+        return entry
 
     def write(self, writer: BinaryWriter) -> None:
         if self.type == 0:
@@ -288,7 +294,9 @@ class AnimationEntry:
             writer.write(bytes(header))
 
         if self.type == 3:
-            writer.uint32(compress_rotation(self.data2))
+            writer.uint32(self._original_rotation_bits if getattr(self, '_keep_original_rotation', False)
+                and tuple(self.data2) == getattr(self, '_original_rotation_value', None)
+                else compress_rotation(self.data2))
         elif self.type == 2:
             for value in compress_position(self.data2):
                 writer.uint16(value)
@@ -354,7 +362,9 @@ class AnimationData:
             else:
                 state.position = reader.vec3_float()
             if state.compress_rotation:
-                state.rotation = decompress_rotation(reader.uint32())
+                state._original_rotation_bits = reader.uint32()
+                state.rotation = decompress_rotation(state._original_rotation_bits)
+                state._original_rotation_value = tuple(state.rotation)
             else:
                 state.rotation = [reader.float32() for _ in range(4)]
             if state.compress_scale:
@@ -437,7 +447,9 @@ class AnimationData:
             else:
                 writer.vec3_float(state.position)
             if state.compress_rotation:
-                writer.uint32(compress_rotation(state.rotation))
+                writer.uint32(state._original_rotation_bits if getattr(state, '_keep_original_rotation', False)
+                    and tuple(state.rotation) == getattr(state, '_original_rotation_value', None)
+                    else compress_rotation(state.rotation))
             else:
                 for value in state.rotation:
                     writer.float32(value)

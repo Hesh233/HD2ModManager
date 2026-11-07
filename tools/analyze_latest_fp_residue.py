@@ -25,6 +25,34 @@ def main():
     phase=e['phase'],restored=e['restored'],cameraDistance=e['detail'].get('distance'),
     appliedSamplesInsideFp=sum(x['event']=='applied' for x in activeFP),
     sidearmProbesInsideFp=sum(x['event']=='sidearm_probe' for x in activeFP)))
+ presentations=[e for e in rows if e['event']=='fp_presentation']
+ traces=collections.defaultdict(list)
+ for e in presentations:
+  for model in e.get('models',[]):traces[(model['resource'],str(model['instance']),model['world'])].append((e,model))
+ receiverEvidence=[]
+ def position(m):return m[9:12]
+ def movement(a,b):return math.dist(position(a),position(b))
+ for (resource,instance,world),trace in traces.items():
+  freezes=[];changes=[]
+  for event,model in trace:
+   for key,before in model.get('before',{}).items():
+    after=model.get('after',{}).get(key)
+    if after:changes.append(max(abs(a-b) for a,b in zip(before,after)))
+  for (a,ma),(b,mb) in zip(trace,trace[1:]):
+   # Never join separate view intervals, even if Unit/instance IDs were reused.
+   boundary=any(a['frame']<e.get('frame',-1)<=b['frame'] and
+    ((e['event']=='status' and e.get('status')=='active') or e['event']=='view_bypass') for e in rows)
+   if boundary:continue
+   if not (ma.get('root') and mb.get('root')):continue
+   rootMove=movement(ma['root'],mb['root'])
+   for hand in ('l_hand','r_hand'):
+    before=ma.get('after',{}).get(hand);after=mb.get('after',{}).get(hand)
+    if before and after and rootMove>.1 and movement(before,after)<1e-6:
+     freezes.append(dict(hand=hand,start=a['stamp'],end=b['stamp'],rootMovement=rootMove,
+      handMovement=movement(before,after),worldBefore=position(before),worldAfter=position(after)))
+  receiverEvidence.append(dict(resource=resource,instance=instance,world=world,samples=len(trace),
+   maxFpRefreshHandMatrixChange=max(changes) if changes else None,
+   stationaryHandWhileRootMoves=len(freezes),examples=freezes[:4]))
  neutral=[]
  for e in rows:
   if e['event']=='sidearm_probe' and e['phase']=='before_write':
@@ -35,8 +63,10 @@ def main():
   outputCleanupBalanced=dict(right=s['rightNodeWrites']==s['rightRestores'],left=s['leftNodeWrites']==s['leftRestores'],body=s['bodyNodeWrites']==s['bodyRestores']),
   sourceRightEqualsAnimatedReferenceBeforeWrite=dict(samples=len(neutral),maximumMatrixDifference=max(neutral) if neutral else None),
   disabled=done['disabled'],pendingRestores=done['pendingRestores'],refreshErrors=s['refreshErrors'],
-  fpMeshWorldPoseSamplesAvailable=False,fpSkinningSamplesAvailable=False,
-  gameOrRuntimeChanged=False,conclusion='FP gate entered and transaction cleanup completed; presentation/Source receiver world-cache path remains unproven without in-FP mesh telemetry.')
+  fpMeshWorldPoseSamplesAvailable=bool(presentations),fpSkinningSamplesAvailable=False,
+  fpPresentationSamples=len(presentations),fpCacheRefreshes=s.get('fpPresentationRefreshes'),
+  fpCacheRefreshErrors=s.get('fpPresentationErrors'),receiverEvidence=receiverEvidence,
+  gameOrRuntimeChanged=False,conclusion=('FP gate/cleanup and cache refresh succeeded, but Source hand matrices freeze while FP arm model roots move. Distinct Avatar/receiver routing is required; filtering IDs alone does not create missing FP Source drivers. Final skin palette/external owner remains unobserved.' if any(x['stationaryHandWhileRootMoves'] for x in receiverEvidence) else 'FP gate/cleanup observed; specific receiver and final skin palette require further evidence.'))
  (TARGET/'第一人称残留-分析.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
  print(json.dumps(report))
  return report

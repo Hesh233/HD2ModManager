@@ -57,6 +57,47 @@ public sealed record SourceJiggleBoneFact(
 	Vec3 WorldPosition,
 	SourceJiggleBone Parameters);
 
+/// <summary>
+/// 一根 QuatInterp driver 骨的全部事实：身份、父骨、控制骨、世界 bind 位置与触发规则。
+/// <para>
+/// 这是 VRD driver 要"从源模型搬到 HD2"的那份数据，运行时（物理 lua 的 quatinterp 求解器）
+/// 消费的就是它。触发规则原样搬运——trigger/rotation 四元数表达在 driver 骨父级的局部空间，
+/// 单骨架路线保留完整 Source 层级（原始轴/父子），相对旋转跨转换不变，因此无需做轴烘焙。
+/// </para>
+/// </summary>
+/// <param name="ControlBindLocal">
+/// 控制骨的**原始局部 bind 旋转**（xyzw，相对其父骨，Source 轴约定）——即 VRD 触发区的
+/// "bind 姿态"参考。运行时用物理增量 <c>D = controlQ(t) · controlQ(bind)⁻¹</c> 匹配烘焙后的
+/// 触发区（bind 姿态差被 D 的定义吸收）。实测不变量：rule0 的 trigger ≈ 本值
+/// （test01 handl 精确相等，wrist_L 0.988——作者容差）。
+/// </param>
+/// <param name="FrameConjugation">
+/// 帧映射 M_p（xyzw）：把"原始 Source 父骨局部系"的方向映射到"转换后父节点局部系"。
+/// 触发与输出按它共轭：<c>T″ = M_p · (T_i · CS0⁻¹) · M_p⁻¹</c>、
+/// <c>δ′ = M_p · (R_i · R_bd⁻¹) · M_p⁻¹</c>。保留完整 Source 层级的路线（native/双链）
+/// 恒为单位四元数；Snap 塌缩路线（单骨架）为两套骨架 bind 轴之间的固定旋转。
+/// </param>
+[method: System.Text.Json.Serialization.JsonConstructor]
+public sealed record SourceQuatInterpDriverFact(
+	int BoneIndex,
+	string BoneName,
+	string ParentName,
+	string ControlName,
+	Vec3 WorldPosition,
+	IReadOnlyList<SourceQuatInterpTrigger> Triggers,
+	float[] ControlBindLocal,
+	float[] FrameConjugation,
+	[property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+	float[]? RuntimeControlBind = null)
+{
+    // Keep the original eight-argument ABI for already installed consumers.
+    public SourceQuatInterpDriverFact(int boneIndex, string boneName, string parentName, string controlName,
+        Vec3 worldPosition, IReadOnlyList<SourceQuatInterpTrigger> triggers,
+        float[] controlBindLocal, float[] frameConjugation)
+        : this(boneIndex, boneName, parentName, controlName, worldPosition, triggers,
+            controlBindLocal, frameConjugation, null) { }
+}
+
 /// <summary>装配后的一块几何。</summary>
 public sealed record SourcePartSummary(string BodyPart, string Model, int VertexCount, int TriangleCount);
 
@@ -103,9 +144,12 @@ public sealed record SourceModelInspection(
 {
 	/// <summary>
 	/// mdl 声明的材质目录（<c>cdtextures</c>，有序）。**这是"模型从哪些目录找材质"的权威答案**，
-	/// 引擎按顺序找 <c>materials/&lt;目录&gt;/&lt;名字&gt;.vmt</c>，第一个存在的胜出。
+	/// 引擎按这个顺序找 <c>materials/&lt;目录&gt;/&lt;名字&gt;.vmt</c>，第一个存在的胜出。
 	/// </summary>
 	public IReadOnlyList<string> MaterialFolders { get; init; } = [];
+
+	/// <summary>QuatInterp driver 骨事实（VRD 的姿态驱动半边）；空数组 = 模型没有 driver 骨。</summary>
+	public IReadOnlyList<SourceQuatInterpDriverFact> QuatInterpBones { get; init; } = [];
 
 	/// <summary>每个材质名 × 每个目录展开出的候选全路径（<see cref="SourceMaterialRef.Path"/>）。</summary>
 	public IReadOnlyList<string> MaterialRefs { get; init; } = [];
@@ -183,6 +227,7 @@ public static class SourceModelInspector
 		{
 			MaterialFolders = model.MaterialFolders,
 			MaterialRefs = model.MaterialRefs.Select(reference => reference.Path).ToArray(),
+			QuatInterpBones = QuatInterpFacts(model),
 		};
 	}
 
@@ -210,6 +255,69 @@ public static class SourceModelInspector
 				bone.Jiggle!))
 			.ToArray();
 	}
+
+	/// <summary>
+	/// 逐根 QuatInterp driver 骨的完整事实（按骨下标排序，输出稳定便于 diff 与测试）。
+	/// <para>
+	/// 与 <see cref="JiggleFacts"/> 同一个存在理由：检查报告与转换器共用一份提取逻辑，
+	/// 避免"报告说有 8 根 driver、容器里写的是另一套"的静默漂移。
+	/// </para>
+	/// <para>
+	/// CS0（控制骨原始局部 bind）在此计算——它是烘焙触发的 bind 参考，所有路线通用；
+	/// 帧映射 M_p 由调用方按路线填（保留 Source 层级的路线=单位四元数）。
+	/// </para>
+	/// </summary>
+	public static IReadOnlyList<SourceQuatInterpDriverFact> QuatInterpFacts(SourceModelDocument model)
+	{
+		ArgumentNullException.ThrowIfNull(model);
+		return model.QuatInterpBones
+			.OrderBy(bone => bone.Index)
+			.Select(bone => new SourceQuatInterpDriverFact(
+				bone.Index,
+				bone.DisplayName,
+				ParentName(model, bone),
+				ControlName(model, bone),
+				new Vec3(bone.WorldBind.M14, bone.WorldBind.M24, bone.WorldBind.M34),
+				bone.QuatInterp!.Triggers,
+				ControlBindLocal(model, bone),
+				Quat.Identity))
+			.ToArray();
+	}
+
+	/// <summary>控制骨名；下标越界时给稳定占位（转换侧会按"缺控制骨"拒绝它）。</summary>
+	private static string ControlName(SourceModelDocument model, SourceBone bone)
+	{
+		var control = bone.QuatInterp!.ControlIndex;
+		return control >= 0 && control < model.Bones.Count
+			? model.Bones[control].DisplayName
+			: "<bad-control>";
+	}
+
+	/// <summary>
+	/// 一根骨的**原始局部 bind 旋转**（xyzw，相对其父骨，Source 轴约定）。
+	/// <para>
+	/// 口径：local = PoseToBone(父) · WorldBind(子)——即世界 bind 的逆链。已用真实数据
+	/// 钉死：test01 handl 的 CS0 精确等于其 rule0 的 trigger、裙骨 R_bd 精确等于 rule0 的
+	/// rotation（dot=1.000）。下标越界回退单位四元数。
+	/// </para>
+	/// </summary>
+	public static float[] LocalBindRotation(SourceModelDocument model, int boneIndex)
+	{
+		if (boneIndex < 0 || boneIndex >= model.Bones.Count)
+			return Quat.Identity;
+		var parent = model.Bones[boneIndex].ParentIndex;
+		var childWorld = model.Bones[boneIndex].WorldBind;
+		var rotation = parent >= 0 && parent < model.Bones.Count
+			? model.Bones[parent].PoseToBone * childWorld
+			: childWorld;
+		return Quat.FromRotationMatrix(
+			rotation.M11, rotation.M12, rotation.M13,
+			rotation.M21, rotation.M22, rotation.M23,
+			rotation.M31, rotation.M32, rotation.M33);
+	}
+
+	private static float[] ControlBindLocal(SourceModelDocument model, SourceBone bone)
+		=> LocalBindRotation(model, bone.QuatInterp!.ControlIndex);
 
 	/// <summary>统计每根 jiggle 骨在装配后几何上带多少顶点（口径见 <see cref="SourceJiggleWeightFact"/>）。</summary>
 	private static SourceJiggleWeightFact[] CountJiggleWeights(

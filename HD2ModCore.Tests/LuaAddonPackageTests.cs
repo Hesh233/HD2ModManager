@@ -49,7 +49,7 @@ public sealed class LuaAddonPackageTests
 	{
 		Assert.Throws<InvalidOperationException>(() => PhysBoneLuaSource.ComposeAttachmentFixPackage());
 		var source = LuaAddonCatalog.AttachmentFix("return {testProfile=true}").Source;
-		Assert.Contains("local M = {VERSION = '1.0.13'}", source, StringComparison.Ordinal);
+		Assert.Contains("local M = {VERSION = '1.0.17'}", source, StringComparison.Ordinal);
 		Assert.Contains("options.transfer.new(engine", source, StringComparison.Ordinal);
 		Assert.Contains("experimentalPoseIntent", source, StringComparison.Ordinal);
         Assert.Contains("cfg.rightAttachmentEnabled", source, StringComparison.Ordinal);
@@ -59,6 +59,31 @@ public sealed class LuaAddonPackageTests
 		Assert.DoesNotContain("-- INSERT ", source, StringComparison.Ordinal);
 		Assert.DoesNotContain("M.GRIP_PAIRS = {}", source, StringComparison.Ordinal);
 		Assert.DoesNotContain("local PhysBoneRuntime =", source, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void AttachmentFix_RangeViolationRetriesOnlyAfterVerifiedRollback()
+	{
+		var source = LuaAddonCatalog.AttachmentFix("return {testProfile=true}").Source;
+		Assert.Contains("local recoverable=rangeFailure~=nil and why==rangeFailure", source, StringComparison.Ordinal);
+		Assert.Contains("if recoverable and safe then", source, StringComparison.Ordinal);
+		Assert.Contains("restore_refresh_failed", source, StringComparison.Ordinal);
+		Assert.Contains("mount_range_restore_failed:", source, StringComparison.Ordinal);
+		Assert.Contains("preflight_skip_or_verified_rollback_retry", source, StringComparison.Ordinal);
+		Assert.Contains("emit(row,true)", source, StringComparison.Ordinal);
+		Assert.DoesNotContain("assert(cfg.rightAttachmentEnabled==false or distance(desired,source)", source, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void AttachmentFix_CompactLogHasTimeAndSizeLimits()
+	{
+		var source = LuaAddonCatalog.AttachmentFix("return {testProfile=true}").Source;
+		Assert.Contains("hd2_grip_b23_compact.log", source, StringComparison.Ordinal);
+		Assert.Contains("io.open(path,'w')", source, StringComparison.Ordinal);
+		Assert.Contains("limits.recordSeconds or 90", source, StringComparison.Ordinal);
+		Assert.Contains("limits.maxBytes or 524288", source, StringComparison.Ordinal);
+		Assert.Contains("log_recording_stopped", source, StringComparison.Ordinal);
+		Assert.Contains("positions-v1", source, StringComparison.Ordinal);
 	}
 
 	[Fact]
@@ -124,7 +149,7 @@ public sealed class LuaAddonPackageTests
 		var source = LuaAddonCatalog.AttachmentFix("return {testProfile=true}").Source;
 		Assert.Contains("sceneContext.fpWorld=viewGuard.world", source, StringComparison.Ordinal);
 		var start = source.IndexOf("    local function fp_presentation(", StringComparison.Ordinal);
-		var end = source.IndexOf("    local function view_bypass(", start, StringComparison.Ordinal);
+		var end = source.IndexOf("    local function fp_visibility_restore(", start, StringComparison.Ordinal);
 		Assert.True(start >= 0 && end > start);
 		var maintenance = source[start..end];
 		Assert.Contains("identity(item);W.update_unit(item.world,item.unit)", maintenance, StringComparison.Ordinal);
@@ -136,6 +161,26 @@ public sealed class LuaAddonPackageTests
 		foreach (var forbidden in new[] { "set_local_pose(", "set_world_pose(", "set_visibility(", "link_unit(", "unlink_unit(", "set_animation_state_machine(" })
 			Assert.DoesNotContain(forbidden, maintenance, StringComparison.Ordinal);
 		Assert.True(maintenance.IndexOf("refresh(a,'avatar')", StringComparison.Ordinal) < maintenance.IndexOf("refresh(item,'model')", StringComparison.Ordinal));
+	}
+
+
+	[Fact]
+	public void AttachmentFix_FirstPersonArmHideIsScopedAndRestoresPerMesh()
+	{
+		var source = LuaAddonCatalog.AttachmentFix("return {testProfile=true}").Source;
+		Assert.Contains("sceneContext.fpActor=viewGuard.actor", source, StringComparison.Ordinal);
+		Assert.Contains("firstPersonArmHide", source, StringComparison.Ordinal);
+		Assert.Contains("selected_fp_avatar_three_native_bones", source, StringComparison.Ordinal);
+		Assert.Contains("U.set_mesh_visibility(item.unit,mesh.index,false,'default')", source, StringComparison.Ordinal);
+		Assert.Contains("U.set_mesh_visibility(u,mesh.index,mesh.visible,'default')", source, StringComparison.Ordinal);
+		Assert.Contains("fp_visibility_restore(membership,reason or 'shutdown')", source, StringComparison.Ordinal);
+		Assert.Contains("fp_visibility_restore(members(false),'third_person')", source, StringComparison.Ordinal);
+		Assert.Contains("'LeftArm' or role=='RightArm'", source, StringComparison.Ordinal);
+		var start = source.IndexOf("    local function fp_visibility_restore(", StringComparison.Ordinal);
+		var end = source.IndexOf("    local function view_bypass(", start, StringComparison.Ordinal);
+		var visibility = source[start..end];
+		foreach (var forbidden in new[] { "set_local_pose(", "set_world_pose(", "link_unit(", "unlink_unit(", "set_animation_state_machine(", "set_unit_visibility(" })
+			Assert.DoesNotContain(forbidden, visibility, StringComparison.Ordinal);
 	}
 
 	[Fact]

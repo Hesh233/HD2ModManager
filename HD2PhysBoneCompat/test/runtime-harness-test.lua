@@ -268,10 +268,10 @@ do
 		tostring(runtime.sessions[1].unitTag))
 
 	-- 心跳：证明驱动块被进入过，并给出当帧四个事实。
-	check("有心跳行", text:find("驱动心跳", 1, true) ~= nil)
+	check("有心跳行", text:find("pb hb", 1, true) ~= nil)
 	check("心跳带写入/跳过/引擎调用",
-		text:find("写入=", 1, true) ~= nil and text:find("跳过=", 1, true) ~= nil
-			and text:find("引擎调用=", 1, true) ~= nil)
+		text:find("w=", 1, true) ~= nil and text:find("skip=", 1, true) ~= nil
+			and text:find("calls=", 1, true) ~= nil)
 
 	-- 每行前缀必须是"时间戳 + 帧号"：没有帧号就看不出"30 帧后全灭"这类时序规律。
 	local firstLine = text:match("([^\n]*)") or ""
@@ -287,7 +287,7 @@ do
 	text = readLog()
 	check("静止时没报驱动失效", text:find("驱动失效", 1, true) == nil)
 	-- 抓一帧"写入=0 但跳过>0"作为实证：这正是 written 单独看会误判、handled 不会的那种帧。
-	check("出现过 写入=0 但 跳过>0 的帧", text:find("写入=0 跳过=[1-9]", 1) ~= nil)
+	check("出现过 写入=0 但 跳过>0 的帧", text:find("w=0 skip=[1-9]", 1) ~= nil)
 
 	-- 全部销毁：prune 必须把 dead / rebuilt 分开报，并带存活帧数（P0.5 的判据）。
 	for _, unit in ipairs(armorsA) do engine.alive[unit] = false end
@@ -299,11 +299,11 @@ do
 		text:find("会话失效（dead）：unit=#ID%[t5a%d+%] 存活 %d+ 帧", 1) ~= nil)
 
 	check("uninstall 成功", Runtime.uninstall() == true)
-	-- 再装一次：日志必须是**追加**的，否则上一次启动的证据会被抹掉。
+	-- 2.2.1重新安装只保留最新会话，旧大日志使用另一个文件名保留。
 	Runtime.install(S, { compat = Compat, logPath = logPath2 })
 	Runtime.uninstall()
 	text = readLog()
-	check("日志是追加而非覆盖", countOf(text, "已安装") == 2,
+	check("compact日志只保留最新会话", countOf(text, "已安装") == 1,
 		string.format("已安装 出现 %d 次", countOf(text, "已安装")))
 end
 

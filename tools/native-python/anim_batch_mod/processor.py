@@ -31,7 +31,6 @@ from .math3d import (
 class IKChainConfig:
     chain: list[str]
     target_multiplier: list[float] | float = 1.0
-    policy: str = "fk-target"
 
     def __post_init__(self):
         self.chain = [str(name) for name in self.chain]
@@ -48,10 +47,6 @@ class IKChainConfig:
         if not all(isfinite(value) for value in values):
             raise ValueError("IK target_multiplier must contain only finite numbers")
         self.target_multiplier = values
-        if self.policy not in ("fk-target", "bind-relative-arm-v1"):
-            raise ValueError("Unknown IK chain policy")
-        if self.policy == "bind-relative-arm-v1" and values != [1.0, 1.0, 1.0]:
-            raise ValueError("Bind-relative arms require an identity target multiplier")
 
 
 @dataclass
@@ -140,10 +135,11 @@ class ModConfig:
             chain = chain_data.get("chain")
             if not isinstance(chain, list):
                 raise ValueError(f"IK chain {target_name} must define a chain list")
+            if chain_data.get("policy", "fk-target") != "fk-target":
+                raise ValueError("Experimental arm projection is unsupported; use standard IK chains")
             ik_chains[str(target_name)] = IKChainConfig(
                 chain=chain,
                 target_multiplier=chain_data.get("target_multiplier", [1.0, 1.0, 1.0]),
-                policy=chain_data.get("policy", "fk-target"),
             )
         if not offsets and not rotation_compensations and not ik_chains:
             raise ValueError(
@@ -166,9 +162,12 @@ class ModificationResult:
     generated_position_keys: int
     sample_count: int
     ik_corrections: int = 0
-    arm_retargets: int = 0
+    ik_evaluations: int = 0
+    unchanged: bool = False
     ik_max_error_before: float = 0.0
     ik_max_error_after: float = 0.0
+    arm_target_projections: int = 0
+    arm_requested_target_max_distance: float = 0.0
 
 
 @dataclass
@@ -290,7 +289,15 @@ def modify_animation_with_world_compensation(
     apply_rotate_multipliers: bool = False,
     apply_rotation_compensations: bool = False,
     apply_ik_correction: bool = False,
+    preserve_hand_bend_frame: bool = True,
+    preserve_source_key_times: bool = False,
+    preserve_unmodified_channels: bool = False,
+    source_arm_constraints: bool = False,
+    preserve_playback_timing: bool = False,
+    playback_reference: AnimationData | None = None,
 ) -> ModificationResult:
+    if any(not isinstance(v, bool) for v in (preserve_hand_bend_frame, preserve_source_key_times, preserve_unmodified_channels, source_arm_constraints, preserve_playback_timing)):
+        raise ValueError("Processing profile switches must be booleans")
     if animation.is_additive and not allow_additive:
         raise ValueError(
             "Additive animation requires --allow-additive; its zero-scale basis "
@@ -301,6 +308,14 @@ def modify_animation_with_world_compensation(
             "Animation/Bones count mismatch: "
             f"animation={len(animation.initial_bone_states)}, bones={len(bones.names)}"
         )
+    if preserve_unmodified_channels:
+        # Opt-in bit passthrough for untouched compressed rotations. Decode /
+        # re-encode otherwise moves a source control point by up to 0.1 degrees.
+        # The writer only reuses bits when the decoded value is still identical.
+        for state in animation.initial_bone_states:state._keep_original_rotation = True
+        for entry in animation.entries:
+            if entry.is_rotation:entry._keep_original_rotation = True
+    source_animation_length = animation.animation_length
     source_initial_bone_states = copy.deepcopy(animation.initial_bone_states)
     source_entries = copy.deepcopy(animation.entries)
     source_transform_entries = [
@@ -380,8 +395,6 @@ def modify_animation_with_world_compensation(
                     f"IK chain {target_name!r} requires the target bone to be a direct child of the second bone"
                 )
             ik_indices[target_name] = (root_transform, mid_transform, target_transform)
-    arm_bind, arm_operations = _prepare_bind_relative_arms(unit, bones, config, ik_indices)
-    arm_touched_indices = set()
     configured_transform_offsets = (
         {
             animation_to_transform[bone_name_to_index[name]]: offset
@@ -396,7 +409,34 @@ def modify_animation_with_world_compensation(
     }
     position_tracks, rotation_tracks, scale_tracks = _build_tracks(animation)
     last_transform_time = _last_transform_time(animation)
+    reference_dense = playback_reference is not None and not animation.is_additive
     sample_times = _build_bake_times(last_transform_time)
+    if reference_dense:
+        if playback_reference.is_additive or len(playback_reference.initial_bone_states) != len(bones.names):
+            raise ValueError('Playback reference skeleton/additive type differs')
+        if any(state.compress_position or state.compress_rotation or state.compress_scale
+               for state in playback_reference.initial_bone_states):
+            raise ValueError('Normal playback reference must have a complete uncompressed initial pose')
+        pose_keys = {}
+        for entry in playback_reference.entries:
+            if entry.is_position or entry.is_rotation:
+                if entry.type != 0 or entry.subtype not in (4,5):
+                    raise ValueError('Normal playback reference must use dense float pose keys')
+                pose_keys.setdefault(float(entry.time),set()).add((entry.bone,entry.subtype))
+        expected = {(i,k) for i in range(len(bones.names)) for k in (4,5)}
+        if any(keys != expected for keys in pose_keys.values()):
+            raise ValueError('Normal playback reference has an incomplete pose frame')
+        sample_times = [0.0] + sorted(time for time in pose_keys if time > 0.)
+    elif preserve_playback_timing:
+        sample_times = _build_playback_times(animation)
+    elif preserve_source_key_times and (animation.is_additive or preserve_unmodified_channels):
+        # Keep native control points, including short recoil peaks, when a
+        # standard modifier genuinely requires additive baking. Unchanged
+        # additive channels still follow the existing passthrough path below.
+        sample_times = sorted(set(sample_times) | {
+            float(entry.time) for entry in source_transform_entries
+            if 0.0 <= entry.time <= last_transform_time
+        })
     generated_positions: dict[int, list[tuple[float, list[float]]]] = {
         animation_index: [] for animation_index in range(len(bones.names))
     }
@@ -404,9 +444,11 @@ def modify_animation_with_world_compensation(
         animation_index: [] for animation_index in range(len(bones.names))
     }
     ik_corrections = 0
-    arm_retargets = 0
+    ik_evaluations = 0
     ik_max_error_before = 0.0
     ik_max_error_after = 0.0
+    arm_target_projections = 0
+    arm_requested_target_max_distance = 0.0
     ik_changed_animation_indices: set[int] = set()
 
     for time in sample_times:
@@ -431,9 +473,6 @@ def modify_animation_with_world_compensation(
                 local_transforms[transform_index] = sampled
 
         original_world = _calculate_world_transforms(local_transforms, unit.parents)
-        source_arm_locals = ({i: copy.deepcopy(local_transforms[i])
-                              for op in arm_operations.values() for i in op['indices']}
-                             if arm_operations else {})
         new_world_positions: dict[int, list[float]] = {}
         new_local_positions: dict[int, list[float]] = {}
         effective_local_positions: dict[int, list[float]] = {}
@@ -549,29 +588,68 @@ def modify_animation_with_world_compensation(
             current_world = _calculate_world_transforms(local_transforms, unit.parents)
             for target_name, (root_transform, mid_transform, target_transform) in ik_indices.items():
                 target = fk_targets[target_name]
+                hinge_axis = reference_direction = None
+                constrained_arm = source_arm_constraints and not animation.is_additive and target_name in ('l_hand', 'r_hand')
+                if constrained_arm:
+                    # The requested ray is still the real standard IK target, not
+                    # our current FK. A source-sized limb cannot reproduce the
+                    # original Avatar's reach. Project its distance using the SOURCE
+                    # elbow angle and actual new lengths; retain target direction.
+                    r, m, h = (current_world[i] for i in (root_transform, mid_transform, target_transform))
+                    sr, sm, sh = (original_world[i] for i in (root_transform, mid_transform, target_transform))
+                    a, b = vec_sub(sm.position, sr.position), vec_sub(sh.position, sm.position)
+                    la, lb = _distance(a, [0.,0.,0.]), _distance(b, [0.,0.,0.])
+                    na, nb = _distance(r.position, m.position), _distance(m.position, h.position)
+                    if la*lb > 1e-12 and na*nb > 1e-12:
+                        cosine = max(-1., min(1., sum(x*y for x,y in zip(a,b))/(la*lb)))
+                        reach = sqrt(max(0., na*na+nb*nb+2*na*nb*cosine))
+                        ray = _normalize_vector(vec_sub(target,r.position),vec_sub(sh.position,sr.position))
+                        projected = vec_add(r.position,[v*reach for v in ray])
+                        displacement = _distance(projected,target)
+                        if displacement > 1e-5:arm_target_projections += 1
+                        arm_requested_target_max_distance = max(arm_requested_target_max_distance,displacement)
+                        target = projected
+                        plane = _cross(a,b)
+                        if _distance(plane,[0.,0.,0.]) > la*lb*1e-5:
+                            hinge_axis = quat_inverse_rotate(sr.rotation,_normalize_vector(plane))
+                            reference_direction = quat_rotate(r.rotation,quat_inverse_rotate(sr.rotation,vec_sub(sh.position,sr.position)))
                 before = _distance(current_world[target_transform].position, target)
                 target_world_rotation = list(current_world[target_transform].rotation)
-                if target_name in arm_operations:
-                    target, target_world_rotation, touched = _retarget_bind_relative_arm(
-                        local_transforms, unit, arm_bind, arm_operations[target_name],
-                        source_arm_locals, original_world)
-                    arm_touched_indices.update(touched)
-                    ik_changed_animation_indices.update(transform_to_animation[i] for i in touched)
-                    arm_retargets += 1
-                    current_world = _calculate_world_transforms(local_transforms, unit.parents)
-                    before = _distance(current_world[target_transform].position, target)
+                previous_joint_rotations = {i:list(local_transforms[i].rotation) for i in (root_transform,mid_transform,target_transform)}
+                twist_transform = None
+                twist_world_rotation = None
+                if constrained_arm:
+                    twist_name = target_name.replace('_hand','_hand_twist')
+                    if twist_name in bone_name_to_index:
+                        twist_transform = animation_to_transform[bone_name_to_index[twist_name]]
+                        if unit.parents[twist_transform] == mid_transform:
+                            twist_world_rotation = list(current_world[twist_transform].rotation)
                 ik_max_error_before = max(ik_max_error_before, before)
-                # An already exact anatomical projection needs no iterative
-                # correction. Avoid manufacturing a bend/axial roll at the
-                # straight-arm singularity merely to clamp a zero residual.
-                if target_name not in arm_operations or before > 1e-7:
-                    _apply_two_bone_ik(
-                        local_transforms, unit.parents, root_transform,
-                        mid_transform, target_transform, target,
-                        target_world_rotation,
-                        preserve_bend_frame=target_name in ('l_hand', 'r_hand'),
-                    )
+                ik_evaluations += 1
+                _apply_two_bone_ik(
+                    local_transforms,
+                    unit.parents,
+                    root_transform,
+                    mid_transform,
+                    target_transform,
+                    target,
+                    target_world_rotation,
+                    preserve_bend_frame=constrained_arm or (preserve_hand_bend_frame and target_name in ('l_hand', 'r_hand')),
+                    hinge_axis=hinge_axis,
+                    reference_direction=reference_direction,
+                )
                 current_world = _calculate_world_transforms(local_transforms, unit.parents)
+                if constrained_arm:
+                    # The wrist twist is a sibling of the hand, not its child.
+                    # Preserve its independent input WORLD orientation when IK
+                    # rotates the forearm; do not inject the forearm's new roll.
+                    if twist_world_rotation is not None:
+                        local_transforms[twist_transform].rotation = quat_normalize(quat_multiply(
+                            quat_inverse(current_world[mid_transform].rotation),twist_world_rotation))
+                        ik_changed_animation_indices.add(transform_to_animation[twist_transform])
+                    for i,rotation in previous_joint_rotations.items():
+                        if abs(sum(a*b for a,b in zip(rotation,local_transforms[i].rotation))) < 1.-1e-10:
+                            ik_changed_animation_indices.add(transform_to_animation[i])
                 after = _distance(current_world[target_transform].position, target)
                 ik_max_error_after = max(ik_max_error_after, after)
                 if before > 1e-5 and after < before:
@@ -582,11 +660,6 @@ def modify_animation_with_world_compensation(
                         if index in transform_to_animation
                     )
 
-        for transform_index in arm_touched_indices:
-            position = local_transforms[transform_index].position
-            new_local_positions[transform_index] = (_decompose_additive_position(arm_bind[transform_index], position)
-                                                   if animation.is_additive else list(position))
-
         for animation_index, transform_index in enumerate(animation_to_transform):
             generated_positions[animation_index].append(
                 (time, new_local_positions[transform_index])
@@ -595,7 +668,7 @@ def modify_animation_with_world_compensation(
             if animation.is_additive:
                 rotation = quat_normalize(
                     quat_multiply(
-                        quat_inverse((arm_bind if transform_index in arm_touched_indices else unit.transforms)[transform_index].rotation),
+                        quat_inverse(unit.transforms[transform_index].rotation),
                         rotation,
                     )
                 )
@@ -611,13 +684,31 @@ def modify_animation_with_world_compensation(
         ):
             position_changed_indices.add(animation_index)
     changed_indices = sorted(position_changed_indices | ik_changed_animation_indices)
+    if reference_dense:
+        # The user-accepted playback pack is the authority for untouched rotation
+        # channels and the boundary scale pose, not the sparse game-source layout.
+        # Keep model-dependent IK / explicit rotation edits; copy other reference
+        # controls verbatim so their start/end interpolation is exactly comparable.
+        changed_rotations = set(ik_changed_animation_indices)
+        if apply_ik_correction:
+            changed_rotations.update(transform_to_animation[i] for chain in ik_indices.values() for i in chain)
+        if apply_rotation_compensations:
+            changed_rotations.update(bone_name_to_index[n] for n in config.rotation_compensations)
+        if apply_rotate_multipliers:
+            changed_rotations.update(bone_name_to_index[n] for n,v in config.rotate_multipliers.items() if v != 1.0)
+        reference_rotations = {(entry.bone,float(entry.time)):entry.data2
+            for entry in playback_reference.entries if entry.is_rotation}
+        for i in range(len(bones.names)):
+            if i not in changed_rotations:
+                generated_rotations[i] = [(0.,list(playback_reference.initial_bone_states[i].rotation))] + [
+                    (time,list(reference_rotations[(i,time)])) for time in sample_times[1:]]
 
     # Batch Additive exports use the patched Unit as the position basis. Keep
     # untouched source channels and the source frame-zero pose so blending into
     # the clip does not introduce a new discontinuity. Only IK or explicitly
     # requested rotation processing needs newly baked rotation keys.
     preserve_additive_source = animation.is_additive and not apply_offsets_to_additive
-    if preserve_additive_source:
+    if (preserve_additive_source or preserve_unmodified_channels) and not reference_dense:
         output_position_indices = position_changed_indices
         output_rotation_indices = set(ik_changed_animation_indices)
         if apply_rotation_compensations:
@@ -641,12 +732,14 @@ def modify_animation_with_world_compensation(
             changed_bones=[],
             generated_position_keys=0,
             sample_count=len(sample_times),
+            ik_evaluations=ik_evaluations,
+            unchanged=True,
         )
 
     # Blender's exporter writes a complete uncompressed pose at frame zero,
     # then one position and one rotation key for every bone at every baked
     # frame. Keep event records, but discard every source transform record.
-    if preserve_additive_source:
+    if (preserve_additive_source or preserve_unmodified_channels) and not reference_dense:
         animation.initial_bone_states = source_initial_bone_states
     else:
         animation.initial_bone_states = [
@@ -660,6 +753,7 @@ def modify_animation_with_world_compensation(
                 scale=(
                     [0.0, 0.0, 0.0]
                     if animation.is_additive
+                    else list(playback_reference.initial_bone_states[index].scale) if reference_dense
                     else list(scale_tracks[index].evaluate(0.0))
                 ),
                 compress_position=False,
@@ -668,20 +762,17 @@ def modify_animation_with_world_compensation(
             )
             for index in range(len(bones.names))
         ]
-    if preserve_additive_source:
+    if (preserve_additive_source or preserve_unmodified_channels) and not reference_dense:
         for index in output_position_indices:
             animation.initial_bone_states[index].position = list(
                 generated_positions[index][0][1]
             )
+            animation.initial_bone_states[index].compress_position = False
         for index in output_rotation_indices:
             animation.initial_bone_states[index].rotation = list(
                 generated_rotations[index][0][1]
             )
-            if animation_to_transform[index] in arm_touched_indices:
-                # Rebased frame-zero arm deltas must match their full-precision
-                # baked curves, not pick up a compressed-pose discontinuity.
-                animation.initial_bone_states[index].compress_rotation = False
-                animation.initial_bone_states[index].compress_position = False
+            animation.initial_bone_states[index].compress_rotation = False
 
     event_entries = [
         entry
@@ -694,7 +785,7 @@ def modify_animation_with_world_compensation(
         for animation_index in range(len(bones.names)):
             if animation_index in output_position_indices:
                 position = generated_positions[animation_index][sample_index][1]
-                key = (animation_index, "position", int(time))
+                key = (animation_index, "position", _wire_time_key(time) if preserve_playback_timing or reference_dense else int(time))
                 if key not in seen_transform_keys:
                     seen_transform_keys.add(key)
                     baked_entries.append(
@@ -702,13 +793,13 @@ def modify_animation_with_world_compensation(
                             type=0,
                             subtype=4,
                             bone=animation_index,
-                            time=int(time),
+                            time=float(time) if preserve_source_key_times or preserve_playback_timing or reference_dense else int(time),
                             data2=list(position),
                         )
                     )
             if animation_index in output_rotation_indices:
                 rotation = generated_rotations[animation_index][sample_index][1]
-                key = (animation_index, "rotation", int(time))
+                key = (animation_index, "rotation", _wire_time_key(time) if preserve_playback_timing or reference_dense else int(time))
                 if key not in seen_transform_keys:
                     seen_transform_keys.add(key)
                     baked_entries.append(
@@ -716,7 +807,7 @@ def modify_animation_with_world_compensation(
                             type=0,
                             subtype=5,
                             bone=animation_index,
-                            time=int(time),
+                            time=float(time) if preserve_source_key_times or preserve_playback_timing or reference_dense else int(time),
                             data2=list(rotation),
                         )
                     )
@@ -733,16 +824,19 @@ def modify_animation_with_world_compensation(
         event_entries + preserved_entries + baked_entries,
         key=lambda entry: entry.time,
     )
-    animation.animation_length = last_transform_time / 1000.0
+    animation.animation_length = (playback_reference.animation_length if reference_dense else
+        source_animation_length if preserve_playback_timing else last_transform_time / 1000.0)
     generated_key_count = len(generated_positions) * max(0, len(sample_times) - 1)
     return ModificationResult(
         changed_bones=[bones.names[index] for index in changed_indices],
         generated_position_keys=generated_key_count,
         sample_count=len(sample_times),
         ik_corrections=ik_corrections,
-        arm_retargets=arm_retargets,
+        ik_evaluations=ik_evaluations,
         ik_max_error_before=ik_max_error_before,
         ik_max_error_after=ik_max_error_after,
+        arm_target_projections=arm_target_projections,
+        arm_requested_target_max_distance=arm_requested_target_max_distance,
     )
 
 
@@ -781,103 +875,6 @@ def _quat_from_to(source, target):
     return quat_normalize([axis[0], axis[1], axis[2], 1.0 + dot])
 
 
-
-def _prepare_bind_relative_arms(unit, bones, config, ik_indices):
-    """Calibrate arm motion to geometric axes, without changing the shipped rest.
-
-    Generic/mixed callers retain their existing fk-target policy and bytes.
-    Only a prepared single-HD2 contract selects this branch.
-    """
-    operations = {}
-    names = {n: unit.name_hashes.index(h) for n, h in zip(bones.names, bones.hashes)}
-    bind = copy.deepcopy(unit.transforms) if any(
-        config.ik_chains[n].policy == "bind-relative-arm-v1" for n in ik_indices) else None
-    if bind is None:
-        return None, operations
-    for name, offset in config.offsets.items():
-        i = names[name]
-        bind[i].position = vec_add(bind[i].position, offset)
-        if config.distance_multipliers.get(name, 1.0) != 1.0:
-            raise ValueError("Bind-relative arm contracts cannot change distance multipliers")
-    for name, correction in config.rotation_compensations.items():
-        i = names[name]
-        # generate-config stores inverse(source-rest) * target-rest.
-        bind[i].rotation = quat_normalize(quat_multiply(unit.transforms[i].rotation, correction))
-    source_world = _calculate_world_transforms(unit.transforms, unit.parents)
-    target_world = _calculate_world_transforms(bind, unit.parents)
-    for name, chain in ik_indices.items():
-        if config.ik_chains[name].policy != "bind-relative-arm-v1":
-            continue
-        if name not in ('l_hand', 'r_hand'):
-            raise ValueError("Bind-relative policy is restricted to HD2 hand chains")
-        side = name[0]
-        expected = [side + '_shoulder', side + '_elbow']
-        if config.ik_chains[name].chain != expected:
-            raise ValueError("Bind-relative arms require shoulder -> elbow -> hand")
-        root, mid, end = chain
-        upper_length = _distance(unit.transforms[mid].position, [0., 0., 0.])
-        lower_length = _distance(unit.transforms[end].position, [0., 0., 0.])
-        target_upper = _distance(bind[mid].position, [0., 0., 0.])
-        target_lower = _distance(bind[end].position, [0., 0., 0.])
-        if min(upper_length, lower_length, target_upper, target_lower) < 1e-7:
-            raise ValueError("Degenerate bind-relative arm segment")
-        twists = {}
-        for suffix, parent in [('_shoulder_twist', root), ('_hand_twist', mid)]:
-            if side + suffix in names:
-                i = names[side + suffix]
-                if unit.parents[i] != parent:
-                    raise ValueError("Bind-relative twist has an unexpected parent")
-                twists[suffix] = i
-        operations[name] = dict(root=root, mid=mid, end=end, twists=twists,
-            indices=[root, mid, end, *twists.values()],
-            upper_axis=_quat_from_to(unit.transforms[mid].position, bind[mid].position),
-            lower_axis=_quat_from_to(unit.transforms[end].position, bind[end].position),
-            upper_ratio=target_upper / upper_length, lower_ratio=target_lower / lower_length,
-            source_world=source_world, target_world=target_world)
-    return bind, operations
-
-
-def _retarget_bind_relative_arm(local, unit, bind, op, source, source_world):
-    """Transfer articulation in anatomical axes; preserve bind and wrist frame.
-
-    Scaling rotated segment vectors (rather than adding XYZ offsets) avoids
-    short/collapsed/reversed segments when a clip changes its translations.
-    The elbow keeps the model's neutral bend, not an imposed native rest.
-    """
-    r, m, h = op['root'], op['mid'], op['end']
-    upper, lower = op['upper_axis'], op['lower_axis']
-    local[r].position = vec_add(bind[r].position, vec_sub(source[r].position, unit.transforms[r].position))
-    local[m].position = [v * op['upper_ratio'] for v in quat_rotate(upper, source[m].position)]
-    local[h].position = [v * op['lower_ratio'] for v in quat_rotate(lower, source[h].position)]
-    local[r].rotation = quat_normalize(quat_multiply(
-        quat_multiply(quat_multiply(quat_multiply(bind[r].rotation, upper),
-            quat_inverse(unit.transforms[r].rotation)), source[r].rotation), quat_inverse(upper)))
-    local[m].rotation = quat_normalize(quat_multiply(
-        quat_multiply(quat_multiply(quat_multiply(upper, source[m].rotation),
-            quat_inverse(unit.transforms[m].rotation)), quat_inverse(upper)), bind[m].rotation))
-    for suffix, i in op['twists'].items():
-        axis, ratio = (upper, op['upper_ratio']) if suffix == '_shoulder_twist' else (lower, op['lower_ratio'])
-        delta = quat_rotate(axis, vec_sub(source[i].position, unit.transforms[i].position))
-        local[i].position = vec_add(bind[i].position, [v * ratio for v in delta])
-        if suffix == '_shoulder_twist':
-            local[i].rotation = quat_normalize(quat_multiply(
-                quat_multiply(quat_multiply(quat_multiply(upper, source[i].rotation),
-                    quat_inverse(unit.transforms[i].rotation)), quat_inverse(upper)), bind[i].rotation))
-    current = _calculate_world_transforms(local, unit.parents, (h, *op['twists'].values()))
-    desired_hand_rotation = None
-    for i in [h, *([op['twists']['_hand_twist']] if '_hand_twist' in op['twists'] else [])]:
-        # Wrist/twist world frames come from the original motion, registered
-        # to the new rest. Parent compensation must not drag the palm around.
-        desired = quat_normalize(quat_multiply(quat_multiply(op['target_world'][i].rotation,
-            quat_inverse(op['source_world'][i].rotation)), source_world[i].rotation))
-        parent = unit.parents[i]
-        local[i].rotation = desired if parent is None else quat_normalize(
-            quat_multiply(quat_inverse(current[parent].rotation), desired))
-        if i == h:
-            desired_hand_rotation = desired
-    return list(current[h].position), desired_hand_rotation, op['indices']
-
-
 def _apply_two_bone_ik(
     local_transforms,
     parents,
@@ -892,6 +889,7 @@ def _apply_two_bone_ik(
     delta_time=1.0 / 30.0,
     preserve_bend_frame=False,
     hinge_axis=None,
+    reference_direction=None,
 ):
     """Adjust a direct two-bone chain while preserving position and end rotation."""
     current = _calculate_world_transforms(local_transforms, parents, (root_index, mid_index, target_index))
@@ -943,12 +941,12 @@ def _apply_two_bone_ik(
         # history would oppose actor turns. Rate-limit only the pole, not the
         # hand target; a near-straight input otherwise flips the elbow plane.
         from math import atan2, cos, sin, pi
-        plane = _cross(first_vector, second_vector)
+        plane = quat_rotate(root.rotation,hinge_axis) if hinge_axis is not None else _cross(first_vector, second_vector)
         if _distance(plane,[0.,0.,0.]) >= first_length*second_length*1e-5:
             # Transport the input chain's whole bend plane toward the target.
             # Projecting only its upper arm onto the target ray is singular
             # whenever that ray crosses the upper-arm axis.
-            swing = _quat_from_to(vec_sub(end.position,root.position),direction)
+            swing = _quat_from_to(reference_direction if reference_direction is not None else vec_sub(end.position,root.position),direction)
             plane = quat_rotate(swing,_normalize_vector(plane))
             # first x second points opposite to direction x elbow_offset.
             # Reversing this cross product reflects even a fully bent elbow.
@@ -1161,6 +1159,43 @@ def _last_transform_time(animation: AnimationData) -> float:
     if transform_times:
         return max(transform_times)
     return animation.animation_length * 1000.0
+
+
+def _wire_time_key(time_ms):
+    # Uncompressed HD2 keys store seconds as float32. Deduplicate only keys
+    # that actually have the same serialized timestamp, not the same integer ms.
+    import struct
+    return struct.pack('<f', float(time_ms) / 1000.0)
+
+
+def _build_playback_times(animation):
+    """Native clip clock plus control points; never append a ceil-rounded hold frame."""
+    import struct
+    duration = float(animation.animation_length) * 1000.0
+    if not isfinite(duration) or duration < 0:
+        raise ValueError('Animation duration must be finite and non-negative')
+    selected = {}
+    def add(time, priority):
+        if not isfinite(time) or time < 0:
+            raise ValueError('Animation key time must be finite and non-negative')
+        key = _wire_time_key(time)
+        old = selected.get(key)
+        if old is None or (priority, time) >= (old[0], old[1]):
+            selected[key] = (priority, time)
+    # Keep the existing 30Hz approximation only inside the native playback
+    # interval. Source control times take precedence over redundant grid keys.
+    frame_count = ceil(duration * 30.0 / 1000.0)
+    for frame in range(1, frame_count):
+        time = frame * 1000.0 / 30.0
+        if time < duration and struct.unpack('<f', _wire_time_key(time))[0] * 1000.0 <= duration:
+            add(time, 0)
+    for entry in animation.entries:
+        if entry.is_position or entry.is_rotation or entry.is_scale:
+            # Existing native tail records are retained, not silently cropped.
+            add(float(entry.time), 3)
+    add(0.0, 2)
+    add(duration, 2)
+    return sorted(value[1] for value in selected.values())
 
 
 def _build_bake_times(last_transform_time: float) -> list[float]:

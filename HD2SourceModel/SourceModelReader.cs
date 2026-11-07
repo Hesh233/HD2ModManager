@@ -55,8 +55,26 @@ public static class SourceModelReader
 	/// <summary><c>STUDIO_PROC_JIGGLE</c>：<c>proctype</c> 取这个值表示该骨挂了弹簧参数。</summary>
 	private const int ProcedureTypeJiggle = 5;
 
+	/// <summary>
+	/// <c>STUDIO_PROC_QUATINTERP</c>：VRD 的 driver 骨（<c>$proceduralbones</c> 编译产物）。
+	/// L4D2 幸存者模型用它做手腕朝向修正与裙摆随大腿姿态形变（test01/test07 实测各 8 根）。
+	/// </summary>
+	private const int ProcedureTypeQuatInterp = 2;
+
 	private const int JiggleParameterCount = 29;
 	private const int JiggleBlockLength = 4 + (JiggleParameterCount * 4);
+
+	/// <summary>QuatInterp 头（<c>mstudioquatinterp_t</c>）：控制骨下标 + 规则数 + 规则数组偏移。</summary>
+	private const int QuatInterpHeaderLength = 12;
+
+	/// <summary>
+	/// 一条 QuatInterp 规则（<c>mstudioquatinterpinfo_t</c>）：
+	/// invTolerance(f32) + trigger 四元数(4f) + position(3f) + rotation 四元数(4f) = 48 字节。
+	/// 布局已与 <c>tools/prepare_native_v11.py</c> 的提取代码及 test01/test07 原始 MDL 交叉核对。
+	/// </summary>
+	private const int QuatInterpRuleLength = 48;
+
+	private const int MaxQuatInterpRules = 64;
 
 	private const int MaxBoneCount = 4096;
 	private const int MaxBodyPartCount = 1024;
@@ -201,6 +219,8 @@ public static class SourceModelReader
 		if (offset <= 0 || offset + (count * BoneStride) > mdl.Length)
 			throw new InvalidDataException($"MDL 骨骼数组越界：offset={offset} count={count}。");
 
+		// 不认识的 proctype 只报一次每种类型，避免 40 根未知骨刷出 40 条同样的诊断。
+		var unsupportedReported = new HashSet<int>();
 		var bones = new List<SourceBone>(count);
 		for (var index = 0; index < count; index++)
 		{
@@ -222,8 +242,18 @@ public static class SourceModelReader
 			}
 
 			var name = ReadBoneName(mdl, entry, nameIndex, index, diagnostics);
+			var procedureType = BinaryPrimitives.ReadInt32LittleEndian(mdl.AsSpan(entry + BoneProcTypeOffset));
+			if (procedureType != ProcedureTypeJiggle && procedureType != ProcedureTypeQuatInterp
+				&& procedureType != 0 && unsupportedReported.Add(procedureType))
+			{
+				diagnostics.Add(new SourceModelDiagnostic(
+					"UnsupportedProceduralBone",
+					$"骨骼 {index} 带不支持的程序骨类型 proctype={procedureType}，其规则不会被迁移。"));
+			}
+
 			bones.Add(new SourceBone(index, name, parent, poseToBone, worldBind,
-				ReadJiggleBone(mdl, entry, index, diagnostics)));
+				ReadJiggleBone(mdl, entry, index, diagnostics),
+				QuatInterp: ReadQuatInterpBone(mdl, entry, index, diagnostics)));
 		}
 
 		return bones;
@@ -299,6 +329,88 @@ public static class SourceModelReader
 			values[16], values[17], values[18], values[19], values[20], values[21], values[22], values[23],
 			values[24], values[25], values[26], values[27], values[28]);
 	}
+
+	/// <summary>
+	/// 读 QuatInterp driver 骨（proctype=2，VRD 的"姿态驱动"半边）。
+	/// <para>
+	/// 与 <see cref="ReadJiggleBone"/> 同一口径：数据读不全记诊断并返回 null，绝不抛——
+	/// 一根 driver 骨缺失只意味着"那块裙摆少了基础驱动"，不该让整个模型读不出来。
+	/// </para>
+	/// </summary>
+	private static SourceQuatInterpBone? ReadQuatInterpBone(
+		byte[] mdl, int boneEntry, int boneIndex, List<SourceModelDiagnostic> diagnostics)
+	{
+		var procedureType = BinaryPrimitives.ReadInt32LittleEndian(mdl.AsSpan(boneEntry + BoneProcTypeOffset));
+		if (procedureType != ProcedureTypeQuatInterp)
+			return null;
+
+		// procindex 与 jiggle 一样：相对"该骨骼结构体自身地址"的字节偏移。
+		var procedureIndex = BinaryPrimitives.ReadInt32LittleEndian(mdl.AsSpan(boneEntry + BoneProcIndexOffset));
+		var block = boneEntry + procedureIndex;
+		if (block < 0 || block + QuatInterpHeaderLength > mdl.Length)
+		{
+			diagnostics.Add(new SourceModelDiagnostic(
+				"QuatInterpParametersOutOfRange",
+				$"骨骼 {boneIndex} 标记为 quatinterp 但参数头越界（procindex={procedureIndex}）。"));
+			return null;
+		}
+
+		var controlIndex = BinaryPrimitives.ReadInt32LittleEndian(mdl.AsSpan(block));
+		var ruleCount = BinaryPrimitives.ReadInt32LittleEndian(mdl.AsSpan(block + 4));
+		var rulesOffset = BinaryPrimitives.ReadInt32LittleEndian(mdl.AsSpan(block + 8));
+		if (controlIndex < 0 || controlIndex >= MaxBoneCount)
+		{
+			diagnostics.Add(new SourceModelDiagnostic(
+				"QuatInterpControlOutOfRange",
+				$"骨骼 {boneIndex} 的控制骨下标异常：{controlIndex}。"));
+			return null;
+		}
+
+		if (ruleCount <= 0 || ruleCount > MaxQuatInterpRules)
+		{
+			diagnostics.Add(new SourceModelDiagnostic(
+				"QuatInterpRuleCountInvalid",
+				$"骨骼 {boneIndex} 的规则数量异常：{ruleCount}。"));
+			return null;
+		}
+
+		var rulesAt = block + rulesOffset;
+		if (rulesAt < 0 || rulesAt + (ruleCount * QuatInterpRuleLength) > mdl.Length)
+		{
+			diagnostics.Add(new SourceModelDiagnostic(
+				"QuatInterpParametersOutOfRange",
+				$"骨骼 {boneIndex} 的规则数组越界（offset={rulesOffset} count={ruleCount}）。"));
+			return null;
+		}
+
+		var triggers = new List<SourceQuatInterpTrigger>(ruleCount);
+		for (var rule = 0; rule < ruleCount; rule++)
+		{
+			var at = rulesAt + (rule * QuatInterpRuleLength);
+			triggers.Add(new SourceQuatInterpTrigger(
+				BinaryPrimitives.ReadSingleLittleEndian(mdl.AsSpan(at)),
+				ReadFloat4(mdl, at + 4),
+				ReadFloat3(mdl, at + 20),
+				ReadFloat4(mdl, at + 32)));
+		}
+
+		return new SourceQuatInterpBone(controlIndex, triggers);
+	}
+
+	private static float[] ReadFloat4(byte[] mdl, int at) =>
+	[
+		BinaryPrimitives.ReadSingleLittleEndian(mdl.AsSpan(at)),
+		BinaryPrimitives.ReadSingleLittleEndian(mdl.AsSpan(at + 4)),
+		BinaryPrimitives.ReadSingleLittleEndian(mdl.AsSpan(at + 8)),
+		BinaryPrimitives.ReadSingleLittleEndian(mdl.AsSpan(at + 12)),
+	];
+
+	private static float[] ReadFloat3(byte[] mdl, int at) =>
+	[
+		BinaryPrimitives.ReadSingleLittleEndian(mdl.AsSpan(at)),
+		BinaryPrimitives.ReadSingleLittleEndian(mdl.AsSpan(at + 4)),
+		BinaryPrimitives.ReadSingleLittleEndian(mdl.AsSpan(at + 8)),
+	];
 
 	private static IReadOnlyList<string> ReadMaterialPaths(byte[] mdl, List<SourceModelDiagnostic> diagnostics)
 	{

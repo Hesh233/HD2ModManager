@@ -1,3 +1,4 @@
+using System.Text;
 using HD2ModAdaptation.PatchReconstruction;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2SourceModel;
@@ -36,10 +37,22 @@ public static class PhysBoneContainerEmbedder
 		/// 排查"为什么某块布不晃"时，第一个要看的就是这个。
 		/// </summary>
 		public string? RigSource { get; init; }
+
+		/// <summary>
+		/// 同时嵌入的 QuatInterp driver 骨数（VRD 姿态驱动）；<c>null</c> = 这次没有 driver 记录
+		/// （旧双链线 / 模型没有 driver 骨，容器与历史字节一致）。
+		/// </summary>
+		public int? DriverBoneCount { get; init; }
 	}
 
 	/// <summary>模块名常量，运行时按这个名字取容器里的记录（与协议文档一致）。</summary>
 	public const string RigRecordName = "hd2_spring_rig.bin";
+
+	/// <summary>
+	/// QuatInterp driver rig 的记录名（VRD"姿态驱动"半边）。**可选项**：没有 sidecar 时
+	/// 根本不写这条记录，容器与历史字节完全一致；运行时读不到它就是现状行为。
+	/// </summary>
+	public const string DriverRecordName = "hd2_driver_rig.bin";
 
 	/// <summary>
 	/// 给 <paramref name="modDirectory"/> 下所有**含 Unit 的** patch 嵌入容器。
@@ -111,6 +124,19 @@ public static class PhysBoneContainerEmbedder
 		long added = 0;
 		var locked = new List<string>();
 
+		// Driver rig（VRD 姿态驱动）是**可选**第二条记录：转换期没产出它（旧双链线 / 无 driver 骨
+		// 的模型）就完全不写，容器与历史字节一致。有它才追加，且 Strip→重加保证幂等。
+		byte[]? driverRig = null;
+		var driverSidecarPath = PhysBoneDriverRigSidecar.Locate(modDirectory);
+		if (driverSidecarPath is not null)
+		{
+			driverRig = PhysBoneDriverRigSidecar.TryRead(driverSidecarPath);
+			if (driverRig is null)
+				return new Outcome(false, alreadyPresent, boneCount, 0, 0,
+					$"{Path.GetFileName(driverSidecarPath)} 不是有效的 driver rig（应以 HD2DRV01 开头）")
+					{ RigSource = rigSource };
+		}
+
 		foreach (var patchPath in EnumeratePatchFiles(modDirectory))
 		{
 			var gpuPath = patchPath + ".gpu_resources";
@@ -134,7 +160,10 @@ public static class PhysBoneContainerEmbedder
 			}
 			var clean = PhysBoneContainer.StripIfPresent(carrier, out var had).ToArray();
 			alreadyPresent |= had;
-			var combined = PhysBoneContainer.AppendTo(clean, [new PhysBoneContainer.Entry(RigRecordName, rig)]);
+			var entries = new List<PhysBoneContainer.Entry> { new(RigRecordName, rig) };
+			if (driverRig is not null)
+				entries.Add(new PhysBoneContainer.Entry(DriverRecordName, driverRig));
+			var combined = PhysBoneContainer.AppendTo(clean, entries);
 			if (combined.AsSpan().SequenceEqual(carrier))
 				continue;   // 已经是最新内容，不写盘
 			try
@@ -152,7 +181,7 @@ public static class PhysBoneContainerEmbedder
 
 			// **写入后回读校验**：这一步是"vpk2patch → Overwrite 时参数会不会丢"的守门员。
 			// 只要有一次读不回来，就当这次嵌入失败（宁可让调用方知道，也不要交付一个没有参数的 patch）。
-			var verification = Verify(gpuPath, rig.Length);
+			var verification = Verify(gpuPath, rig.Length, driverRig?.Length);
 			if (verification is not null)
 				return new Outcome(false, alreadyPresent, boneCount, embedded, added,
 					$"{Path.GetFileName(patchPath)} 写入后校验失败：{verification}")
@@ -167,8 +196,12 @@ public static class PhysBoneContainerEmbedder
 			? Outcome.Skip("没有找到含 Unit 的 patch")
 			: new Outcome(true, alreadyPresent, boneCount, embedded, added,
 				locked.Count > 0 ? "部分 patch 被占用未更新：" + string.Join("；", locked.Take(3)) : null)
-				{ RigSource = rigSource };
+				{ RigSource = rigSource, DriverBoneCount = driverRig is null ? null : CountDriverBones(driverRig) };
 	}
+
+	/// <summary>从 driver rig 字节里读出骨数（写容器报告用；解析交给运行时）。</summary>
+	private static int CountDriverBones(byte[] rig)
+		=> rig.Length >= 16 ? (int)BitConverter.ToUInt32(rig, 12) : 0;
 
 	/// <summary>
 	/// 决定这次从哪儿取参数：显式来源优先；没给就只看 mod 目录。
@@ -208,8 +241,8 @@ public static class PhysBoneContainerEmbedder
 		return null;
 	}
 
-	/// <summary>回读校验：容器能取出、里面有 <see cref="RigRecordName"/> 且长度一致。</summary>
-	private static string? Verify(string gpuPath, int expectedRigBytes)
+	/// <summary>回读校验：容器能取出、里面有 <see cref="RigRecordName"/> 且长度一致；给了 driver 长度也一并校验。</summary>
+	private static string? Verify(string gpuPath, int expectedRigBytes, int? expectedDriverBytes)
 	{
 		var bytes = File.ReadAllBytes(gpuPath);
 		if (PhysBoneCarrier.ExtractContainer(bytes) is null)
@@ -219,6 +252,41 @@ public static class PhysBoneContainerEmbedder
 			return $"容器里没有 {RigRecordName}";
 		if (length != expectedRigBytes)
 			return $"{RigRecordName} 长度 {length} 与期望 {expectedRigBytes} 不一致";
+		if (expectedDriverBytes is { } driverBytes)
+		{
+			// driver 记录用容器索引核对：名字对、长度对，缺了就是"嵌的时候被丢了"。
+			var record = FindRecord(bytes, DriverRecordName);
+			if (record is null)
+				return $"容器里没有 {DriverRecordName}";
+			if (record.Value.length != driverBytes)
+				return $"{DriverRecordName} 长度 {record.Value.length} 与期望 {driverBytes} 不一致";
+		}
+		return null;
+	}
+
+	/// <summary>
+	/// 在载体里按容器索引找一条命名记录（与 lua <c>parse_container</c> 同一套布局：
+	/// 索引记录 0x00 nameLen u16 / 0x04 dataOffset u64 / 0x0C dataLength u64 / 0x38 名字）。
+	/// 返回 (dataOffset 相对容器起点, dataLength)；找不到返回 null。
+	/// </summary>
+	private static (int offset, int length)? FindRecord(byte[] carrier, string recordName)
+	{
+		var container = PhysBoneCarrier.ExtractContainer(carrier);
+		if (container is null) return null;
+		var count = BitConverter.ToUInt32(container, 0x28);
+		var indexOffset = (int)BitConverter.ToUInt64(container, 0x18);
+		var cursor = indexOffset;
+		for (var i = 0; i < count; i++)
+		{
+			var nameLength = BitConverter.ToUInt16(container, cursor);
+			var dataOffset = (int)BitConverter.ToUInt64(container, cursor + 4);
+			var dataLength = (int)BitConverter.ToUInt64(container, cursor + 12);
+			var name = Encoding.UTF8.GetString(container, cursor + 0x38, nameLength);
+			if (name == recordName)
+				return (dataOffset, dataLength);
+			cursor += 0x38 + nameLength;
+		}
+
 		return null;
 	}
 	private static IEnumerable<string> EnumeratePatchFiles(string modDirectory)

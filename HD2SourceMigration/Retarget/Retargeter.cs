@@ -313,7 +313,8 @@ public sealed partial class Retargeter
 		// ⚠️ 这里**不改** `resolved`：它同时被 `SkinAll` 的形变查表和若干顶点级阶段使用，
 		// 一改几何就变（实测 24.3% 顶点位移、最大 1.42 m，表现为网格折痕）。
 		// 合成骨只通过 `jiggleTargets` 在"写权重"那一层生效。
-		var (extraBones, jiggleTargets) = CollectJiggleBones(resolved);
+		// 2026-11-07：QuatInterp driver 骨（VRD 姿态驱动）加入同一套 extras 机制。
+		var (extraBones, jiggleTargets, driverBones) = CollectPhysicsBones(resolved);
 
 		// 链根锚点名：容器里存的是**源侧**父骨名，而源骨架有一批骨在 HD2 侧不存在
 		// （无名骨 source_extra_90、非 Biped 命名的 UN_Skirt_R_02…）。这里把重定向已经算出的
@@ -339,6 +340,14 @@ public sealed partial class Retargeter
 
 			extraBones = posedExtras;
 		}
+
+		// ---- 4c-VRD. QuatInterp driver 骨的帧数据 -----------------------------
+		// driver 骨在 Snap 塌缩路线里已是合成 extras 节点（名字=源显示名，bind 局部=单位阵）。
+		// 运行时的 quatinterp 求解器需要三样东西：节点名三方（自身/父/控制骨）、CS0（控制骨
+		// 原始局部 bind）、M_p（原始 Source 父骨局部系 → 转换后父节点局部系的固定旋转）。
+		// M_p = rot(发货rest父)⁻¹ · rot(_alignment) · rot(源父世界bind)——三个旋转全是
+		// "挂在同一根父骨实体上的坐标系"，M_p 就是它们之间的常量换算。
+		var driverFrames = BuildDriverFrames(driverBones, extraBones, resolved);
 
 		var outPoints = SkinAll(aligned, _deform);
 
@@ -436,7 +445,89 @@ public sealed partial class Retargeter
 			extraBones,
 			jiggleTargets,
 			jiggleAnchors,
-			metrics);
+			metrics)
+		{
+			DriverFrames = driverFrames,
+		};
+	}
+
+	/// <summary>
+	/// 为每根 QuatInterp driver 骨产出运行时帧数据（名字三方 + CS0 + M_p）。
+	/// <para>
+	/// 名字三方全部解析到**转换后模型的实际节点名**：driver 自身=合成 extras 节点名
+	/// （=源显示名），父/控制骨=resolved 落点（原生骨或另一根 extras）。任何一方解析不到
+	/// 就整根跳过（记 <c>&lt;unresolved&gt;</c>，运行时按名 has_node 同样会跳过，双保险）。
+	/// </para>
+	/// </summary>
+	private List<HD2SourceModel.SourceQuatInterpDriverFact> BuildDriverFrames(
+		IReadOnlyList<SourceBone> driverBones,
+		IReadOnlyList<RetargetExtraBone> extras,
+		IReadOnlyDictionary<int, int> resolved)
+	{
+		var frames = new List<HD2SourceModel.SourceQuatInterpDriverFact>();
+		if (driverBones.Count == 0)
+			return frames;
+
+		// 节点下标 → 名字：原生骨查 rig，合成骨查 extras（下标从 _rig.Bones.Count 起连续排布）。
+		string NodeName(int nodeIndex)
+		{
+			if (nodeIndex < 0)
+				return "<unresolved>";
+			if (nodeIndex < _rig.Bones.Count)
+				return _rig.Bones[nodeIndex].Name ?? $"<node{nodeIndex}>";
+			var extraSlot = nodeIndex - _rig.Bones.Count;
+			return extraSlot < extras.Count ? extras[extraSlot].Name : $"<extra{nodeIndex}>";
+		}
+
+		// 对齐旋转（1a 步的 Kabsch/Yaw 结果）与源世界 bind 旋转合成"源父骨系 → HD2 世界"。
+		var alignQuat = HD2SourceModel.Quat.FromRotationMatrix(
+			_alignment.M11, _alignment.M12, _alignment.M13,
+			_alignment.M21, _alignment.M22, _alignment.M23,
+			_alignment.M31, _alignment.M32, _alignment.M33);
+
+		foreach (var driver in driverBones)
+		{
+			var parent = driver.ParentIndex;
+			var controlIndex = driver.QuatInterp!.ControlIndex;
+			if (parent < 0 || !resolved.TryGetValue(parent, out var parentNode)
+				|| !resolved.TryGetValue(driver.Index, out var selfNode)
+				|| !resolved.TryGetValue(controlIndex, out var controlNode))
+			{
+				frames.Add(new HD2SourceModel.SourceQuatInterpDriverFact(
+					driver.Index, driver.DisplayName, "<unresolved>", "<unresolved>",
+					new Vec3(0, 0, 0), driver.QuatInterp.Triggers,
+					HD2SourceModel.Quat.Identity, HD2SourceModel.Quat.Identity));
+				continue;
+			}
+
+			// M_p = rot(发货 rest 父节点)⁻¹ · rot(alignment) · rot(源父世界 bind)。
+			var nativeParentRest = _shippedRest.TryGetValue(parentNode, out var rest)
+				? rest : Mat4.Identity;
+			var nativeQuat = HD2SourceModel.Quat.FromRotationMatrix(
+				nativeParentRest.M11, nativeParentRest.M12, nativeParentRest.M13,
+				nativeParentRest.M21, nativeParentRest.M22, nativeParentRest.M23,
+				nativeParentRest.M31, nativeParentRest.M32, nativeParentRest.M33);
+			var sourceWorld = _model.Bones[parent].WorldBind;
+			var sourceQuat = HD2SourceModel.Quat.FromRotationMatrix(
+				sourceWorld.M11, sourceWorld.M12, sourceWorld.M13,
+				sourceWorld.M21, sourceWorld.M22, sourceWorld.M23,
+				sourceWorld.M31, sourceWorld.M32, sourceWorld.M33);
+			var frameQuat = HD2SourceModel.Quat.Normalized(HD2SourceModel.Quat.Multiply(
+				HD2SourceModel.Quat.Conjugate(nativeQuat),
+				HD2SourceModel.Quat.Multiply(alignQuat, sourceQuat)));
+
+			frames.Add(new HD2SourceModel.SourceQuatInterpDriverFact(
+				driver.Index,
+				driver.DisplayName,
+				NodeName(parentNode),
+				NodeName(controlNode),
+				new Vec3(driver.WorldBind.M14, driver.WorldBind.M24, driver.WorldBind.M34),
+				driver.QuatInterp.Triggers,
+				HD2SourceModel.SourceModelInspector.LocalBindRotation(_model, controlIndex),
+				frameQuat));
+		}
+
+		return frames;
 	}
 
 	/// <summary>

@@ -110,6 +110,157 @@ public static class PhysBoneSpringRig
 }
 
 /// <summary>
+/// 把 QuatInterp driver 骨事实序列化成 <c>hd2_driver_rig.bin</c>——VRD"姿态驱动"半边的运行时数据。
+/// <para>
+/// 与 <see cref="PhysBoneSpringRig"/> 平行的第二类物理骨数据：**单独一条容器记录**、**独立 magic**，
+/// 不动 <c>HD2SRG01</c>。这样旧 rig 与旧运行时零影响——lua 读不到这条记录就是现状行为。
+/// 规则块刻意与 MDL 的 <c>mstudioquatinterpinfo_t</c> 同布局（48 字节：invTolerance + trigger
+/// 四元数 + position + rotation 四元数），读取侧可以逐字段对回源文件。
+/// </para>
+/// <para>
+/// <b>v2 相对 v1 的语义变化（2026-11-07）。</b>v1 的 trigger/rotation 是**原始 Source 值**、
+/// 输出按"绝对局部旋转"解释——只适用于保留完整 Source 层级的路线。v2 存**烘焙后**的值：
+/// <c>trigger″ = M_p · (T_i · CS0⁻¹) · M_p⁻¹</c>（运行时用物理增量
+/// <c>D = controlQ(t) · controlQ(bind)⁻¹</c> 匹配，bind 姿态差被 D 吸收）、
+/// <c>δ′ = M_p · (R_i · R_bd⁻¹) · M_p⁻¹</c>（R_bd = rule0 的 rotation，作者 bind 参考），
+/// 输出按"**bind 相对增量**"解释：<c>L_write = blend(δ′) · bindQ</c>。
+/// 对保留 Source 层级的路线（M_p=I、bindQ=R_bd）数学上严格退化回 v1 绝对语义——零回归；
+/// 对 Snap 塌缩路线（bindQ=I、M_p=两套骨架 bind 轴差）则是唯一正确的解释。
+/// </para>
+/// </summary>
+public static class PhysBoneDriverRig
+{
+	/// <summary>承载格式的 magic；读取方必须先校验它。</summary>
+	public static ReadOnlySpan<byte> Magic => "HD2DRV01"u8;
+
+	/// <summary>当前布局版本。字段顺序一变就必须加一。</summary>
+	/// <remarks>v2：规则字段从"原始值/绝对输出"改为"烘焙值/bind 相对增量"（见类型说明）。</remarks>
+	public const uint Version = 2;
+	public const uint SingleVersion = 3;
+
+	private const int HeaderSize = 32;
+
+	/// <summary>记录定长部分：3×u32 名字偏移 + u32 规则数 + 3×f32 bind 位置 = 28 字节。</summary>
+	private const int RecordFixedSize = 28;
+
+	/// <summary>一条规则 48 字节：invTolerance(f32) + trigger(4f) + position(3f) + rotation(4f)。</summary>
+	private const int RuleSize = 48;
+
+	/// <summary>
+	/// 烘焙：把原始事实按帧映射 <see cref="SourceQuatInterpDriverFact.FrameConjugation"/> 与
+	/// 控制骨 bind 参考 <see cref="SourceQuatInterpDriverFact.ControlBindLocal"/> 转成 v2 规则。
+	/// 输入为空时返回空列表。烘焙是**纯函数**：同一份事实永远得到同一份规则。
+	/// </summary>
+	public static IReadOnlyList<SourceQuatInterpDriverFact> Bake(IReadOnlyList<SourceQuatInterpDriverFact> facts)
+	{
+		ArgumentNullException.ThrowIfNull(facts);
+		var baked = new List<SourceQuatInterpDriverFact>(facts.Count);
+		foreach (var fact in facts)
+		{
+			if (fact.Triggers.Count == 0)
+				continue;
+			var frame = fact.FrameConjugation;
+			var frameInverse = Quat.Conjugate(frame);
+			var cs0 = fact.ControlBindLocal;
+			var cs0Inverse = Quat.Conjugate(cs0);
+			// R_bd（作者 bind 参考）= 第一条规则的 rotation（实测 rule0.rotation == driver 原始局部 bind）。
+			var bindReference = Quat.Normalized(fact.Triggers[0].Rotation);
+			var bindInverse = Quat.Conjugate(bindReference);
+			var rules = fact.Triggers
+				.Select(trigger => trigger with
+				{
+					Trigger = Quat.Conjugated(
+						Quat.Multiply(trigger.Trigger, cs0Inverse), frame),
+					Rotation = Quat.Conjugated(
+						Quat.Multiply(trigger.Rotation, bindInverse), frame),
+				})
+				.ToArray();
+			baked.Add(fact with { Triggers = rules });
+		}
+
+		return baked;
+	}
+
+	/// <summary>序列化整个 driver rig。空列表返回空数组（调用方据此跳过写入）。</summary>
+	public static byte[] Serialize(IReadOnlyList<SourceQuatInterpDriverFact> bones) => Serialize(bones, Version);
+
+	public static byte[] Serialize(IReadOnlyList<SourceQuatInterpDriverFact> bones, uint version)
+	{
+		ArgumentNullException.ThrowIfNull(bones);
+
+		if (version != Version && version != SingleVersion)
+            throw new ArgumentOutOfRangeException(nameof(version));
+        var recordSize = version == SingleVersion ? RecordFixedSize + 16 : RecordFixedSize;
+        if (version == SingleVersion && bones.Any(b => b.RuntimeControlBind is not { Length: 4 } ||
+            b.RuntimeControlBind.Any(v => !float.IsFinite(v)) ||
+            Math.Abs(b.RuntimeControlBind.Sum(v => (double)v * v) - 1) > 1e-4))
+            throw new InvalidDataException("Single VRD requires a finite unit canonical control bind.");
+        var ruleTotal = bones.Sum(bone => bone.Triggers.Count);
+		var nameTable = new List<byte>();
+		var nameOffsets = new int[bones.Count];
+		var parentNameOffsets = new int[bones.Count];
+		var controlNameOffsets = new int[bones.Count];
+		for (var i = 0; i < bones.Count; i++)
+		{
+			nameOffsets[i] = nameTable.Count;
+			nameTable.AddRange(Encoding.UTF8.GetBytes(bones[i].BoneName));
+			nameTable.Add(0);
+			parentNameOffsets[i] = nameTable.Count;
+			nameTable.AddRange(Encoding.UTF8.GetBytes(bones[i].ParentName ?? string.Empty));
+			nameTable.Add(0);
+			controlNameOffsets[i] = nameTable.Count;
+			nameTable.AddRange(Encoding.UTF8.GetBytes(bones[i].ControlName ?? string.Empty));
+			nameTable.Add(0);
+		}
+
+		var recordsSize = bones.Count * recordSize + ruleTotal * RuleSize;
+		var nameTableOffset = HeaderSize + recordsSize;
+		var total = nameTableOffset + nameTable.Count;
+		var output = new byte[total];
+		var span = output.AsSpan();
+
+		Magic.CopyTo(span);
+		BinaryPrimitives.WriteUInt32LittleEndian(span[8..], version);
+		BinaryPrimitives.WriteUInt32LittleEndian(span[12..], checked((uint)bones.Count));
+		BinaryPrimitives.WriteUInt32LittleEndian(span[16..], checked((uint)nameTableOffset));
+		BinaryPrimitives.WriteUInt32LittleEndian(span[20..], checked((uint)nameTable.Count));
+		BinaryPrimitives.WriteUInt32LittleEndian(span[24..], checked((uint)recordSize));
+		BinaryPrimitives.WriteUInt32LittleEndian(span[28..], 0); // 保留
+
+		var cursor = HeaderSize;
+		for (var i = 0; i < bones.Count; i++)
+		{
+			var bone = bones[i];
+			BinaryPrimitives.WriteUInt32LittleEndian(span[(cursor + 0)..], checked((uint)nameOffsets[i]));
+			BinaryPrimitives.WriteUInt32LittleEndian(span[(cursor + 4)..], checked((uint)parentNameOffsets[i]));
+			BinaryPrimitives.WriteUInt32LittleEndian(span[(cursor + 8)..], checked((uint)controlNameOffsets[i]));
+			BinaryPrimitives.WriteUInt32LittleEndian(span[(cursor + 12)..], checked((uint)bone.Triggers.Count));
+			BinaryPrimitives.WriteSingleLittleEndian(span[(cursor + 16)..], (float)bone.WorldPosition.X);
+			BinaryPrimitives.WriteSingleLittleEndian(span[(cursor + 20)..], (float)bone.WorldPosition.Y);
+			BinaryPrimitives.WriteSingleLittleEndian(span[(cursor + 24)..], (float)bone.WorldPosition.Z);
+			if (version == SingleVersion)
+				for (var k = 0; k < 4; k++)
+					BinaryPrimitives.WriteSingleLittleEndian(span[(cursor + 28 + k * 4)..], bone.RuntimeControlBind![k]);
+			cursor += recordSize;
+			foreach (var trigger in bone.Triggers)
+			{
+				BinaryPrimitives.WriteSingleLittleEndian(span[(cursor + 0)..], trigger.InvTolerance);
+				for (var k = 0; k < 4; k++)
+					BinaryPrimitives.WriteSingleLittleEndian(span[(cursor + 4 + k * 4)..], trigger.Trigger[k]);
+				for (var k = 0; k < 3; k++)
+					BinaryPrimitives.WriteSingleLittleEndian(span[(cursor + 20 + k * 4)..], trigger.Position[k]);
+				for (var k = 0; k < 4; k++)
+					BinaryPrimitives.WriteSingleLittleEndian(span[(cursor + 32 + k * 4)..], trigger.Rotation[k]);
+				cursor += RuleSize;
+			}
+		}
+
+		nameTable.CopyTo(output, nameTableOffset);
+		return output;
+	}
+}
+
+/// <summary>
 /// `HD2PBX01` 嵌入式容器（协议见 <c>docs/hd2physbone-embedded-patch-protocol.md</c>）。
 /// <para>
 /// 为什么要有这个容器：Patch 的 <c>.gpu_resources</c> 是引擎不认识的 opaque 数据，

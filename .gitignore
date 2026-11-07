@@ -418,3 +418,8 @@ tools/python-runtime-cache/
 
 # 嵌套的本仓库克隆副本（独立仓库，不随原仓库上传）
 HD2ModManager_main/
+
+# 修复会话的过程快照(before-*-fix 中间态,前后版本已在 git 历史里)
+*.before-*.bak
+# 本地临时诊断输出
+diag_stderr.txt

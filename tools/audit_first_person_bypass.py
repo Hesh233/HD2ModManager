@@ -24,9 +24,14 @@ def main():
  except Exception as e:
   assert 'FP body receiver frozen in world space' in str(e),str(e)
  else:raise AssertionError('Moving body-cache regression did not detect missing receiver refresh')
+ nohide=source.replace("U.set_mesh_visibility(item.unit,mesh.index,false,'default')",'do end',1)
+ assert nohide!=source
+ try:run_harness(profile,fixture,harness,source=nohide)
+ except Exception as e:assert 'left arm not hidden per mesh' in str(e),str(e)
+ else:raise AssertionError('Arm visibility regression did not detect disabled hide setter')
  r=plain(run_harness(profile,fixture,harness,source=source));logs=r.pop('logs')
- r.update(luaVersion='1.0.13',sourceSha256=hashlib.sha256(source.encode()).hexdigest(),
-  missingBodyRefreshNegativeControlDetected=True)
+ r.update(luaVersion='1.0.14',sourceSha256=hashlib.sha256(source.encode()).hexdigest(),
+  missingBodyRefreshNegativeControlDetected=True,disabledArmHideNegativeControlDetected=True)
  (TARGET/'第一人称门禁-Lua测试.log').write_text('\n'.join(logs),encoding='utf-8')
  (TARGET/'第一人称门禁-Lua验证.json').write_text(json.dumps(r,indent=2),encoding='utf-8');print(json.dumps(r))
 if __name__=='__main__':main()

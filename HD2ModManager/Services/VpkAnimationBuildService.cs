@@ -247,6 +247,7 @@ internal static class VpkAnimationBuildService
         var script = Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "main.py");
         var arguments = new List<string> { "-X", "utf8", script, "single-hd2-project", "build",
             "--model-directory", payload, "--game-data", SettingsService.GetGameDataFolder(), "--output", outputRoot,
+            "--config", NativeSkeletonProjectService.ResolveConfig(modDirectory),
             "--threads", threads.ToString(CultureInfo.InvariantCulture) };
         if (sampleCount is not null) arguments.AddRange(["--sample-count", sampleCount.Value.ToString(CultureInfo.InvariantCulture)]);
         var result = await Hd2ModProcess.RunAsync(runner, arguments, cancellationToken, onProgress);

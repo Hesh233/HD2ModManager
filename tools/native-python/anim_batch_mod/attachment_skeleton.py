@@ -729,6 +729,8 @@ def build_transfer_package(manifest_path, model_directory, game_data, output, co
         if config.get('native_skeleton',{}).get('runtime_policy'):
             apply_runtime_policy(profile,config['native_skeleton']['runtime_policy'])
             profile['variant']=manifest['boneNamespace']+'-B23-1.0.8-calibrated-v1'
+        profile['firstPersonArmHide']=dict(enabled=True,modelResources=discovery['armModelRoles'],matchTolerance=.01,
+            policy='temporary_hide_selected_fp_receiver_only_restore_per_mesh_default')
         contract=validate_attachment_transfer_contract(profile,UnitData.parse(avatar),BonesData.parse(bones),manifest,
             config.get('attachment_swap') if config.get('native_skeleton',{}).get('attachment_swap') else None)
         if manifest.get('sourceAttachmentCalibration'):
@@ -916,7 +918,7 @@ def collect_model_units(manifest,model_directory,mod_directory=None):
     folders=[model_directory]
     overwrite=Path(mod_directory)/'Overwrite' if mod_directory else None
     if overwrite and overwrite.is_dir():folders += [overwrite]+sorted(p for p in overwrite.rglob('*') if p.is_dir())
-    models={};source_seen=set();skipped=[];target_ids=set()
+    models={};source_seen=set();skipped=[];target_ids=set();arm_roles={}
     for folder in folders:
         is_source=folder==model_directory
         section_file=folder/'sections.json'
@@ -954,9 +956,11 @@ def collect_model_units(manifest,model_directory,mod_directory=None):
                     skipped.append(dict(resource=resource,path=str(path),reason='non_source_auxiliary'))
                     continue
                 models[resource]=parsed
+                role=row.get('slot')
+                if role in ('LeftArm','RightArm'):arm_roles[resource]=role
                 if is_source:source_seen.add(file_id)
                 else:target_ids.add(resource)
     if body_ids-source_seen:
         raise ValueError('Missing verified Source body Units: '+','.join(f'{i:016x}' for i in sorted(body_ids-source_seen)))
     return models,dict(sourceBodies=len(source_seen),targetBodies=sorted(target_ids),skippedUnits=skipped,
-        policy='verified_source_carriers_only',sourceOwnershipGate=True)
+        policy='verified_source_carriers_only',sourceOwnershipGate=True,armModelRoles=arm_roles)

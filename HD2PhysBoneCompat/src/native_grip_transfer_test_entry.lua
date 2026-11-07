@@ -18,23 +18,22 @@ end)()
 local profile=(function()
 -- INSERT TRANSFER PROFILE
 end)()
-local path=assert(loader.log_directory,'Chef log directory unavailable')..'/hd2_grip_b23.log'
-local handle,why=io.open(path,'a');assert(handle,'Cannot open B23 log: '..tostring(why))
+-- A new latest-session file leaves the old multi-day evidence untouched.
+local path=assert(loader.log_directory,'Chef log directory unavailable')..'/hd2_grip_b23_compact.log'
+local handle,why=io.open(path,'w');assert(handle,'Cannot open B23 log: '..tostring(why))
 local closed,frame,lastFlush=false,0,0
-local function log(line)
+local log,logContext=Transfer.newLogSink(function(line,urgent)
     if handle then
         handle:write(os.date('%Y-%m-%d %H:%M:%S'),' [grip_b23] ',line,'\n')
         local now=stingray.Application.time_since_launch()
-        local urgent=line:find('"event":"loaded"',1,true) or line:find('"event":"complete"',1,true)
-            or line:find('"event":"disabled"',1,true) or line:find('"event":"rollback"',1,true)
-            or line:find('"event":"restore_failed"',1,true)
-        if urgent or now-lastFlush>=0.5 then handle:flush();lastFlush=now end
+        if urgent or now-lastFlush>=2 then handle:flush();lastFlush=now end
     end
-end
+end,function()return stingray.Application.time_since_launch()end,profile.logging)
 local sceneContext={inMission=loader.in_mission,world=loader.world}
 local viewGuard=FirstPersonGuard.new(stingray,sceneContext)
 sceneContext.firstPerson=viewGuard.sample
 sceneContext.fpWorld=viewGuard.world
+sceneContext.fpActor=viewGuard.actor
 local made,runtime=pcall(AttachmentRuntime.install,stingray,{profile=profile,logger=log,armMath=ArmMath,transfer=Transfer,sceneContext=sceneContext})
 if not made then handle:close();error(runtime) end
 __hd2_grip_b23=runtime

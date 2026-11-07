@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string] $TargetDirectory = 'outputs\native-v34-b23-integrated-20261105\manager-1.0.7',
     [string] $PublishedDirectory = 'outputs\single-hd2-fix-20261106\manager',
@@ -27,7 +27,7 @@ if (!$SkipBuild) {
     if ($LASTEXITCODE -ne 0) { throw 'Manager publish failed.' }
 }
 $info = Get-Content -LiteralPath (Join-Path $publish 'anim_batch_mod\build-info.json') -Raw | ConvertFrom-Json
-if ($info.pipelineVersion -ne '1.0.15' -or $info.singleSkeletonPipelineVersion -ne '1.0.17' -or $info.singleArmRetarget -ne 'bind-relative-arm-v1') {
+if ($info.pipelineVersion -ne '1.0.15' -or $info.singleSkeletonPipelineVersion -ne '1.0.20' -or $info.singleProcessingProfile -ne 'standard-single-v3-normal-reference' -or $info.singlePlaybackRevision -ne 'normal-reference-r2') {
     throw 'Refusing an old or mixed runtime without the single HD2 bind fix.'
 }
 foreach ($file in $info.files) {
@@ -35,7 +35,10 @@ foreach ($file in $info.files) {
         throw "Published Python source differs from build-info: $($file.name)"
     }
 }
-foreach ($required in @('HD2ModManager.dll','HD2ModCore.dll','HD2SourceMigration.dll','hd2mod.dll','anim_batch_mod\single_skeleton.py')) {
+foreach ($file in $info.presetFiles) {
+    if ((Get-FileHash -LiteralPath (Join-Path $publish ('anim_batch_mod\' + $file.name)) -Algorithm SHA256).Hash -ne $file.sha256) { throw "Published template differs from build-info: $($file.name)" }
+}
+foreach ($required in @('anim_batch_mod\playback_reference.py','anim_batch_mod\presets\single-normal-reference\playback.zip','HD2ModManager.dll','HD2ModCore.dll','HD2SourceMigration.dll','hd2mod.dll','anim_batch_mod\single_skeleton.py')) {
     if (!(Test-Path -LiteralPath (Join-Path $publish $required))) { throw "Incomplete publish: $required" }
 }
 # Existing presets/configuration are user-owned. The new single converter normalizes
@@ -49,19 +52,23 @@ foreach ($relative in $protected) {
 function Test-PackageOwnedPath([string] $relative) {
     $segments = $relative.Replace([char]92, [char]47).Split([char]47)
     return ($segments[0] -notin @('data','cache','logs','test-library','isolated-library','config') -and
-        $segments -notcontains '__pycache__' -and $relative -notin @('settings.json','config.toml'))
+        $segments -notcontains '__pycache__' -and $relative -notin @('settings.json','config.toml') -and $relative -notmatch '\.bak$')
 }
 $files = @(Get-ChildItem -LiteralPath $publish -Recurse -File | Where-Object {
     Test-PackageOwnedPath $_.FullName.Substring($publish.Length + 1)
 })
 $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')
 $changes = @()
+$requiredDirectories = @()
 # Finish every validation and lock check before backing up or copying anything.
 foreach ($source in $files) {
     $relative = $source.FullName.Substring($publish.Length + 1)
     $destination = In-Repo (Join-Path $target $relative)
     if (!(Test-Path -LiteralPath (Split-Path -Parent $destination) -PathType Container)) {
-        throw "Would require a new directory: $relative. No files have been updated."
+        if ($relative.Replace([char]92,[char]47) -ne 'anim_batch_mod/presets/single-normal-reference/playback.zip') {
+            throw "Would require an unexpected directory: $relative. No files have been updated."
+        }
+        $requiredDirectories += (Split-Path -Parent $destination)
     }
     $hash = (Get-FileHash -LiteralPath $source.FullName -Algorithm SHA256).Hash
     $oldHash = if (Test-Path -LiteralPath $destination -PathType Leaf) { (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash } else { $null }
@@ -81,6 +88,7 @@ foreach ($change in $changes) {
         if ((Get-FileHash -LiteralPath $change.backupFile -Algorithm SHA256).Hash -ne $change.previousSha256) { throw "Backup hash mismatch: $($change.path)" }
     }
 }
+foreach ($directory in $requiredDirectories) { New-Item -ItemType Directory -Force -Path (In-Repo $directory) | Out-Null }
 foreach ($change in $changes) {
     Copy-Item -LiteralPath $change.source -Destination $change.destination -Force
     if ((Get-FileHash -LiteralPath $change.destination -Algorithm SHA256).Hash -ne $change.sha256) { throw "Update hash mismatch: $($change.path)" }
@@ -90,11 +98,11 @@ foreach ($relative in $protectedHashes.Keys) {
         throw "User configuration changed unexpectedly: $relative"
     }
 }
-$manifest = [ordered]@{ pipelineVersion=$info.pipelineVersion; singleSkeletonPipelineVersion=$info.singleSkeletonPipelineVersion;
+$manifest = [ordered]@{ pipelineVersion=$info.pipelineVersion; singleSkeletonPipelineVersion=$info.singleSkeletonPipelineVersion; singlePlaybackRevision=$info.singlePlaybackRevision;
     target=$target; staging=$publish; updatedUtc=[DateTime]::UtcNow.ToString('o'); changedFiles=$changes;
     preserved=@('settings.json','config.toml','config','data','cache','logs','test-library'); protectedHashes=$protectedHashes;
-    createdDirectories=@(); gameDeployed=$false; gameTested=$false }
+    createdDirectories=$requiredDirectories; gameDeployed=$false; gameTested=$false }
 $manifest | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath (Join-Path $target '更新记录.json') -Encoding utf8
-"pipelineVersion=$($info.pipelineVersion)`nsingleSkeletonPipelineVersion=$($info.singleSkeletonPipelineVersion)`ninstallation=manager-1.0.7`nreuseDirectory=true`nnewReleaseDirectories=false" |
+"pipelineVersion=$($info.pipelineVersion)`nsingleSkeletonPipelineVersion=$($info.singleSkeletonPipelineVersion)`nsinglePlaybackRevision=$($info.singlePlaybackRevision)`ninstallation=manager-1.0.7`nreuseDirectory=true`nnewReleaseDirectories=false" |
     Set-Content -LiteralPath (Join-Path $target '生成链版本.txt') -Encoding utf8
-Write-Output "Updated $($changes.Count) package-owned files in $target. No directories created; recovery copies are adjacent .bak files."
+Write-Output "Updated $($changes.Count) package-owned files in $target. Only required template directories may be created; no new release directory. Recovery copies are adjacent .bak files."

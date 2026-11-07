@@ -8,7 +8,7 @@ local RESOURCE_HEX='d0cf4d493ca08bed'
 local function finite(x)return type(x)=='number' and x==x and math.abs(x)<1e12 end
 function M.new(S,context)
  local U,W,A,X,I=S.Unit,S.World,S.Application,S.Matrix4x4,S.IdString64
- local held=false;local currentFpWorld=nil
+ local held=false;local currentFpWorld=nil;local currentFpActor=nil
  local function pose(fn,...)
   local values={X.to_elements(fn(...))}
   assert(#values==12,'view_matrix_size')
@@ -35,7 +35,7 @@ function M.new(S,context)
     end
    end
   end
-  if #graphs==0 then held=false;currentFpWorld=nil;return false,{reason='no_fp_graph'}end
+  if #graphs==0 then held=false;currentFpWorld=nil;currentFpActor=nil;return false,{reason='no_fp_graph'}end
   local main=context and type(context.world)=='function' and context.world() or nil
   if not main then return nil,{reason='main_view_world_unavailable'}end
   if type(W.debug_camera_pose)~='function' then return nil,{reason='main_view_camera_api_unavailable'}end
@@ -48,21 +48,21 @@ function M.new(S,context)
    local d=math.sqrt((camera[10]-fp[10])^2+(camera[11]-fp[11])^2+(camera[12]-fp[12])^2)
    nearest=math.min(nearest,d)
    if d<=limit then
-    held=true;currentFpWorld=row.world
+    held=true;currentFpWorld=row.world;currentFpActor={unit=row.unit,world=row.world}
     return true,{reason='fp_camera_matches_main_view',distance=d,limit=limit,
      camera={camera[10],camera[11],camera[12]},fpCamera={fp[10],fp[11],fp[12]},fpWorld=tostring(row.world)}
    end
   end
-  held=false;currentFpWorld=nil
+  held=false;currentFpWorld=nil;currentFpActor=nil
   return false,{reason='main_view_not_fp_camera',distance=nearest,limit=limit}
  end
- return {world=function()return currentFpWorld end,sample=function()
+ return {actor=function()return currentFpActor end,world=function()return currentFpWorld end,sample=function()
   local ok,state,detail=pcall(sample)
   if ok then
-   if state~=true then currentFpWorld=nil end
+   if state~=true then currentFpWorld=nil;currentFpActor=nil end
    return state,detail
   end
-  currentFpWorld=nil
+  currentFpWorld=nil;currentFpActor=nil
   -- Uncertain view is a write bypass, not a permanent addon disable.
   return nil,{reason='view_probe_unavailable',detail=tostring(state)}
  end}

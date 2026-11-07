@@ -85,6 +85,13 @@ public sealed record RetargetResult(
 	/// <summary>Single HD2 route: the same posed bind that produced Output, without Source tracks.</summary>
 	public HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitTransformInfo? SingleHd2Transforms { get; init; }
 
+	/// <summary>
+	/// QuatInterp driver 骨（VRD 姿态驱动）的运行时帧数据：名字三方、CS0、帧映射 M_p。
+	/// 空列表 = 模型没有 driver 骨。名字三方已解析到转换后模型的实际节点名；
+	/// <c>Triggers</c> 仍是**原始 Source 值**（烘焙由 <c>PhysBoneDriverRig.Bake</c> 统一做）。
+	/// </summary>
+	public IReadOnlyList<HD2SourceModel.SourceQuatInterpDriverFact> DriverFrames { get; init; } = [];
+
 	/// <summary>把结果里的顶点位置摊平成 <c>[x, y, z]</c> 数组，供 npz 落盘与逐点对拍。</summary>
 	public static double[,] ToArray(IReadOnlyList<Vec3> points)
 	{

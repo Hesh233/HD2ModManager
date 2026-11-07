@@ -19,6 +19,10 @@ def build_harness():
     candidate=json.loads((project/'config/B23-profile.json').read_text(encoding='utf-8-sig'))
     components=json.loads((project/'inputs/components.json').read_text(encoding='utf-8-sig'))
     fixes=apply_grip_fixes(copy.deepcopy(candidate),version='test07-1.0.10')
+    # Freeze the historical diagnostic fixture; compact logging has its own sink/format tests.
+    fixes['logging']=dict(compact=False)
+    fixes['logSeconds']=1.
+    if fixes.get('sidearmDiagnostics'):fixes['sidearmDiagnostics']=dict(fixes['sidearmDiagnostics'],intervalSeconds=1.,maxSamplesPerPath=180)
     newcomponents=json.loads((OUT/'component-fixtures.json').read_text(encoding='utf-8-sig'))
     test=ROOT/'HD2PhysBoneCompat/test'
     extension=(test/'native_grip_transfer_108_harness.lua').read_text(encoding='utf-8-sig')

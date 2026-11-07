@@ -17,7 +17,7 @@ internal static class AnimationThreadCountPrompt
                 Margin = new Thickness(0, 12, 0, 8) };
             var error = new TextBlock { Foreground = Brushes.IndianRed, TextWrapping = TextWrapping.Wrap };
             var panel = new StackPanel { Margin = new Thickness(20) };
-            panel.Children.Add(new TextBlock { Text = $"{model}\n全量动画打包线程数（默认 2，范围 1–16）\n线程数越大，内存占用越高；填写 1 可使用单线程。",
+            panel.Children.Add(new TextBlock { Text = $"{model}\n全量动画打包进程数（默认 2，范围 1–16）\n进程数越大，内存占用越高；填写 1 可在当前进程内串行打包。",
                 TextWrapping = TextWrapping.Wrap });
             panel.Children.Add(input);
             panel.Children.Add(error);

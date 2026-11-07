@@ -3749,6 +3749,30 @@ public static class CliApplication
 			}
 		}
 
+		// QuatInterp driver rig（VRD 姿态驱动）：**双路线都产出**（2026-11-07 起）。
+		//  · native（--source-skeleton）：Source 段节点保留，名字按 manifest 换成导出名，M_p=I。
+		//  · single（--single-hd2-skeleton）：driver 骨已合成 extras 节点（Retargeter 产出
+		//    DriverFrames，名字/父/控制=最终节点名，M_p=两套骨架 bind 轴差），位置已折算米。
+		//  · 旧双链线（两者皆空）：不产出——网格蒙皮在原生骨+合成骨上，driver 转了也看不见，
+		//    容器保持历史字节（冻结基线）。
+		if (package.IsValid && (native is not null || single is not null))
+		{
+			try
+			{
+				var driverFacts = native is not null
+					? PhysBoneDriverRigSidecar.ForNativeSkeleton(
+						SourceModelInspector.QuatInterpFacts(inputs.Model), options.ModelScale, native.Manifest)
+					: PhysBoneDriverRigSidecar.ForSingleSkeleton(single!.Result.DriverFrames, options.ModelScale);
+				PhysBoneDriverRigSidecar.Write(outputDirectory, driverFacts);
+			}
+			catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
+			{
+				// 不阻断转换：手腕/裙摆少一层基础驱动，弹簧物理不受影响。但必须让人看见。
+				Console.Error.WriteLine(
+					$"⚠️ 没能产出 {PhysBoneDriverRigSidecar.FileName}（手腕/裙摆将缺少 QuatInterp 基础驱动）：{exception.Message}");
+			}
+		}
+
 		// 登记素体。**只写工作区**（`<mod库>/.hd2modmanager/armor-registry.workspace.json`），
 		// 由管理器自己把它编译成 `armor-registry.protocol`——直接改协议文件会被下一次应用覆盖。
 		string? registryError = null;

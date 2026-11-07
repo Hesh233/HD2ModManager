@@ -4,7 +4,7 @@
 -- B19/B20 write path: preserve native aim, refresh model -> gun -> components.
 -- test07 policy optionally aligns sidearm IK_right and selects linked underbarrel IK_left.
 -- Engine matrices and IdString values are temporary: retain numeric copies only.
-local M = {VERSION = '1.0.13'}
+local M = {VERSION = '1.0.17'}
 local unpack = unpack or table.unpack
 
 local function finite(x)
@@ -82,7 +82,7 @@ end
 local function json(v)
     if v == nil then return 'null' end
     if type(v) == 'boolean' then return tostring(v) end
-    if type(v) == 'number' then assert(finite(v), 'nonfinite_log'); return string.format('%.12g', v) end
+    if type(v) == 'number' then assert(finite(v), 'nonfinite_log'); return string.format('%.9g', v) end
     if type(v) == 'string' then return quote(v) end
     assert(type(v) == 'table', 'invalid_log_value')
     local out = {}
@@ -93,6 +93,85 @@ local function json(v)
     local keys = {}; for k in pairs(v) do keys[#keys+1] = k end; table.sort(keys)
     for _, k in ipairs(keys) do out[#out+1] = quote(k) .. ':' .. json(v[k]) end
     return '{' .. table.concat(out, ',') .. '}'
+end
+
+-- Log-only projection: retain full exceptional matrices, summarize routine poses.
+function M.compactDiagnostic(row)
+    local e=row.event
+    if e=='loaded' or e=='complete' or e=='mount_skipped' or e=='disabled' or e=='restore_failed' then return row end
+    local out={event=e,frame=row.frame,time=row.time,avatar=row.avatar}
+    local function pos(v) return v and {v[10],v[11],v[12]} or nil end
+    if e=='sidearm_probe' then
+        out.phase=row.phase;out.path=row.path;out.format='positions-v1';out.parts={};out.hands={}
+        for k,v in pairs(row.hands or {}) do out.hands[k]=pos(v) end
+        for _,part in ipairs(row.parts or {}) do
+            local nodes={}
+            for _,name in ipairs({'root','skeleton','IK_right','IK_left','game_mesh','cylinder','attach_mag','attach_underbarrel'}) do
+                if part.nodes[name] then nodes[name]=pos(part.nodes[name].world) end
+            end
+            out.parts[#out.parts+1]={r=part.resource,i=part.instance,k=part.kind,n=nodes}
+        end
+        return out
+    elseif e=='applied' then
+        out.format='positions-v1';out.weaponResource=row.weaponResource;out.source=pos(row.sourceRight)
+        out.desired=pos(row.desiredWorld);out.actual=pos(row.actualWorld)
+        out.originalOffset=pos(row.originalLocal);out.worldReadbackError=row.worldReadbackError
+        out.localReadbackError=row.localReadbackError;return out
+    elseif e=='left_applied' or e=='right_applied' then
+        out.format='positions-v1';out.resource=row.resource;out.weaponResource=row.weaponResource
+        out.beforeDistance=row.beforeDistance;out.afterDistance=row.afterDistance;out.reachResidual=row.reachResidual
+        out.target=pos(row.target);out.sourceAfter=pos(row.sourceAfter);out.gripResource=row.gripResource
+        out.reachCorrection=row.reachCorrection;return out
+    elseif e=='sidearm_aligned' then
+        out.resource=row.resource;out.policy=row.policy;out.reachCorrection=row.reachCorrection;return out
+    elseif e=='fp_presentation' then
+        out.refreshed=row.refreshed;out.reason=row.view and row.view.reason;out.skinMatricesObserved=false;return out
+    end
+    for k,v in pairs(row) do if k~='variant' then out[k]=v end end
+    return out
+end
+function M.encodeDiagnostic(row,compact) return json(compact and M.compactDiagnostic(row) or row) end
+
+-- Disk budget is independent of setters/simulation and starts at first TP output.
+function M.newLogSink(write,clock,limits)
+    limits=limits or {}
+    local seconds=limits.recordSeconds or 90
+    local cap=limits.maxBytes or 524288
+    local interval=limits.exceptionIntervalSeconds or 2
+    assert(finite(seconds) and seconds>=0 and finite(cap) and cap>=16384 and finite(interval) and interval>=0,'invalid_log_limits')
+    local ctx={bytes=0,suppressed=0,started=nil,stopped=false,last={},recordSeconds=seconds,maxBytes=cap}
+    local function put(line,urgent,budget)
+        if ctx.bytes+#line+40>budget then ctx.suppressed=ctx.suppressed+1;return false end
+        write(line,urgent);ctx.bytes=ctx.bytes+#line+40;return true
+    end
+    local function log(line)
+        local now=clock();if not finite(now) then now=0 end
+        local e=line:match('"event":"([^"]+)"') or 'unknown'
+        local terminal=e=='complete' or e=='disabled' or e=='callback_error' or e=='shutdown_error'
+        local exceptional=terminal or e=='mount_skipped' or e=='restore_failed' or e=='rollback'
+        if not ctx.started and (e=='mount_skipped' or e=='body_applied' or e=='applied' or e=='right_applied' or e=='left_applied') then ctx.started=now end
+        local expired=ctx.started and now-ctx.started>=seconds
+        if not exceptional and (expired or ctx.bytes+#line+40>cap-8192) then
+            ctx.suppressed=ctx.suppressed+1
+            if not ctx.stopped then
+                ctx.stopped=true
+                put(json({event='log_recording_stopped',reason=expired and 'duration' or 'bytes',time=now,
+                    limitSeconds=seconds,limitBytes=cap}),true,cap-4096)
+            end
+            return
+        end
+        if exceptional and not terminal then
+            local key=e..':'..(line:match('"stage":"([^"]+)"') or '')
+            local last=ctx.last[key]
+            if last and now>=last and now-last<interval then ctx.suppressed=ctx.suppressed+1;return end
+            ctx.last[key]=now
+        end
+        if e=='complete' then
+            put(json({event='log_summary',bytes=ctx.bytes,suppressed=ctx.suppressed,recordSeconds=seconds}),true,cap-2048)
+        end
+        put(line,exceptional or e=='loaded',terminal and cap or cap-4096)
+    end
+    return log,ctx
 end
 
 function M.new(S, cfg, logger, ArmMath, sceneContext)
@@ -180,19 +259,28 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         local n=cfg.previewGuard.minimumWorldUnits
         assert(finite(n) and n%1==0 and n>0 and n<=10000,'invalid_preview_guard')
     end
+    if cfg.firstPersonArmHide and cfg.firstPersonArmHide.enabled==true then
+        local policy=cfg.firstPersonArmHide
+        assert(type(policy.modelResources)=='table','fp_arm_resource_contract')
+        local tolerance=policy.matchTolerance or .01
+        assert(finite(tolerance) and tolerance>0 and tolerance<=.05,'fp_arm_match_tolerance')
+        for id,role in pairs(policy.modelResources) do
+            assert(cfg.models[id] and (role=='LeftArm' or role=='RightArm'),'fp_arm_verified_model_required')
+        end
+    end
     local self = {validation={},nodeValidation={},negativeResources={},leftIntent={},rightIntent={},pending={}, actors={}, observerActors={}, models={}, consumers={}, sequence=0, identities={},
-        monitored={},syncFrame=nil,lastSync=nil,
+        monitored={},syncFrame=nil,lastSync=nil,fpHidden={},
         lastScan=nil, lastLog=nil, lastStatus=nil, disabled=false, stopped=false, records=0,
-        stats={writes=0, readbacks=0, restores=0, freshPreserved=0, skipped=0,mountSkipped=0,
+        stats={writes=0, readbacks=0, restores=0, freshPreserved=0, skipped=0,mountSkipped=0,mountRollbacks=0,
             modelRefreshes=0, consumerRefreshes=0, refreshErrors=0,
             leftWrites=0,leftNodeWrites=0,leftRestores=0,leftFreshPreserved=0,leftSkipped=0,
             syncSamples=0,syncErrors=0,bodyNodeWrites=0,bodyRestores=0,bodyFreshPreserved=0,
             attachmentWrites=0,attachmentRestores=0,attachmentFreshPreserved=0,
-            membershipEntries=0,identityChecks=0,sidearmCorrections=0,underbarrelTargets=0,sceneBypasses=0,rightWrites=0,rightNodeWrites=0,rightRestores=0,rightFreshPreserved=0,firstPersonBypasses=0,unknownViewBypasses=0,fpPresentationRefreshes=0,fpPresentationErrors=0}}
+            membershipEntries=0,identityChecks=0,sidearmCorrections=0,rightReachCorrections=0,underbarrelTargets=0,sceneBypasses=0,rightWrites=0,rightNodeWrites=0,rightRestores=0,rightFreshPreserved=0,firstPersonBypasses=0,unknownViewBypasses=0,fpPresentationRefreshes=0,fpPresentationErrors=0,fpMeshHides=0,fpMeshRestores=0,fpVisibilityErrors=0}}
     local function emit(row, urgent)
         if self.records >= cfg.maxRecords and not urgent then return end
         row.variant = cfg.variant
-        self.records = self.records + 1; logger(json(row))
+        self.records = self.records + 1; logger(M.encodeDiagnostic(row,cfg.logging and cfg.logging.compact==true))
     end
     local function resource(u)
         local id = S.IdString64.to_hex(U.resource_name(u))
@@ -261,6 +349,7 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                 for _,item in ipairs(list) do tracked[item.unit]=true end
             end
             for _,record in ipairs(self.pending) do tracked[record.actor.unit]=true end
+            for u in pairs(self.fpHidden) do tracked[u]=true end
         end
         local result, worlds = {}, A.worlds() or {}
         for wi, world in ipairs(worlds) do
@@ -336,7 +425,7 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
             end
         end
     end
-    local function restore(record, membership, force)
+    local function restore(record, membership, force, requireRefresh)
         local item = record.actor
         if not present(item,membership) then return 'gone' end
         local valid = pcall(identity,item)
@@ -368,9 +457,13 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
             if row.touched then restore_node(row.index,row.before,row.written,'attachment') end
         end
         if changed then
+            local refreshErrors=self.stats.refreshErrors
             W.update_unit(item.world,item.unit)
             refresh_models(item.world,membership,item)
             refresh_consumers(item.world,membership,item)
+            if requireRefresh then
+                assert(self.stats.refreshErrors==refreshErrors,'restore_refresh_failed')
+            end
         end
         return changed and 'restored' or 'fresh_animation_preserved'
     end
@@ -908,12 +1001,13 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         local c=cfg.sidearmDiagnostics
         if not c or not c.enabled or not present(actor,membership) then return end
         self.probeState=self.probeState or {};self.probeCount=self.probeCount or {}
-        local state=self.probeState[actor.unit] or {};self.probeState[actor.unit]=state
+        local states=self.probeState[actor.unit] or {};self.probeState[actor.unit]=states
+        local state=states[path] or {};states[path]=state
         if state.frame~=frame then
             local count=self.probeCount[path] or 0
             if count>=(c.maxSamplesPerPath or 180) then return end
             if state.last and now>=state.last and now-state.last<(c.intervalSeconds or 1) and state.path==path then return end
-            state.frame=frame;state.last=now;state.path=path;self.probeCount[path]=count+1
+            state.frame=frame;state.last=now;state.path=path;state.counted=false
         end
         local ok,why=pcall(function()
             identity(actor)
@@ -930,12 +1024,14 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
             for _,item in ipairs(self.consumers) do
                 local id=item.spec.resource
                 if item.world==actor.world and present(item,membership)
-                    and (id=='8d3d52a3b2f19402' or id=='b96cc3b704a76464' or id=='4851d75853622a47') then
+                    and (id=='8d3d52a3b2f19402' or id=='b96cc3b704a76464' or id=='4851d75853622a47'
+                        or (c.resources and c.resources[id])) then
                     identity(item)
                     local root=matrix(item.unit,item.spec.root,true)
                     if distance(root,hands.currentMount)<cfg.consumerRadius then
                         local nodes={};local ncount=U.num_scene_graph_items(item.unit)
                         for _,name in ipairs({'skeleton','root','IK_right','IK_left','game_mesh','g_body',
+                            'boss','attach_underbarrel','attach_optic','attach_offset',
                             'cylinder_swivel','cylinder','attach_mag','eject_rod','attach_ammo','attach_muzzle'}) do
                             local h=name_id(name)
                             if U.has_node(item.unit,h)==true then
@@ -951,7 +1047,12 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                     end
                 end
             end
-            if #parts>0 then emit({event='sidearm_probe',frame=frame,time=now,phase=phase,path=path,
+            if #parts>0 then
+                -- Empty frames must not spend the bounded weapon-sample budget.
+                if not state.counted then
+                    self.probeCount[path]=(self.probeCount[path] or 0)+1;state.counted=true
+                end
+                emit({event='sidearm_probe',frame=frame,time=now,phase=phase,path=path,
                 avatar=actor.id,hands=hands,parts=parts,indexBase=0,runtimeIndexBase=1,
                 readOnly=true,skinMatricesObserved=false,animationLocalsWritten=false}) end
         end)
@@ -1018,7 +1119,25 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         return nil
     end
     local function apply(actor, model, membership, frame, now, diagnostic)
-        local record
+        local record, rangeFailure
+        local function range_snapshot(stage, original, source, desired, metres, sidearm)
+            return {event='mount_skipped',avatar=actor.id,frame=frame,time=now,phase=self.phase,
+                stage=stage,reason='mount_offset_out_of_range',distance=metres,
+                limit=cfg.maxWristMountDistance,originalLocal=copy(original),
+                originalWorld=matrix(actor.unit,cfg.originalMount.index,true),
+                sourceWorld=copy(source),desiredWorld=copy(desired),
+                sourceMountLocal=cfg.sourceRightMount and matrix(actor.unit,cfg.sourceRightMount.index,false) or nil,
+                sourceMountWorld=cfg.sourceRightMount and matrix(actor.unit,cfg.sourceRightMount.index,true) or nil,
+                weaponResource=sidearm and sidearm.resource or nil,
+                candidate=sidearm and 'live_sidearm_target' or cfg.sourceRightMount and 'source_mount' or 'registered_original_mount'}
+        end
+        local function skip_range(row)
+            self.stats.mountSkipped=self.stats.mountSkipped+1
+            self.leftIntent[actor.unit]=nil;self.rightIntent[actor.unit]=nil
+            row.retry='next_render'
+            -- Exceptional-frame evidence must survive periodic/maxRecords limits.
+            emit(row,true)
+        end
         local ok, why=pcall(function()
             identity(actor);identity(model)
             probe_sidearm(actor,membership,'before_write',frame,now,'lua')
@@ -1031,12 +1150,12 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
             local offset=compose(cfg.rightAxes,original)
             local mountDistance=math.sqrt(offset[10]^2+offset[11]^2+offset[12]^2)
             if cfg.rightAttachmentEnabled~=false and mountDistance>cfg.maxWristMountDistance then
-                self.stats.mountSkipped=self.stats.mountSkipped+1
-                if diagnostic or self.stats.mountSkipped==1 then
-                    emit({event='mount_skipped',avatar=actor.id,frame=frame,time=now,
-                        reason='mount_offset_out_of_range',distance=mountDistance,
-                        limit=cfg.maxWristMountDistance,retry='next_render',originalLocal=original})
-                end
+                local source=matrix(u,cfg.sourceRight.index,true)
+                local desired=cfg.sourceRightMount and matrix(u,cfg.sourceRightMount.index,true)
+                    or compose(compose(rigid(source),cfg.rightAxes),original)
+                local row=range_snapshot('original_reference_preflight',original,source,desired,mountDistance)
+                row.settersWritten=false;row.rollbackRequired=false
+                skip_range(row)
                 return
             end
             record={actor=actor,diagnostic=diagnostic,protected={},body={},attachments=plan_attachments(actor)}
@@ -1091,10 +1210,25 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                 assert(difference(matrix(u,cfg.sourceRight.index,true),solved.expected)<=cfg.worldTolerance,'right_world_readback')
                 self.stats.rightWrites=self.stats.rightWrites+1
                 source=matrix(u,cfg.sourceRight.index,true);equivalent=compose(rigid(source),cfg.rightAxes)
+                -- Opt-in P-92 contact fix: the existing rotation-only solver cannot
+                -- lengthen Source arms. Translate the existing native hand mount by
+                -- only the endpoint residual; never write gun/part locals or aim axes.
+                if fixes.reachableRightIK and fixes.reachableRightIK[sidearm.resource]
+                    and distance(source,sidearm.hand)>cfg.worldTolerance then
+                    sidearm.reachCorrection={}
+                    for j=10,12 do
+                        local delta=source[j]-sidearm.hand[j]
+                        sidearm.desired[j]=sidearm.desired[j]+delta
+                        sidearm.reachCorrection[j-9]=delta
+                    end
+                    sidearm.policy='live_right_ik_reachable_registered_hand'
+                    self.stats.rightReachCorrections=self.stats.rightReachCorrections+1
+                end
                 if diagnostic then emit({event='right_applied',frame=frame,avatar=actor.id,resource=sidearm.resource,
                     target=sidearm.hand,sourceBefore=solved.before,sourceAfter=source,
                     reachResidual=solved.reachResidual,nativeLocalsWritten=false,
-                    outputMode='unanimated_reference_children',nativeAimMountPreserved=true}) end
+                    outputMode='unanimated_reference_children',nativeAimMountPreserved=not sidearm.reachCorrection,
+                    reachCorrection=sidearm.reachCorrection}) end
             end
             local reference=compose(equivalent,original)
             if cfg.sourceRightMount then
@@ -1108,10 +1242,16 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
             if sidearm then
                 desired=sidearm.desired;self.stats.sidearmCorrections=self.stats.sidearmCorrections+1
                 if diagnostic then emit({event='sidearm_aligned',resource=sidearm.resource,avatar=actor.id,
-                    handTarget=sidearm.hand,desiredWorld=desired,policy=sidearm.policy,nativeAimProxy=sidearm.nativeAim,nativeFollow=sidearm.nativeFollow,nativeContactDistance=sidearm.nativeContactDistance,partLocalsWritten=false}) end
+                    handTarget=sidearm.hand,desiredWorld=desired,policy=sidearm.policy,nativeAimProxy=sidearm.nativeAim,nativeFollow=sidearm.nativeFollow,nativeContactDistance=sidearm.nativeContactDistance,reachCorrection=sidearm.reachCorrection,partLocalsWritten=false}) end
             end
             if cfg.rightAttachmentEnabled==false then desired=copy(native) end
-            assert(cfg.rightAttachmentEnabled==false or distance(desired,source)<=cfg.maxWristMountDistance,'mount_offset_out_of_range')
+            local finalMountDistance=distance(desired,source)
+            if cfg.rightAttachmentEnabled~=false and finalMountDistance>cfg.maxWristMountDistance then
+                rangeFailure=range_snapshot('final_candidate',original,source,desired,finalMountDistance,sidearm)
+                -- Only this private sentinel is recoverable. Identity, numerical,
+                -- protected-node, setter and readback errors still fail closed.
+                error(rangeFailure,0)
+            end
             local parent=matrix(u,cfg.target.parent,true)
             local written=relative(parent,desired)
             for _,v in ipairs(written) do assert(finite(v),'invalid_output') end
@@ -1214,15 +1354,35 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
             end
         end)
         if not ok then
-            self.disabled=true
+            local recoverable=rangeFailure~=nil and why==rangeFailure
+            local restored,result=false,'transaction_unavailable'
             if record then
-                local restored,result=pcall(restore,record,membership,true)
+                restored,result=pcall(restore,record,membership,true,recoverable)
                 if restored then
                     for i=#self.pending,1,-1 do if self.pending[i]==record then table.remove(self.pending,i) end end
                 end
-                emit({event='rollback',avatar=actor.id,verified=restored and result=='restored',reason=tostring(result)},true)
+                emit({event='rollback',avatar=actor.id,frame=frame,time=now,phase=self.phase,
+                    verified=restored and result=='restored',reason=tostring(result),
+                    recoverableRange=recoverable},true)
             end
-            emit({event='disabled',avatar=actor.id,reason=tostring(why)},true)
+            -- An untouched transaction also verifies safely. A gone/changed
+            -- layout or failed refresh/readback is never accepted as recovery.
+            local safe=restored and (result=='restored' or result=='fresh_animation_preserved')
+            if recoverable and safe then
+                self.stats.mountRollbacks=self.stats.mountRollbacks+1
+                rangeFailure.settersWritten=result=='restored';rangeFailure.rollbackRequired=true
+                rangeFailure.rollbackVerified=true;rangeFailure.rollbackResult=result
+                skip_range(rangeFailure)
+                return
+            end
+            self.disabled=true
+            if recoverable then
+                rangeFailure.retry='disabled';rangeFailure.rollbackRequired=true
+                rangeFailure.rollbackVerified=false;rangeFailure.rollbackResult=tostring(result)
+                emit(rangeFailure,true)
+                why='mount_range_restore_failed:'..tostring(result)
+            end
+            emit({event='disabled',avatar=actor.id,frame=frame,time=now,phase=self.phase,reason=tostring(why)},true)
         end
     end
     -- FP presentation still needs dependency/skin graph refreshes. These are
@@ -1330,10 +1490,120 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                 visibilityWritten=false,linksChanged=false,skinMatricesObserved=false})
         end
     end
+    -- Temporary FP visibility policy. Pose/attachment/link ownership is unchanged.
+    -- Capture each mesh in the render context, change ONLY default visibility,
+    -- and restore the recorded booleans instead of blindly showing every mesh.
+    local function fp_visibility_restore(membership,reason)
+        for u,record in pairs(self.fpHidden) do
+            local ok,done=pcall(function()
+                if U.alive(u)~=true then return true end
+                if not present(record.item,membership) then return false end
+                identity(record.item)
+                assert(U.num_meshes(u)==record.count,'fp_mesh_layout_changed')
+                for _,mesh in ipairs(record.meshes) do
+                    if not mesh.restored then
+                        U.set_mesh_visibility(u,mesh.index,mesh.visible,'default')
+                        mesh.restored=true;self.stats.fpMeshRestores=self.stats.fpMeshRestores+1
+                    end
+                end
+                return true
+            end)
+            if ok and done then
+                self.fpHidden[u]=nil
+                emit({event='fp_arm_visibility_restored',instance=record.item.id,
+                    resource=record.item.spec.resource,reason=reason,context='default'})
+            elseif not ok then
+                self.stats.fpVisibilityErrors=self.stats.fpVisibilityErrors+1
+                if self.stats.fpVisibilityErrors<=8 then emit({event='fp_arm_visibility_unavailable',
+                    phase='restore',resource=record.item.spec.resource,reason=tostring(done)},true) end
+            end
+        end
+    end
+    local function fp_visibility(frame,now)
+        local policy=cfg.firstPersonArmHide
+        if not policy or policy.enabled~=true then return end
+        local diagnostic=not self.lastFpHideLog or now<self.lastFpHideLog or now-self.lastFpHideLog>=1
+        if diagnostic then self.lastFpHideLog=now end
+        local membership=members(false)
+        local ok,actor=pcall(function()
+            assert(sceneContext and type(sceneContext.fpActor)=='function','fp_actor_api_unavailable')
+            local a=sceneContext.fpActor()
+            assert(a and membership[a.world] and U.alive(a.unit)==true,'fp_actor_unavailable')
+            local found=false;for _,u in ipairs(membership[a.world].units) do if u==a.unit then found=true;break end end
+            assert(found,'fp_actor_not_in_world')
+            assert(resource(a.unit)=='d0cf4d493ca08bed' and U.num_scene_graph_items(a.unit)==63,'fp_actor_identity')
+            return a
+        end)
+        if not ok then return end
+        -- A Source arm slot alone is not ownership proof. Use the selected live
+        -- FP Avatar and THREE native bones, never the frozen Source endpoints.
+        local function named_pose(u,name)
+            assert(U.has_node(u,A.string_to_id32(name))==true,'fp_native_node_missing:'..name)
+            local n=U.node(u,A.string_to_id32(name))
+            assert(finite(n) and n>=1 and n<=U.num_scene_graph_items(u),'fp_native_node_index')
+            return matrix(u,n-1,true)
+        end
+        for _,item in ipairs(self.models) do
+            local role=policy.modelResources and policy.modelResources[item.spec.resource]
+            if (role=='LeftArm' or role=='RightArm') and item.world==actor.world then
+                local matched,why=pcall(function()
+                    if not present(item,membership) then return false end
+                    identity(item)
+                    local side=role=='LeftArm' and 'l_' or 'r_'
+                    for _,joint in ipairs({'shoulder','elbow','hand'}) do
+                        assert(difference(named_pose(item.unit,side..joint),named_pose(actor.unit,side..joint))
+                            <=(policy.matchTolerance or .01),'fp_native_receiver_mismatch')
+                    end
+                    for _,other in ipairs(self.models) do
+                        if other.unit~=item.unit and other.world==actor.world and other.spec.resource==item.spec.resource then
+                            local unique=pcall(function()
+                                assert(present(other,membership),'fp_other_absent');identity(other)
+                                for _,joint in ipairs({'shoulder','elbow','hand'}) do
+                                    assert(difference(named_pose(other.unit,side..joint),named_pose(actor.unit,side..joint))
+                                        <=(policy.matchTolerance or .01),'fp_other_not_matching')
+                                end
+                            end)
+                            assert(not unique,'fp_native_receiver_ambiguous')
+                        end
+                    end
+                    assert(type(U.set_mesh_visibility)=='function' and S.Mesh and type(S.Mesh.visibility)=='function','fp_visibility_api_unavailable')
+                    local count=U.num_meshes(item.unit)
+                    assert(finite(count) and count>=1 and count<=128 and count%1==0,'fp_mesh_count')
+                    local record=self.fpHidden[item.unit]
+                    if not record then
+                        local meshes={}
+                        -- Finish every getter before the first setter. A partial
+                        -- setter failure still leaves a complete restoration ledger.
+                        for i=1,count do
+                            local visibility=S.Mesh.visibility(U.mesh(item.unit,i))
+                            assert(type(visibility)=='boolean','fp_mesh_visibility_unknown')
+                            meshes[#meshes+1]={index=i,visible=visibility,restored=false}
+                        end
+                        record={item=item,count=count,meshes=meshes};self.fpHidden[item.unit]=record
+                    end
+                    assert(record.count==count,'fp_mesh_layout_changed')
+                    for _,mesh in ipairs(record.meshes) do
+                        if S.Mesh.visibility(U.mesh(item.unit,mesh.index))~=false then
+                            U.set_mesh_visibility(item.unit,mesh.index,false,'default')
+                            self.stats.fpMeshHides=self.stats.fpMeshHides+1
+                        end
+                    end
+                    if diagnostic then emit({event='fp_arm_hidden',frame=frame,instance=item.id,
+                        resource=item.spec.resource,role=role,meshes=count,context='default',
+                        ownership='selected_fp_avatar_three_native_bones',attachmentsWritten=false,bonesWritten=false}) end
+                    return true
+                end)
+                if not matched and self.fpHidden[item.unit] then self.stats.fpVisibilityErrors=self.stats.fpVisibilityErrors+1 end
+                if diagnostic and (not matched or why~=true) then emit({event='fp_arm_hide_skipped',frame=frame,
+                    instance=item.id,resource=item.spec.resource,reason=tostring(why)}) end
+            end
+        end
+    end
     local function view_bypass(frame,now)
         if not sceneContext or type(sceneContext.firstPerson)~='function' then return false end
         local ok,first,detail=pcall(sceneContext.firstPerson)
         if ok and first==false then
+            if next(self.fpHidden) then fp_visibility_restore(members(false),'third_person') end
             if self.viewBlocked then self.viewBlocked=false;self.lastScan=nil;self.lastFpScan=nil end
             return false
         end
@@ -1350,7 +1620,12 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
             self.lastStatus=status
         end
         self.viewBlocked=true
-        if ok and first==true and self.phase=='render' then fp_presentation(frame,now,detail) end
+        if ok and first==true and self.phase=='render' then
+            local mok,mission=pcall(function()return sceneContext.inMission() end)
+            if mok and mission==true then
+                fp_presentation(frame,now,detail);fp_visibility(frame,now)
+            else fp_visibility_restore(members(false),'non_mission') end
+        end
         return true
     end
     function self:tick(phase, frame, now)
@@ -1446,9 +1721,14 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
     end
     function self:stop(reason)
         if self.stopped then return end
-        self.phase='shutdown';self:release(members());self.stopped=true
+        self.phase='shutdown';local membership=members();self:release(membership)
+        for _=1,3 do
+            if not next(self.fpHidden) then break end
+            fp_visibility_restore(membership,reason or 'shutdown')
+        end
+        self.stopped=true
         emit({event='complete',reason=reason or 'shutdown',stats=self.stats,pendingRestores=#self.pending,
-            disabled=self.disabled},true)
+            disabled=self.disabled,pendingFpVisibility=(function()local n=0;for _ in pairs(self.fpHidden) do n=n+1 end;return n end)()},true)
     end
     emit({event='loaded',version=M.VERSION,writePhase='render',restorePhase='before_render_and_shutdown',
         target='attach_hand_r',originalReference=cfg.originalMount.name,axisRegistration=cfg.axisRegistration,
@@ -1459,12 +1739,14 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         scopedRefresh=performance.scopedRefresh or false,
         previewIsolation=cfg.previewGuard and cfg.previewGuard.enabled or false,
         leftMode=leftEnabled and 'source_arm_to_weapon_self_ik_left' or 'foregrip_observation_only',
-        mountOutOfRangePolicy='skip_frame_retry_without_setters',
+        mountOutOfRangePolicy='preflight_skip_or_verified_rollback_retry',
         leftOutputMode=cfg.leftGrip and cfg.leftGrip.outputs and 'unanimated_reference_children' or 'animated_source_nodes',
         bodyMode=cfg.bodySync and cfg.bodySync.enabled and cfg.bodySync.mode or 'observation_only',
         rigExpectedNodes=cfg.avatar.count,
         attachmentCount=#(cfg.attachments or {}),headDescendants=false,
         syncMode=cfg.sync and cfg.sync.enabled and 'update_render_input_render_output' or 'off',
+        fpTemporaryArmHide=cfg.firstPersonArmHide and cfg.firstPersonArmHide.enabled==true or false,
+        logging=cfg.logging or {compact=false,recordSeconds=90,maxBytes=524288,exceptionIntervalSeconds=2},
         physics='separate_addon',palmSurfaceCalibrated=false},true)
     return self
 end

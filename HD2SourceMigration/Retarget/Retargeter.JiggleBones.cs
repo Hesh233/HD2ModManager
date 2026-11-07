@@ -32,7 +32,8 @@ public sealed record RetargetExtraBone(
 public sealed partial class Retargeter
 {
 	/// <summary>
-	/// 给每根 jiggle 骨分配合成骨，并产出"源骨下标 → 合成节点下标"的**权重目标表**。
+	/// 给每根**物理骨**（jiggle 弹簧骨 + QuatInterp driver 骨）分配合成骨，并产出
+	/// "源骨下标 → 合成节点下标"的**权重目标表**与 driver 源骨清单。
 	/// <para>
 	/// ⚠️ **不改动 <paramref name="resolved"/> 本身**。曾经的实现直接把 jiggle 骨改写成合成骨下标，
 	/// 结果几何变了：`SkinAll` 在 `_deform` 里查不到合成骨 → 退回单位矩阵，这些顶点绕开了
@@ -40,24 +41,61 @@ public sealed partial class Retargeter
 	/// 现在 `resolved` 保持"插骨之前"的答案，几何与不插骨时**逐位相同**，
 	/// 只有写权重那一层（<c>RetargetedMeshBuilder</c>）按本表把目标换成合成节点。
 	/// </para>
+	/// <para>
+	/// 2026-11-07：QuatInterp driver 骨（VRD 的姿态驱动半边）加入同一套 extras 机制——
+	/// Snap 塌缩路线（单骨架）里它们不是独立节点，必须合成；手腕/裙骨自身携带的顶点
+	/// （实测 handl 40、handr 57 个）也要跟到合成节点上，否则 driver 旋转没有视觉效果。
+	/// </para>
 	/// </summary>
-	private (List<RetargetExtraBone> Extras, Dictionary<int, int> WeightTargets) CollectJiggleBones(
-		IReadOnlyDictionary<int, int> resolved)
+	private (List<RetargetExtraBone> Extras, Dictionary<int, int> WeightTargets, List<SourceBone> DriverBones)
+		CollectPhysicsBones(IReadOnlyDictionary<int, int> resolved)
 	{
-		if (!_options.IncludeJiggleBones)
-			return ([], []);
-
-		var scratch = new Dictionary<int, int>(resolved);
-		var extras = PlanJiggleBones(_model.Bones, scratch, _rig.Bones.Count, AlignedSourceJoint);
+		var extras = new List<RetargetExtraBone>();
 		var targets = new Dictionary<int, int>();
-		foreach (var (sourceIndex, target) in scratch)
-		{
-			// 只有被改写到"原生骨之后"的那些才是合成骨。
-			if (target >= _rig.Bones.Count)
-				targets[sourceIndex] = target;
-		}
+		if (!_options.IncludeJiggleBones)
+			return (extras, targets, new List<SourceBone>());
 
-		return (extras, targets);
+		// 同一张 scratch 贯穿两类物理骨的规划：先写进的改写是后规划者的父级答案。
+		return PlanPhysicsExtras(_model.Bones, resolved, _rig.Bones.Count, AlignedSourceJoint);
+	}
+
+	internal static (List<RetargetExtraBone> Extras, Dictionary<int, int> WeightTargets, List<SourceBone> DriverBones)
+		PlanPhysicsExtras(IReadOnlyList<SourceBone> bones, IReadOnlyDictionary<int, int> resolved,
+			int nativeCount, Func<int, Vec3> jointOf)
+	{
+		var extras = new List<RetargetExtraBone>();
+		var targets = new Dictionary<int, int>();
+		var scratch = new Dictionary<int, int>(resolved);
+
+		// ---- ① 先规划 QuatInterp driver 骨（VRD 姿态驱动）------------------
+		// ⚠️ 顺序是正确性的关键：裙摆 jiggle 链的父 = 裙骨 BL1（driver）。driver 先规划，
+		// scratch 里 resolved[BL1] 才会指向 BL1 的**合成节点**，后规划 的裙链根才能
+		// 挂到 driver 节点下——挂到回退骨（hips）上，driver 转动时链条就不跟随
+		// （2026-11-07 实测："VRD 骨骼有变化，但子骨骼没有相应抬起"就是这个次序错误）。
+		var driverBones = bones
+			.Where(bone => bone.QuatInterp is not null)
+			.OrderBy(bone => bone.Index)
+			.ToList();
+		extras.AddRange(PlanPhysicsBones(driverBones, scratch, nativeCount, jointOf));
+
+		// ---- ② 再规划 jiggle 弹簧骨：链根父=driver extras（①已就位）----------
+		extras.AddRange(PlanJiggleBones(bones, scratch, checked(nativeCount + extras.Count), jointOf));
+
+		// ---- ③ 收割权重目标：所有 ≥ 原生骨数的改写（jiggle 与 driver 一张表）----
+		foreach (var (sourceIndex, target) in scratch)
+			if (target >= nativeCount)
+				targets[sourceIndex] = target;
+
+		// Validate semantic identity, not merely in-range indices (both batches used to overlap).
+		foreach (var bone in bones.Where(b => targets.ContainsKey(b.Index)))
+		{
+			var slot = targets[bone.Index] - nativeCount;
+			if (slot < 0 || slot >= extras.Count || extras[slot].Name != bone.DisplayName)
+				throw new InvalidDataException($"Physics weight target for {bone.DisplayName} is not its own node.");
+			if (extras[slot].ParentIndex >= nativeCount + slot)
+				throw new InvalidDataException($"Physics parent for {bone.DisplayName} is not topologically ordered.");
+		}
+		return (extras, targets, driverBones);
 	}
 
 	/// <summary>
@@ -129,6 +167,66 @@ public sealed partial class Retargeter
 	}
 
 	/// <summary>
+	/// QuatInterp driver 骨的合成骨计划：与 <see cref="PlanJiggleBones"/> 同一套拓扑与契约，
+	/// 只是入选条件换成 <c>QuatInterp != null</c>（由调用方传入预筛好的 driver 骨表）。
+	/// <para>
+	/// 为什么不并成一个函数：jiggle 版是公开 API 且有既有测试锚定"只认 jiggle"的行为；
+	/// driver 版的存在让两条物理骨共用 extras 机制而互不改变对方的既有输出。
+	/// </para>
+	/// </summary>
+	public static List<RetargetExtraBone> PlanPhysicsBones(
+		IReadOnlyList<SourceBone> driverBones,
+		Dictionary<int, int> resolved,
+		int baseCount,
+		Func<int, Vec3> jointOf)
+	{
+		var extras = new List<RetargetExtraBone>();
+		if (driverBones.Count == 0)
+			return extras;
+
+		var pending = new HashSet<int>(driverBones.Select(bone => bone.Index));
+		var assigned = new Dictionary<int, int>();   // 源 driver 下标 → 合成骨下标
+
+		var progress = true;
+		while (pending.Count > 0 && progress)
+		{
+			progress = false;
+			foreach (var bone in driverBones)
+			{
+				if (!pending.Contains(bone.Index))
+					continue;
+
+				var parent = bone.ParentIndex;
+				if (parent >= 0 && pending.Contains(parent))
+					continue;
+
+				int parentIndex;
+				if (parent >= 0 && assigned.TryGetValue(parent, out var chainParent))
+					parentIndex = chainParent;
+				else if (parent >= 0 && resolved.TryGetValue(parent, out var nativeParent))
+					parentIndex = nativeParent;
+				else
+					continue;
+
+				var index = baseCount + extras.Count;
+				var anchorIndex = resolved.TryGetValue(bone.Index, out var fallback) ? fallback : -1;
+				extras.Add(new RetargetExtraBone(
+					bone.DisplayName,
+					Hd2NameHash.Of(bone.DisplayName),
+					parentIndex,
+					jointOf(bone.Index),
+					anchorIndex));
+				assigned[bone.Index] = index;
+				resolved[bone.Index] = index;
+				pending.Remove(bone.Index);
+				progress = true;
+			}
+		}
+
+		return extras;
+	}
+
+	/// <summary>
 	/// 链根的**锚点名**：源父骨显示名 → 它回退到的 HD2 原生骨名。
 	/// <para>
 	/// 为什么需要这一步：容器（<c>HD2SRG01</c>）里的每根骨存的是<b>源侧</b>父骨名，
@@ -145,6 +243,9 @@ public sealed partial class Retargeter
 	/// <para>
 	/// 父骨本身是 jiggle 骨的（链套链）不在此列：那种情况下运行时按父骨下标认链，
 	/// 根本不需要锚点，写进去反而会把它当成"挂到别的骨上"。
+	/// <b>2026-11-07：父骨是 QuatInterp driver 骨的同样跳过</b>——driver 骨本身会合成
+	/// extras 节点（名字=源显示名），链根的 parentName 保持源名即可直接解析到 driver 节点，
+	/// 裙摆链因此跟随 driver 的姿态修正。
 	/// </para>
 	/// </summary>
 	/// <param name="bones">源骨表（下标即骨下标）。</param>
@@ -168,8 +269,8 @@ public sealed partial class Retargeter
 			var parent = bone.ParentIndex;
 			if (parent < 0 || parent >= bones.Count)
 				continue;                       // 根骨：没有可挂的父骨
-			if (bones[parent].Jiggle is not null)
-				continue;                       // 链套链：父是 jiggle 骨，运行时按下标认
+			if (bones[parent].Jiggle is not null || bones[parent].QuatInterp is not null)
+				continue;                       // 链套链 / 父是 driver 骨：parentName 保持源名=合成节点名
 
 			if (!resolved.TryGetValue(parent, out var nativeIndex))
 				continue;                       // 父骨连回退都没落到 HD2 骨上

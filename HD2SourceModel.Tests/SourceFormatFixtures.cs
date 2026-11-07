@@ -25,16 +25,25 @@ internal static class SourceFormatFixtures
 	public const int MdlBoneProcIndexOffset = 168;
 	public const int JiggleBlockLength = 124;
 
+	/// <summary>QuatInterp 头（控制骨 + 规则数 + 规则数组偏移）与单条规则的长度。</summary>
+	public const int QuatInterpHeaderLength = 12;
+	public const int QuatInterpRuleLength = 48;
+
 	/// <summary>jigglebone 的参数个数（<c>mstudiojigglebone_t</c> 里 29 个 float，不含开头的 flags）。</summary>
 	public const int JiggleValueCount = 29;
 
 	/// <summary>一根骨骼。<paramref name="JiggleFlags"/> 为负表示这根骨不是 jiggle 骨。</summary>
+	/// <param name="QuatInterpControl">≥0 表示这根骨是 QuatInterp driver 骨，控制骨下标取这个值。</param>
+	/// <param name="QuatInterpRules">每条规则 12 个 float：invTolerance + trigger(4) + position(3) + rotation(4)。</param>
 	public sealed record BoneSpec(
 		string? Name,
 		int Parent,
 		float[]? PoseToBone = null,
 		int JiggleFlags = -1,
-		float[]? JiggleValues = null);
+		float[]? JiggleValues = null,
+		int QuatInterpControl = -1,
+		float[][]? QuatInterpRules = null,
+		int RawProcType = -1);
 
 	public sealed record MeshSpec(int Material, int VertexCount, int VertexStart);
 
@@ -60,12 +69,15 @@ internal static class SourceFormatFixtures
 	{
 		var materialCount = materials?.Length ?? 0;
 		var jiggleCount = bones.Count(bone => bone.JiggleFlags >= 0);
+		var quatInterpCount = bones.Count(bone => bone.QuatInterpControl >= 0 || bone.RawProcType > 0);
+		var ruleTotal = bones.Sum(bone => bone.QuatInterpRules?.Length ?? 0);
 		var modelCount = parts.Sum(part => part.Models.Length);
 		var meshCount = parts.Sum(part => part.Models.Sum(model => model.Meshes.Length));
 
 		var boneStart = MdlHeaderSize;
 		var jiggleStart = boneStart + (bones.Length * MdlBoneStride);
-		var textureStart = jiggleStart + (jiggleCount * JiggleBlockLength);
+		var quatInterpStart = jiggleStart + (jiggleCount * JiggleBlockLength);
+		var textureStart = quatInterpStart + (quatInterpCount * QuatInterpHeaderLength) + (ruleTotal * QuatInterpRuleLength);
 		var bodyPartStart = textureStart + (materialCount * MdlTextureStride);
 		var modelStart = bodyPartStart + (parts.Length * MdlBodyPartStride);
 		var meshStart = modelStart + (modelCount * MdlModelStride);
@@ -109,6 +121,8 @@ internal static class SourceFormatFixtures
 
 		// --- 骨骼 ---
 		var jiggleCursor = 0;
+		var quatInterpCursor = 0;
+		var quatInterpRuleCursor = 0;
 		for (var index = 0; index < bones.Length; index++)
 		{
 			var entry = boneStart + (index * MdlBoneStride);
@@ -119,6 +133,36 @@ internal static class SourceFormatFixtures
 			var pose = bone.PoseToBone ?? Identity3x4();
 			for (var k = 0; k < 12; k++)
 				BinaryPrimitives.WriteSingleLittleEndian(buffer.AsSpan(entry + MdlBonePoseToBoneOffset + (k * 4)), pose[k]);
+
+			if (bone.RawProcType > 0)
+			{
+				// 未知 proctype：只写类型号，不带参数块——用来测"不支持的类型记诊断"。
+				BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(entry + MdlBoneProcTypeOffset), bone.RawProcType);
+				continue;
+			}
+
+			if (bone.QuatInterpControl >= 0)
+			{
+				var rules = bone.QuatInterpRules ?? [];
+				var qBlock = quatInterpStart
+					+ (quatInterpCursor * QuatInterpHeaderLength)
+					+ (quatInterpRuleCursor * QuatInterpRuleLength);
+				quatInterpCursor++;
+				quatInterpRuleCursor += rules.Length;
+				BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(entry + MdlBoneProcTypeOffset), 2);
+				BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(entry + MdlBoneProcIndexOffset), qBlock - entry);
+				BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(qBlock), bone.QuatInterpControl);
+				BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(qBlock + 4), rules.Length);
+				BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(qBlock + 8), QuatInterpHeaderLength);
+				for (var rule = 0; rule < rules.Length; rule++)
+				{
+					var qValues = rules[rule];
+					if (qValues.Length != 12)
+						throw new ArgumentException("QuatInterp 规则必须给 12 个 float。");
+					for (var k = 0; k < 12; k++)
+						BinaryPrimitives.WriteSingleLittleEndian(buffer.AsSpan(qBlock + QuatInterpHeaderLength + (rule * QuatInterpRuleLength) + (k * 4)), qValues[k]);
+				}
+			}
 
 			if (bone.JiggleFlags < 0)
 				continue;

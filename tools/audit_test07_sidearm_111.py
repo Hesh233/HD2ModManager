@@ -19,6 +19,8 @@ def build_111_harness():
   raw=z.read('runtime-avatar.toc');a=TocArchive.parse_parts(z.read('9ba626afa44a3aa3.patch_5'),load_external_data=False)
   bones=next(e.toc_data for e in a.entries.values() if e.type_id==BONE_TYPE_ID)
  p=apply_grip_fixes(json.loads((project/'config/B23-profile.json').read_text(encoding='utf-8-sig')))
+ p['logging']=dict(compact=False);p['logSeconds']=1.
+ if p.get('sidearmDiagnostics'):p['sidearmDiagnostics']=dict(p['sidearmDiagnostics'],intervalSeconds=1.,maxSamplesPerPath=180)
  raw,bones,rig=sidearm_right_outputs(raw,bones,p);u=UnitData.parse(raw)
  f=dict(resource=fixture['avatar']['resource'],hashes=u.name_hashes,parents=u.parents,matrices=matrices(u))
  OUT.mkdir(exist_ok=True)

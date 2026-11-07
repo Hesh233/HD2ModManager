@@ -19,7 +19,7 @@
 
 local M = {}
 
-M.version = "1.0.0"
+M.version = "1.2.1"
 
 -- ---------------------------------------------------------------------------
 -- 二进制读取（无 string.unpack 的替代）
@@ -213,6 +213,149 @@ function M.parse_rig(bytes)
 end
 
 -- ---------------------------------------------------------------------------
+-- hd2_driver_rig.bin（VRD QuatInterp driver 骨）
+-- ---------------------------------------------------------------------------
+
+local DRIVER_RIG_MAGIC = "HD2DRV01"
+local DRIVER_RIG_HEADER_SIZE = 32
+local DRIVER_RIG_RECORD_SIZE = 28      -- 3×u32 名字偏移 + u32 规则数 + 3×f32 bind 位置
+local DRIVER_RIG_RULE_SIZE = 48        -- invTolerance f32 + trigger 4f + position 3f + rotation 4f
+
+--- 解析 driver rig。每项含 name / parentName / controlName / bindPos / rules。
+--- <para>
+--- 布局与 C# 侧 <c>PhysBoneDriverRig</c> 一一对应；规则块与 MDL 的
+--- <c>mstudioquatinterpinfo_t</c> 同构（48 字节），方便逐字段对回源文件。
+--- 解析失败返回 nil + 原因——driver 是可选增强，读不出就退回"只有弹簧链"的现状。
+--- </para>
+function M.parse_driver_rig(bytes)
+	if type(bytes) ~= "string" or #bytes < DRIVER_RIG_HEADER_SIZE then
+		return nil, "driver rig 太短"
+	end
+	if bytes:sub(1, 8) ~= DRIVER_RIG_MAGIC then
+		return nil, "driver rig magic 不对"
+	end
+	local version = u32(bytes, 9)
+	-- v1：trigger/rotation 为**原始 Source 值**，输出按"绝对局部旋转"解释（仅保留 Source
+	--      层级的路线适用；2026-11-07 之前的容器）。
+	-- v2：trigger/rotation 为**烘焙值**——trigger 已按 CS0（控制骨 bind）与 M_p（帧映射）
+	--      重定基，rotation 为 **bind 相对增量**；输出 = blend(δ′) · bindQ。两路线通用。
+	-- v3 is single-only: canonical shipped control bind; legacy v1/v2 stay unchanged.
+	if version ~= 1 and version ~= 2 and version ~= 3 then
+		return nil, "不支持的 driver rig 版本 " .. tostring(version)
+	end
+	local count = u32(bytes, 13)
+	local nameOffset = u32(bytes, 17)
+	local nameSize = u32(bytes, 21)
+	local recordSize = u32(bytes, 25)
+	if recordSize ~= (version == 3 and 44 or DRIVER_RIG_RECORD_SIZE) then return nil, "recordSize 不合理" end
+	if nameOffset + nameSize > #bytes + 1 then return nil, "名字表越界" end
+
+	local function nameAt(offset)
+		local start = nameOffset + offset + 1
+		local stop = bytes:find("\0", start, true) or start
+		return bytes:sub(start, stop - 1)
+	end
+
+	local bones = {}
+	-- cursor 是 **1 基**下标（本记录第一个字节）；头 32 字节是 0 基尺寸，所以 +1。
+	local cursor = DRIVER_RIG_HEADER_SIZE + 1
+	for _ = 1, count do
+		-- 记录头 28 字节：最后字节是 cursor+27，越界判据用"最后字节 > #bytes"。
+		if cursor + recordSize - 1 > #bytes then return nil, "记录区越界" end
+		local ruleCount = u32(bytes, cursor + 12)
+		if ruleCount < 1 or ruleCount > 64 then return nil, "规则数量异常：" .. tostring(ruleCount) end
+		if cursor + recordSize + ruleCount * DRIVER_RIG_RULE_SIZE > nameOffset + 1 then
+			return nil, "规则数组越界"
+		end
+		local rules = {}
+		for rule = 1, ruleCount do
+			-- cursor 已是 1 基，规则区从"记录头之后"开始，不再 +1。
+			local at = cursor + recordSize + (rule - 1) * DRIVER_RIG_RULE_SIZE
+			rules[#rules + 1] = {
+				invTolerance = f32(bytes, at),
+				trigger = { f32(bytes, at + 4), f32(bytes, at + 8), f32(bytes, at + 12), f32(bytes, at + 16) },
+				position = { f32(bytes, at + 20), f32(bytes, at + 24), f32(bytes, at + 28) },
+				rotation = { f32(bytes, at + 32), f32(bytes, at + 36), f32(bytes, at + 40), f32(bytes, at + 44) },
+			}
+		end
+        local controlBindQ
+        if version == 3 then
+            controlBindQ = { f32(bytes,cursor+28), f32(bytes,cursor+32), f32(bytes,cursor+36), f32(bytes,cursor+40) }
+            local norm = 0
+            for k=1,4 do
+                local v=controlBindQ[k]
+                if v ~= v or v == math.huge or v == -math.huge then return nil, "control bind 非有限" end
+                norm=norm+v*v
+            end
+            if math.abs(norm-1)>0.0001 then return nil, "control bind 非单位" end
+        end
+		bones[#bones + 1] = {
+			name = nameAt(u32(bytes, cursor)),
+			parentName = nameAt(u32(bytes, cursor + 4)),
+			controlName = nameAt(u32(bytes, cursor + 8)),
+			bindPos = { f32(bytes, cursor + 16), f32(bytes, cursor + 20), f32(bytes, cursor + 24) },
+			rules = rules,
+			controlBindQ = controlBindQ,
+		}
+		cursor = cursor + recordSize + ruleCount * DRIVER_RIG_RULE_SIZE
+	end
+	return { version = version, bones = bones, nameTableSize = nameSize }
+end
+--- <para>
+--- 输入 <paramref name="control"/> 是控制骨世界旋转转到 <b>driver 骨父级空间</b>后的四元数
+--- （{x,y,z,w}）；每条规则的权重 = max(0, 1 − 2·acos(|dot|)·invTolerance)（半球对齐），
+--- 以权重归一化混合各规则的 rotation（带半球符号对齐）。无规则覆盖时返回 nil，
+--- 调用方回退 driver 的 bind 姿态——绝不输出零四元数。
+--- </para>
+--- <para>
+--- 与 v11 的差异：返回四个分量而不是 {p,q} 表。position 的混合省略了——实测两套参考
+--- 资产（test01/test07）所有规则的 position 恒等于 bind 位置，混合是恒等操作；
+--- 而"只写旋转、保留平移"正是这套运行时的铁律 2。哪天出现 position≠bind 的资产，
+--- 再把平移写入补回来（届时必须走矩阵路径）。
+--- </para>
+--- <para>v1.2.0：rules 的语义按 rig 版本解释——v2 的 rotation 是 **bind 相对增量**
+--- （写前乘 bindQ），v1 是绝对旋转（既有行为）。解析层不区分，写入层按版本分流。
+--- </para>
+function M.quatinterp(control, procedure)
+	local rules = procedure.rules
+	local weights, total, reference = {}, 0, nil
+	for i, rule in ipairs(rules) do
+		local dot = control[1] * rule.trigger[1] + control[2] * rule.trigger[2]
+			+ control[3] * rule.trigger[3] + control[4] * rule.trigger[4]
+		local weight = math.max(0, 1 - 2 * math.acos(math.min(1, math.abs(dot))) * rule.invTolerance)
+		weights[i] = weight
+		total = total + weight
+		if weight > 0 and reference == nil then reference = rule.rotation end
+	end
+	if total < 1e-8 or reference == nil then return nil end
+	local qx, qy, qz, qw = 0, 0, 0, 0
+	for i, rule in ipairs(rules) do
+		local weight = weights[i] / total
+		local dot = reference[1] * rule.rotation[1] + reference[2] * rule.rotation[2]
+			+ reference[3] * rule.rotation[3] + reference[4] * rule.rotation[4]
+		local sign = dot < 0 and -1 or 1
+		qx = qx + weight * sign * rule.rotation[1]
+		qy = qy + weight * sign * rule.rotation[2]
+		qz = qz + weight * sign * rule.rotation[3]
+		qw = qw + weight * sign * rule.rotation[4]
+	end
+	local length = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+	if length < 1e-8 then return nil end
+	qx, qy, qz, qw = qx / length, qy / length, qz / length, qw / length
+    -- Single v3 only: normalized weights otherwise snap to bind at an uncovered cone edge.
+    -- Feather the outermost 10% of total rule support; authored covered poses are unchanged.
+    if procedure.fadeOutside and total < 0.1 then
+        local t = total / 0.1
+        t = t * t * (3 - 2 * t)
+        if qw < 0 then qx,qy,qz,qw = -qx,-qy,-qz,-qw end
+        qx,qy,qz,qw = qx*t,qy*t,qz*t,1-t+qw*t
+        length = math.sqrt(qx*qx+qy*qy+qz*qz+qw*qw)
+        qx,qy,qz,qw = qx/length,qy/length,qz/length,qw/length
+    end
+    return qx, qy, qz, qw
+end
+
+-- ---------------------------------------------------------------------------
 -- 从磁盘找容器
 -- ---------------------------------------------------------------------------
 
@@ -395,6 +538,23 @@ function M.load_rig(searchPaths, logger)
 				if record ~= nil then
 					local rig = M.parse_rig(record.data)
 					if rig ~= nil then
+						-- driver rig（VRD 姿态驱动）是**可选**第二条记录：
+						-- 没有它（旧包 / 无 driver 骨的模型）就是现状行为；读坏了记日志并继续，
+						-- 绝不让一条可选记录毁掉整份弹簧 rig。
+						local driverRecord = M.find_record(container, "hd2_driver_rig.bin")
+						if driverRecord ~= nil then
+							local drivers, driverReason = M.parse_driver_rig(driverRecord.data)
+							if drivers ~= nil then
+								rig.drivers = drivers
+								if logger then
+									logger(string.format("[physbone] 从 %s 读到 %d 根 driver 骨（HD2DRV01）",
+										path, #drivers.bones))
+								end
+							elseif logger then
+								logger("[physbone] 容器里 hd2_driver_rig.bin 解析失败（忽略，仅弹簧链生效）：%s",
+									tostring(driverReason))
+							end
+						end
 						if logger then
 							logger(string.format("[physbone] 从 %s 读到 %d 根骨（容器 %d 字节）",
 								path, #rig.bones, container.length))
@@ -2128,6 +2288,65 @@ function M.attach(S, unit, rig, options)
 	-- 2026-10-31 离线复现：tmp/lua-check/attach-loop-test.lua
 	end
 
+	-- VRD driver 骨（QuatInterp）：解析"自身/父级/控制骨"三个节点 + 缓存 bind 姿态。
+	-- 逐根降级：缺任何一环就跳过那一根并记账，绝不影响弹簧链（它们是独立的节点集合）。
+	-- 与链缓存同理：同款护甲的第二个实例直接复用三个下标。
+	local drivers, skippedDrivers = {}, 0
+	if rig.drivers ~= nil and type(rig.drivers.bones) == "table" and #rig.drivers.bones > 0 then
+		local driverCacheKey = cacheKey and (cacheKey .. "|drv") or nil
+		local cachedDrivers = driverCacheKey and attachCache[driverCacheKey] or nil
+		for driverIndex = 1, #rig.drivers.bones do
+			local bone = rig.drivers.bones[driverIndex]
+			local node, parentNode, controlNode
+			local cachedRow = cachedDrivers ~= nil and cachedDrivers[driverIndex] or nil
+			if cachedRow ~= nil then
+				-- 抽查 driver 节点还在（同链缓存的抽查同款）：不在就整行重解析。
+				local okHas, has = pcall(function() return S.Unit.has_node(unit, id32(bone.name)) end)
+				if okHas and has == true then
+					node, parentNode, controlNode = cachedRow[1], cachedRow[2], cachedRow[3]
+				end
+			end
+			if node == nil then
+				node = resolveNode(bone.name)
+				if node ~= nil then
+					parentNode = resolveNode(bone.parentName)
+					controlNode = resolveNode(bone.controlName)
+				end
+			end
+			-- ⚠️ node 为 nil 时绝不能调 local_pose（对 nil 下标的引擎调用是原生 AV，pcall 拦不住）。
+			local okPose, pose = nil, nil
+			if node ~= nil then
+				okPose, pose = pcall(function() return S.Unit.local_pose(unit, node) end)
+			end
+			local snap = (okPose and pose ~= nil) and snapshot_pose(S, pose) or nil
+			local canonicalOk = rig.drivers.version ~= 3 or (type(bone.controlBindQ) == "table" and #bone.controlBindQ == 4)
+			if node == nil or parentNode == nil or controlNode == nil or snap == nil or not canonicalOk then
+				skippedDrivers = skippedDrivers + 1
+			else
+				snap.bindQ = { stored9_quaternion(snap.r) }
+				drivers[#drivers + 1] = {
+					name = bone.name,
+					node = node,
+					parentNode = parentNode,
+					controlNode = controlNode,
+					base = snap,
+					rules = bone.rules,
+					controlBindQ = bone.controlBindQ,
+					fadeOutside = rig.drivers.version == 3,
+					lastWritten = nil,
+				}
+				if driverCacheKey ~= nil then
+					if cachedDrivers == nil then
+						cachedDrivers = {}
+						attachCache[driverCacheKey] = cachedDrivers
+					end
+					cachedDrivers[driverIndex] = { node, parentNode, controlNode }
+				end
+			end
+		end
+		logger("[physbone] driver：可驱动 %d 根（缺节点/控制骨/bind %d）", #drivers, skippedDrivers)
+	end
+
 	logger(string.format("[physbone] attach：可用链 %d 条（缺节点 %d、缺锚点 %d）",
 		#sessions, skippedNoNode, skippedNoAnchor))
 	-- 限位来源统计：源模型里有三种约束形式（锥 / 偏航 / 俯仰），这里把"实际用了哪一种"摊开。
@@ -2177,6 +2396,7 @@ function M.attach(S, unit, rig, options)
 		unit = unit,
 		rig = rig,
 		sessions = sessions,
+		drivers = drivers,          -- VRD QuatInterp driver 行（可空表）；update/release 同链一起处理
 		logger = logger,     -- update 也要能打日志（update 里没有 options）
 		nodeCount = nodeCount,          -- 生命周期闸：场景图节点数（仅用于漂移观测）
 		identityNode = identityNode,    -- 生命周期闸：抽样骨名 id（仅用于漂移观测）
@@ -2211,6 +2431,10 @@ function M.update(session, dt, maxWrite)
 		return 0
 	end
 	local logger = session.logger or function() end   -- update 里没有 options.logger，必须自己取；否则失败路径那句日志本身会抛错，把真原因一起吞掉
+	-- driver 骨同样先于链；帧中不再单独 update_unit（见 update_tip 内 1.1.1 注释），
+	-- driver 写入由旧核末尾的 update_unit 冲刷（旧核自身 written>0 才刷——driver-only 帧暂不刷，
+	-- 旧核仅 A/B 对照用，可接受）。
+	if session.evaluateDrivers ~= false then M.update_drivers(session, dt) end
 	-- 进门自检（只打一次）：这里数到的链数与 attach 报的条数对不上，就是 bug 所在。
 	if session ~= nil and session.logger ~= nil and not session.entryDiag then
 		session.entryDiag = true
@@ -2469,6 +2693,19 @@ function M.release(session)
 			spring.yawVelocity, spring.pitchVelocity = 0, 0
 		end
 	end
+	-- driver 骨同样要写回 bind 才算交还（它们与链一样是"我们改过的 local pose"）。
+	if session.drivers ~= nil then
+		for _, row in ipairs(session.drivers) do
+			row.lastWritten = nil
+			pcall(function()
+				local pose = rebuild_pose(S, row.base)
+				if pose ~= nil and pose_sane(S, pose) then
+					S.Unit.set_local_pose(unit, row.node, pose)
+					restored = restored + 1
+				end
+			end)
+		end
+	end
 	if restored > 0 and session.world ~= nil then
 		pcall(function() S.World.update_unit(session.world, unit) end)
 	end
@@ -2635,6 +2872,143 @@ local function rotation_sane(rotation, base)
 	return true
 end
 
+--- 写 driver 骨的 local rotation。与 write_pose 的差别：driver 的 quatinterp 给的是
+--- **绝对** local rotation（相对父级的完整姿态），不是"bind × 增量"——所以不走
+--- compose_bind_rotation，直接写四元数本身。平移两条路径都保留（铁律 2）。
+local function write_driver_pose(S, unit, node, qx, qy, qz, qw, base)
+	if M._fastWrite == true then
+		local q = S.Quaternion.from_elements(qx, qy, qz, qw)
+		if q == nil then return false end
+		S.Unit.set_local_rotation(unit, node, q)
+		return true
+	end
+	local ax, ay, az, angle = quaternion_axis_angle(qx, qy, qz, qw)
+	local q = S.Quaternion.axis_angle(S.Vector3(ax, ay, az), angle)
+	if q == nil then return false end
+	local pose = S.Matrix4x4.from_quaternion_position(q, S.Vector3(base.px, base.py, base.pz))
+	if pose == nil then return false end
+	S.Unit.set_local_pose(unit, node, pose)
+	return true
+end
+
+--- VRD QuatInterp driver 骨的每帧求解 + 写入。
+--- <para>
+--- 控制骨世界旋转转到 driver 骨父级空间 → 触发规则半球对齐加权 → 写入。**按 rig 版本分流**：
+---   · v2（烘焙值）：先算物理增量 <c>D = controlQ(t) · controlQ(bind)⁻¹</c>（bind 姿态差
+---     被 D 的定义吸收，两套骨架 rest 姿态不同也不影响），权重对 D 匹配烘焙触发区，
+---     写入 = blend(δ′) · bindQ——bind 增量语义，合成节点（bindQ=I）与 Source 段节点
+---     （bindQ=原始局部 bind）统一。无规则覆盖 → 跳过写入（节点保持 bind）。
+---   · v1（旧容器）：controlQ 直接对原始触发区匹配，写入 blend(绝对 rotation)，
+---     无覆盖回写 bind——v11 既有行为，一个字节都不变。
+--- </para>
+--- <para>
+--- ⚠️ 调用方（update_tip / update）必须保证：本函数在**弹簧链之前**执行——裙摆链的
+--- 锚点就是 driver 骨（BL1 / skirt_*_helper 这类）。1.1.1 起不再帧中 update_unit，
+--- 链读到的是上一帧 driver 姿态（由帧末统一冲刷，1 帧滞后弹簧可平滑）。
+--- </para>
+--- <returns>本次实际写入的 driver 骨数</returns>
+function M.update_drivers(session, dt)
+	local drivers = session.drivers
+	if drivers == nil or #drivers == 0 then return 0 end
+	local S = session.S
+	local unit = session.unit
+	local version = (session.rig ~= nil and session.rig.drivers ~= nil)
+		and session.rig.drivers.version or 1
+	local written = 0
+	for index = 1, #drivers do
+		local row = drivers[index]
+		local px, py, pz, pw = read_quat4(S, unit, row.parentNode)
+		local cx, cy, cz, cw = read_quat4(S, unit, row.controlNode)
+		local qx, qy, qz, qw
+		if px ~= nil and cx ~= nil then
+			local ax, ay, az, aw = qconj(px, py, pz, pw)
+			local cqx, cqy, cqz, cqw = qmul(ax, ay, az, aw, cx, cy, cz, cw)
+			if version >= 2 then
+				-- 物理增量 D（相对 attach 时快照的 bind 控制姿态；惰性建立）。
+				if row.controlQ0 == nil then row.controlQ0 = { cqx, cqy, cqz, cqw } end
+				local b = version >= 3 and row.controlBindQ or row.controlQ0
+				local dx, dy, dz, dw = qmul(cqx, cqy, cqz, cqw, qconj(b[1], b[2], b[3], b[4]))
+				qx, qy, qz, qw = M.quatinterp({ dx, dy, dz, dw }, row)
+			else
+				qx, qy, qz, qw = M.quatinterp({ cqx, cqy, cqz, cqw }, row)
+			end
+		end
+		if qx == nil then
+			-- 控制骨读不到（瞬时失效）或无规则覆盖：v2 保持 bind（不写，节点在 bind 上）；
+			-- v1 写回 bind（旧行为）。都不做增量累积（铁律 1）。
+			if version >= 3 then
+				-- No match returns to zero delta, never leave the last driven rotation latched.
+				qx, qy, qz, qw = 0, 0, 0, 1
+			elseif version < 2 then
+				local bind = row.base.bindQ
+				qx, qy, qz, qw = bind[1], bind[2], bind[3], bind[4]
+			end
+		end
+		if qx ~= nil then
+			-- v2：bind 相对增量 → 绝对 = δ′ · bindQ；v1：qx..qw 已是绝对值。
+			if version >= 2 then
+				local bind = row.base.bindQ
+				qx, qy, qz, qw = qmul(qx, qy, qz, qw, bind[1], bind[2], bind[3], bind[4])
+			end
+			-- 输入自检：四元数必须有限且接近单位长度，坏输入绝不写（同链的 rotation_sane 口径）。
+			local norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+			if qx ~= qx or norm < 0.5 or norm > 1.5 then
+				session.skippedWrites = (session.skippedWrites or 0) + 1
+				if session.firstFailReason == nil then
+					session.firstFailReason = string.format("driver %s 输入自检未通过", tostring(row.name))
+				end
+			else
+				-- v3 only: frame-rate independent transition and a 540 deg/s safety slew.
+                -- The filter state advances even when tiny writes are deduplicated.
+                if version >= 3 then
+                    local h = dt or 1/60
+                    if h ~= h or h <= 0 then h = 1/60 end
+                    h = math.min(h,0.25)
+                    local previousQ = row.smoothedQ or row.base.bindQ
+                    local dot = previousQ[1]*qx+previousQ[2]*qy+previousQ[3]*qz+previousQ[4]*qw
+                    if dot < 0 then qx,qy,qz,qw=-qx,-qy,-qz,-qw;dot=-dot end
+                    dot=math.min(1,dot)
+                    local halfAngle=math.acos(dot)
+                    local t=1-math.exp(-24*h)
+                    if halfAngle>1e-8 then t=math.min(t,(3*math.pi*h)/(2*halfAngle)) end
+                    local a,b=1-t,t
+                    if halfAngle>1e-6 then
+                        local sn=math.sin(halfAngle)
+                        a=math.sin((1-t)*halfAngle)/sn;b=math.sin(t*halfAngle)/sn
+                    end
+                    qx,qy,qz,qw=a*previousQ[1]+b*qx,a*previousQ[2]+b*qy,a*previousQ[3]+b*qz,a*previousQ[4]+b*qw
+                    local n=math.sqrt(qx*qx+qy*qy+qz*qz+qw*qw)
+                    qx,qy,qz,qw=qx/n,qy/n,qz/n,qw/n
+                    row.smoothedQ={qx,qy,qz,qw}
+                end
+                local previous = row.lastWritten
+				local same = false
+				if previous ~= nil then
+					local dot = previous[1] * qx + previous[2] * qy + previous[3] * qz + previous[4] * qw
+					if dot < 0 then dot = -dot end
+					same = dot > (version >= 3 and 0.9999999 or 0.99999)
+				end
+				if not same then
+					local okWrite, didWrite = pcall(write_driver_pose, S, unit, row.node, qx, qy, qz, qw, row.base)
+					if okWrite and didWrite == true then
+						written = written + 1
+						if previous == nil then previous = {}; row.lastWritten = previous end
+						previous[1], previous[2], previous[3], previous[4] = qx, qy, qz, qw
+					else
+						session.skippedWrites = (session.skippedWrites or 0) + 1
+						if session.firstFailReason == nil then
+							session.firstFailReason = string.format("driver %s 写入失败 %s",
+								tostring(row.name), tostring(didWrite))
+						end
+					end
+				end
+			end
+		end
+	end
+	if written > 0 then session.driverWrites = (session.driverWrites or 0) + written end
+	return written
+end
+
 function M.update_tip(session, dt, maxWrite)
 	if session == nil or #session.sessions == 0 then return 0 end
 	-- ⚠️ 生命周期闸必须在**任何**引擎调用之前（K1/K2）。这条一旦跳过，
@@ -2698,6 +3072,15 @@ function M.update_tip(session, dt, maxWrite)
 		session.refreshCounter = 0
 		for _, item in ipairs(session.sessions) do item.lastWritten = nil end
 	end
+
+	-- ★ VRD driver 骨先于弹簧链：裙摆链的锚点就是 driver 骨（BL1 / skirt_*_helper），
+	-- 链的锚点世界姿态必须读到**这一帧**的 driver 结果。
+	-- ⚠️ 2026-11-07（compat 1.1.1）：帧中的 World.update_unit 已撤销——
+	-- 它强制整 Unit 世界矩阵重算，实测疑似引发 Source 段姿态双重求值（头发锚点逐帧振荡，
+	-- 表现为"一抖一抖"）。driver 写入改由帧末的**同一次** update_unit 统一冲刷；
+	-- 代价是裙链锚点读到的是上一帧的 driver 姿态（1 帧滞后，弹簧天然平滑，不可感知）。
+	local driverWritten = (session.evaluateDrivers == false) and 0 or M.update_drivers(session, dt)
+	session.driverWrittenFrame = driverWritten
 
 	-- ★ 锚点读数**按节点缓存**：一条护甲的 15 条头发链往往都挂同一个 head 节点，
 	-- 原来每条链都读一遍 world_position + world_rotation（2 次引擎调用），15 条就是 30 次。
@@ -2880,10 +3263,11 @@ function M.update_tip(session, dt, maxWrite)
 		end
 	end
 
-	if written > 0 and session.world ~= nil then
+	if (written + (session.driverWrittenFrame or 0)) > 0 and session.world ~= nil then
 		pcall(function() S.World.update_unit(session.world, unit) end)
 		calls = calls + 1
 	end
+	session.driverWrittenFrame = nil
 	session.engineCalls = calls
 	session.skippedSame = skippedSame
 	session.tipApplied = (session.tipApplied or 0) + 1

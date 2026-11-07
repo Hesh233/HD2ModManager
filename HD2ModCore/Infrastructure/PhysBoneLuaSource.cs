@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using System.Text;
 
 namespace HD2ModCore.Infrastructure;
@@ -71,8 +71,8 @@ public static class PhysBoneLuaSource
 		builder.Append("\tlocal options = { compat = PhysBoneCompat, mode = '")
 			.Append(mode)
 			.AppendLine("' }");
-		builder.AppendLine("\tif __hd2_chef and type(__hd2_loader.log_directory) == 'string' and __hd2_loader.log_directory ~= '' then");
-		builder.AppendLine("\t\toptions.logPath = __hd2_loader.log_directory .. '/hd2physbone.log'");
+		builder.AppendLine("\tif type(__hd2_loader) == 'table' and type(__hd2_loader.log_directory) == 'string' and __hd2_loader.log_directory ~= '' then");
+		builder.AppendLine("\t\toptions.logPath = __hd2_loader.log_directory .. '/hd2physbone_compact.log'");
 		builder.AppendLine("\tend");
 		builder.AppendLine("\tPhysBoneRuntime.install(engine, options)");
 		// Chef treats a returned API table as a module and does not infer its global

@@ -104,6 +104,16 @@ internal static class VpkImportSimulation
                 if (outcome.GetType().GetProperty("Ok")!.GetValue(outcome) is not true)
                     throw new InvalidDataException("Target rekey failed; see rekey-result.json");
             }
+            // Diagnostic-only override AFTER the committed model snapshot. It
+            // proves BuildSingle reads the current standard source, not cached
+            // imported IK values. The real user library is never involved.
+            var standardOverride = single ? Environment.GetEnvironmentVariable("HD2_SINGLE_STANDARD_TEST_CONFIG") : null;
+            if (!string.IsNullOrWhiteSpace(standardOverride))
+            {
+                var targetConfig = Path.Combine(model, "config.toml");
+                File.Copy(Path.GetFullPath(standardOverride), targetConfig);
+                File.SetAttributes(targetConfig, File.GetAttributes(targetConfig) | FileAttributes.ReadOnly);
+            }
             var tracked = Directory.GetFiles(model, "*", SearchOption.AllDirectories);
             if (tracked.Where(file => !Path.GetRelativePath(model, file).StartsWith("Overwrite" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
                     && Path.GetFileName(file) != "wardrobe.json").Any(file => !File.GetAttributes(file).HasFlag(FileAttributes.ReadOnly)))
@@ -151,6 +161,10 @@ internal static class VpkImportSimulation
             var report = new { status = "PASS", vpk, model, scale, samples, singleHd2Skeleton = single, targetArchive, calibrationBeforeCommit = true,
                 realGuiConvertService = true, realLibraryImporter = true, protectedModelUnchanged = true,
                 exclusiveReadHandlesDuringBuild = tracked.Length, animationName, description = animationNode.Metadata.Notes,
+                standardOverrideUsed = !string.IsNullOrWhiteSpace(standardOverride),
+                singleProcessingProfile = single ? buildReport.RootElement.GetProperty("processingProfile").GetString() : null,
+                standardIkChains = single ? buildReport.RootElement.GetProperty("ikChains").Clone() : (JsonElement?)null,
+                actualIkEvaluations = single ? buildReport.RootElement.GetProperty("ikEvaluations").GetInt32() : 0,
                 gameDeployed = false, gameTested = false };
             reports.Add(report);
             File.WriteAllText(Path.Combine(testRoot, "import-regression.json"), JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
@@ -216,4 +230,5 @@ internal static class VpkImportSimulation
     private static string Hash(string path)
     { using var input = File.OpenRead(path); return Convert.ToHexString(SHA256.HashData(input)); }
 }
+
 

@@ -22,7 +22,7 @@ public static class AnimationThreadCount
     {
         if (!int.TryParse(text?.Trim(), System.Globalization.NumberStyles.None,
                 System.Globalization.CultureInfo.InvariantCulture, out var count))
-            throw new ArgumentException("请输入 1–16 之间的整数线程数。");
+            throw new ArgumentException("请输入 1–16 之间的整数进程数。");
         Validate(count);
         return count;
     }
@@ -30,6 +30,6 @@ public static class AnimationThreadCount
     public static void Validate(int count)
     {
         if (count < 1 || count > Maximum)
-            throw new ArgumentOutOfRangeException(nameof(count), "线程数必须为 1–16 之间的整数。");
+            throw new ArgumentOutOfRangeException(nameof(count), "进程数必须为 1–16 之间的整数。");
     }
 }

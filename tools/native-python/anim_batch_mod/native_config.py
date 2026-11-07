@@ -70,7 +70,7 @@ def apply_runtime_policy(cfg,version='b23-1.0.8'):
     policy=json.loads((preset_root()/'runtime-policy.json').read_text(encoding='utf-8-sig'))
     for key in ['performance','previewGuard','allowedConsumers','diagnostics']:cfg[key]=policy[key]
     cfg['leftGrip']['intent']=policy['intent'];cfg['consumers'].update(policy['fixedConsumers'])
-    cfg['sync']['enabled']=False;cfg['logSeconds']=1.;cfg['maxRecords']=5000
+    cfg['sync']['enabled']=False;cfg['logSeconds']=5.;cfg['maxRecords']=2000
     cfg['runtimePolicyVersion']=version
     return cfg
 
@@ -84,6 +84,9 @@ def apply_grip_fixes(cfg,version='test07-1.0.11'):
     cfg.setdefault('allowedConsumers',{}).update({k:True for k in policy['fixedConsumers']})
     cfg['gripFixVersion']=policy['version']
     if policy.get('sidearmDiagnostics'):cfg['sidearmDiagnostics']=policy['sidearmDiagnostics']
+    cfg['logging']=dict(compact=True,recordSeconds=90,maxBytes=524288,exceptionIntervalSeconds=2)
+    if cfg.get('sidearmDiagnostics'):
+        cfg['sidearmDiagnostics']=dict(cfg['sidearmDiagnostics'],intervalSeconds=5.,maxSamplesPerPath=12)
     return cfg
 
 def main(argv=None):
