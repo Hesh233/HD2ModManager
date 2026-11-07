@@ -4,6 +4,12 @@ Helldivers 2 mod management and patch adaptation tools.
 
 This project is licensed under the GNU General Public License, version 3 (GPLv3). See [LICENSE.txt](LICENSE.txt).
 
+## 上游与许可 / Upstream & License
+
+本项目基于 [AssestinaR/HD2ModManager](https://github.com/AssestinaR/HD2ModManager)(GPL-3.0)深度修改与扩展:新增单骨架转换路线、native-v15 校准预设、内嵌 Python 工具链与 VRD/握持修复工作流;上游原有的 mod 管理核心继续沿用。按 GPLv3 要求,本仓库同样以 GPL-3.0 发布(见 [LICENSE.txt](LICENSE.txt))。
+
+This repository is a heavily modified derivative of [AssestinaR/HD2ModManager](https://github.com/AssestinaR/HD2ModManager) (GPL-3.0) and is distributed under the same license.
+
 
 ## 可复现工程归档
 
