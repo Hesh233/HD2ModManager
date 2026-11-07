@@ -423,3 +423,7 @@ HD2ModManager_main/
 *.before-*.bak
 # 本地临时诊断输出
 diag_stderr.txt
+
+# 超大游戏衍生预设资产：GitHub 100MB 硬限制 + 版权敏感，仅本地保留
+tools/native-python/anim_batch_mod/presets/native-v15/arm-reference.patch_0
+tools/native-python/anim_batch_mod/presets/single-normal-reference/playback.zip
