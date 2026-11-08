@@ -151,7 +151,7 @@ public sealed class SingleHd2SkeletonTests
                 Assert.Equal(avatar.LocalTransforms[i].Position[axis],
                     result.SingleHd2Transforms!.LocalTransforms[i].Position[axis],precision:5);
         Assert.Equal("original-hd2-local-v1",conversion.Manifest.ControlMarkerPolicy);
-        Assert.Equal("native-axis-source-length-v1",conversion.Manifest.ArmSegmentPolicy);
+        Assert.Equal("native-axis-source-length-hand-follow-v2",conversion.Manifest.ArmSegmentPolicy);
     }
 
     [Theory]
@@ -169,4 +169,54 @@ public sealed class SingleHd2SkeletonTests
         var model=inputs.Model with { Bones=inputs.Model.Bones.Where(b=>!b.Name!.EndsWith("Head1")).ToArray() };
         Assert.Throws<InvalidDataException>(()=>SingleHd2Skeleton.Convert(inputs with { Model=model },rig,avatar));
     }
+    [Theory]
+    [InlineData("l")][InlineData("r")]
+    public void NormalizeArmCarriesPalmFingersTwistAndWeightedGeometryTogether(string side)
+    {
+        var (inputs, rig, _) = Fixture();
+        var baseline = SourceRetargetPipeline.Run(inputs,rig,options:SingleHd2Skeleton.Options());
+        var list=rig.Bones.ToList();
+        var sh=rig.Find(side+"_shoulder")!.Index;
+        var el=rig.Find(side+"_elbow")!.Index;
+        var ha=rig.Find(side+"_hand")!.Index;
+        var f1=rig.Find(side+"_middle_finger1")!.Index;
+        var f2=rig.Find(side+"_middle_finger2")!.Index;
+        list[sh]=list[sh] with {WorldBind=TestRig.TranslationAt(0,0,1)};
+        list[el]=list[el] with {ParentIndex=sh,WorldBind=TestRig.TranslationAt(.3,0,1)};
+        list[ha]=list[ha] with {ParentIndex=el,WorldBind=TestRig.TranslationAt(.3,.3,1)};
+        list[f1]=list[f1] with {ParentIndex=ha};list[f2]=list[f2] with {ParentIndex=f1};
+        var tw=list.Count;list.Add(new(tw,side+"_hand_twist",el,list[ha].WorldBind));
+        rig=new Hd2Rig(list);
+        var worlds=baseline.ShippedRest.ToDictionary(x=>x.Key,x=>x.Value);
+        worlds[sh]=TestRig.TranslationAt(0,0,1);worlds[el]=TestRig.TranslationAt(.3,0,1);
+        worlds[ha]=TestRig.TranslationAt(.5,.2,1);worlds[tw]=worlds[ha];
+        worlds[f1]=TestRig.TranslationAt(.55,.25,1);worlds[f2]=TestRig.TranslationAt(.58,.28,1);
+        var frames=worlds.ToDictionary(x=>x.Key,_=>Mat4.Identity);
+        int Source(int target)=>baseline.Resolved.First(p=>p.Value==target).Key;
+        var points=new[]{worlds[ha].Origin,worlds[f1].Origin,new Vec3(.51,.22,1.01)};
+        var vertices=new[]{
+            new SourceVertex(points[0],new(0,0,1),0,0,new(Source(ha),1),default,default),
+            new SourceVertex(points[1],new(0,0,1),0,0,new(Source(f1),1),default,default),
+            new SourceVertex(points[2],new(0,0,1),0,0,new(Source(ha),.6f),new(Source(el),.4f),default)};
+        inputs=inputs with {Geometry=inputs.Geometry with {Vertices=vertices}};
+        var helper=new RetargetExtraBone("wrist_test",Hd2NameHash.Of("wrist_test"),el,new Vec3(.49,.19,1),el);
+        var before=baseline with {ShippedRest=worlds,Deform=frames,Aligned=points,Output=points,ExtraBones=new[]{helper}};
+        var after=SingleHd2Skeleton.NormalizeArmSegments(inputs,before,rig);
+        var oldAxis=worlds[ha].Origin-worlds[el].Origin;
+        var newAxis=after.ShippedRest[ha].Origin-after.ShippedRest[el].Origin;
+        var rotate=RetargetMath.MinArcRotation(oldAxis,newAxis).ToMat4();
+        Vec3 Expected(Vec3 p)=>after.ShippedRest[el].Origin+rotate.TransformPoint(p-worlds[el].Origin);
+        foreach(var i in new[]{ha,tw,f1,f2}) {
+            Assert.True((after.ShippedRest[i].Origin-Expected(worlds[i].Origin)).Length<1e-9);
+            Assert.Equal(worlds[i].M11,after.ShippedRest[i].M11);
+            Assert.Equal(worlds[i].M22,after.ShippedRest[i].M22);
+            Assert.Equal(worlds[i].M33,after.ShippedRest[i].M33);
+        }
+        for(var i=0;i<points.Length;i++)Assert.True((after.Output[i]-Expected(points[i])).Length<1e-8);
+        Assert.True((after.ExtraBones[0].WorldOrigin-Expected(helper.WorldOrigin)).Length<1e-9);
+        Assert.True(Vec3.Cross(after.ShippedRest[f1].Origin-after.ShippedRest[ha].Origin,newAxis).Length<1e-9);
+        Assert.Equal((worlds[f2].Origin-worlds[f1].Origin).Length,
+            (after.ShippedRest[f2].Origin-after.ShippedRest[f1].Origin).Length,precision:10);
+    }
+
 }

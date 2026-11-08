@@ -19,7 +19,7 @@
 
 local M = {}
 
-M.version = "1.2.1"
+M.version = "1.2.3"
 
 -- ---------------------------------------------------------------------------
 -- 二进制读取（无 string.unpack 的替代）
@@ -1906,6 +1906,77 @@ function M.clear_attach_cache()
 	M._attachCache = {}
 end
 
+-- Single v3 front-skirt contract. This is intentionally NOT a global cloth policy:
+-- native v1/v2, accepted test01 FL/FR/BL/BR and arm sleeves retain their old anchor.
+-- Match all four semantic names and the two-node parent chain; absent/ambiguous
+-- driver facts fail closed instead of guessing from flags or a substring.
+local SINGLE_FRONT_SKIRTS = {
+    skirt_0_0 = { helper = "skirt_front_helper1", child = "skirt_1_0", control = "l_thigh" },
+    skirt_0_3 = { helper = "skirt_front_helper2", child = "skirt_1_3", control = "r_thigh" },
+}
+function M.single_front_skirt_anchor_policy(rig, chain)
+    if type(rig) ~= "table" or type(rig.drivers) ~= "table" or rig.drivers.version ~= 3
+        or type(rig.drivers.bones) ~= "table" or type(chain) ~= "table" or #chain ~= 2 then return nil end
+    local root, child = chain[1], chain[2]
+    if type(root) ~= "table" or type(child) ~= "table" then return nil end
+    local expected = SINGLE_FRONT_SKIRTS[root.name]
+    if expected == nil or root.parentName ~= expected.helper or child.name ~= expected.child
+        or child.parentName ~= root.name then return nil end
+    local count = 0
+    for _, driver in ipairs(rig.drivers.bones) do
+        if driver.name == expected.helper then
+            if driver.parentName ~= "hips" or driver.controlName ~= expected.control then return nil end
+            count = count + 1
+        end
+    end
+    if count ~= 1 then return nil end
+    return "single-front-skirt-driver-v1", expected.control
+end
+
+-- Native/dual front skirts retain authored Source nodes. Accept only the
+-- exported naming contract (one 12-hex namespace, phys -> aux -> anim roles),
+-- never a loose suffix match across two models. VRD v1/v2 evaluation is untouched.
+local function native_node_name(name)
+    if type(name) ~= "string" then return nil end
+    local namespace, role, index, label = name:match("^(hd2n_%x+)_(%a+)_(%d+)_(.+)$")
+    if namespace == nil or #namespace ~= 17 then return nil end
+    return namespace, role, label
+end
+function M.native_front_skirt_anchor_policy(rig, chain)
+    if type(rig) ~= "table" or type(rig.drivers) ~= "table"
+        or (rig.drivers.version ~= 1 and rig.drivers.version ~= 2)
+        or type(rig.drivers.bones) ~= "table" or type(chain) ~= "table" or #chain ~= 2 then return nil end
+    local root, child = chain[1], chain[2]
+    if type(root) ~= "table" or type(child) ~= "table" then return nil end
+    if not flag_set(root.flags, 0x04) or not flag_set(root.flags, 0x08)
+        or not flag_set(root.flags, 0x10) then return nil end
+    local namespace, role, label = native_node_name(root.name)
+    local expected = role == "phys" and SINGLE_FRONT_SKIRTS[label] or nil
+    if expected == nil then return nil end
+    local childNs, childRole, childLabel = native_node_name(child.name)
+    local helperNs, helperRole, helperLabel = native_node_name(root.parentName)
+    if childNs ~= namespace or childRole ~= "phys" or childLabel ~= expected.child
+        or child.parentName ~= root.name or helperNs ~= namespace or helperRole ~= "aux"
+        or helperLabel ~= expected.helper then return nil end
+    local count, controlName = 0, nil
+    for _, driver in ipairs(rig.drivers.bones) do
+        if driver.name == root.parentName then
+            local parentNs, parentRole, parentLabel = native_node_name(driver.parentName)
+            local controlNs, controlRole, controlLabel = native_node_name(driver.controlName)
+            if parentNs ~= namespace or parentRole ~= "anim" or parentLabel ~= "hips"
+                or controlNs ~= namespace or controlRole ~= "anim" or controlLabel ~= expected.control then return nil end
+            count, controlName = count + 1, driver.controlName
+        end
+    end
+    if count ~= 1 then return nil end
+    return "native-front-skirt-driver-v1", controlName
+end
+function M.front_skirt_anchor_policy(rig, chain)
+    local policy, control = M.single_front_skirt_anchor_policy(rig, chain)
+    if policy ~= nil then return policy, control end
+    return M.native_front_skirt_anchor_policy(rig, chain)
+end
+
 --- 把 rig 挂到一个 Unit 上。
 --- 只做"解析节点 + 缓存基准姿态"，不做任何写入——失败要能在进入逐帧循环前暴露。
 ---@param S table stingray 命名空间
@@ -2201,9 +2272,18 @@ function M.attach(S, unit, rig, options)
 							-- 没有 bit 库时退回纯算术（掩码都是 2 的幂）
 							return math.floor(value / mask) % 2 == 1
 						end
-						local worldAnchored = hasFlag(chain[1].flags or 0, 0x04)
+						local anchorPolicy, anchorControl = M.front_skirt_anchor_policy(rig, chain)
+						local worldAnchored = anchorPolicy == nil
+							and hasFlag(chain[1].flags or 0, 0x04)
 							and hasFlag(chain[1].flags or 0, 0x08)
 							and hasFlag(chain[1].flags or 0, 0x10)
+						if anchorPolicy ~= nil then
+							-- The front helper is the VRD leg-avoidance anchor. A fixed world goal
+							-- cancels its rotation in the child skirt; follow its current frame instead.
+							-- step_tip/local_rotations already share that frame; no extra engine flush.
+							logger("[physbone] chain %s anchor=%s helper=%s control=%s",
+								tostring(chain[1].name), anchorPolicy, tostring(chain[1].parentName), anchorControl)
+						end
 						if worldAnchored then
 							logger("[physbone] 链 %s：flags=0x%02x 含 yaw/pitch 约束 ⇒ 世界朝向锚定（父级只带动平移）",
 								tostring(chain[1] and chain[1].name), chain[1].flags or 0)
@@ -2212,6 +2292,7 @@ function M.attach(S, unit, rig, options)
 							bones = bonesNew, tips = tipsNew, segDirLocal = segDirLocal,
 							dirs = {}, anchorBindQ = { qbx, qby, qbz, qbw },
 							goalQ = worldAnchored and { qbx, qby, qbz, qbw } or nil,
+							anchorPolicy = anchorPolicy,
 						}
 						-- 曲率扩散默认开（1.0）：多节链的弯曲沿长度铺开，而不是塌到一个关节上。
 						tipData.bendBlend = options.bendBlend == nil and 1.0 or options.bendBlend

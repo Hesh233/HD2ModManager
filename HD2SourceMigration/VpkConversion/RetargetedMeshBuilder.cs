@@ -139,6 +139,22 @@ public static class RetargetedMeshBuilder
 		if (byHash.Count > 0 && result.SourceNativeTransforms is null)
 			ForearmWeightReweight.Apply(byHash, finalPosition, avatarTransformInfo);
 
+        // Merge ONLY after the existing forearm redistribution. Otherwise that
+        // pass would redistribute the newly moved wrist weights into hands again.
+        // The original geometry remains the input of all pose/normal/region stages.
+        foreach (var merge in result.WristWeightMergeTargets)
+        {
+            int Node(int source) => result.JiggleWeightTargets.TryGetValue(source,out var extra)
+                ? extra : result.Resolved.TryGetValue(source,out var resolved) ? resolved : -1;
+            var sourceNode=Node(merge.Key);var targetNode=Node(merge.Value);
+            if (sourceNode<0 || targetNode<0 || sourceNode>=avatarTransformInfo.NameHashes.Count
+                || targetNode>=avatarTransformInfo.NameHashes.Count)
+                throw new InvalidDataException("Wrist weight target missing from exported skeleton.");
+            var from=avatarTransformInfo.NameHashes[sourceNode];var to=avatarTransformInfo.NameHashes[targetNode];
+            if (from==to || !byHash.Remove(from,out var weight)) continue;
+            byHash[to]=byHash.GetValueOrDefault(to)+weight;
+        }
+
 		if (byHash.Count == 0)
 			return [];
 

@@ -36,4 +36,9 @@ public sealed class VpkSkeletonDecisionTests
     [InlineData("999999999999")]
     public void ThreadCountRejectsInvalidInput(string? text)
         => Assert.ThrowsAny<ArgumentException>(() => AnimationThreadCount.Parse(text));
+
+    [Fact] public void ModelDecisionHasNoPerModelWristWeightChoice()
+    {
+        Assert.Null(typeof(VpkModelDecision).GetProperty("MergeWristWeights"));
+    }
 }

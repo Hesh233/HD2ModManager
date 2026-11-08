@@ -2,7 +2,8 @@
 param(
     [string] $TargetDirectory = 'outputs\native-v34-b23-integrated-20261105\manager-1.0.7',
     [string] $PublishedDirectory = 'outputs\single-hd2-fix-20261106\manager',
-    [switch] $SkipBuild
+    [switch] $SkipBuild,
+    [switch] $ManagedOnly
 )
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
@@ -21,6 +22,47 @@ if (!(Test-Path -LiteralPath $target -PathType Container) -or !(Test-Path -Liter
     throw 'Target and reusable build staging directories must already exist; this updater does not create directories.'
 }
 if ($target -eq $publish) { throw 'Publish staging must differ from the user-configured installation.' }
+if ($ManagedOnly) {
+    $sourceRoot = In-Repo 'HD2ModManager\bin\Release\net10.0-windows'
+    $names = @('HD2ModManager','hd2mod','HD2ModCore','HD2SourceModel','HD2SourceMigration')
+    $plan = @()
+    foreach ($name in $names) { foreach ($extension in '.dll','.pdb') {
+        $file = $name + $extension
+        $moduleRoot = switch($name) {
+            'HD2ModManager' { $sourceRoot }
+            'hd2mod' { In-Repo 'HD2ModCli\bin\Release\net10.0' }
+            'HD2ModCore' { In-Repo 'HD2ModCore\bin\Release\net8.0' }
+            'HD2SourceModel' { In-Repo 'HD2SourceModel\bin\Release\net8.0' }
+            'HD2SourceMigration' { In-Repo 'HD2SourceMigration\bin\Release\net8.0' }
+        }
+        $source = In-Repo (Join-Path $moduleRoot $file)
+        if (!(Test-Path -LiteralPath $source -PathType Leaf)) { throw "Missing compiled file $source" }
+        $hash = (Get-FileHash -LiteralPath $source).Hash
+        foreach ($directory in @($target,$publish)) {
+            $destination = In-Repo (Join-Path $directory $file)
+            if (!(Test-Path -LiteralPath $destination -PathType Leaf)) { throw "Missing existing target $destination" }
+            $old = (Get-FileHash -LiteralPath $destination).Hash
+            $plan += [ordered]@{ source=$source;target=$destination;sha256=$hash;previousSha256=$old;changed=($old -ne $hash) }
+        }
+    } }
+    # Preflight every target before any copy; never close or overwrite a running manager.
+    foreach ($item in $plan | Where-Object {$_.changed}) {
+        $probe = [IO.File]::Open($item.target,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+        $probe.Dispose()
+    }
+    foreach ($item in $plan | Where-Object {$_.changed}) {
+        $backup = $item.target + '.before-wrist-config-hand-follow-20261108.bak'
+        if (!(Test-Path -LiteralPath $backup)) { Copy-Item -LiteralPath $item.target -Destination $backup }
+        Copy-Item -LiteralPath $item.source -Destination $item.target -Force
+    }
+    foreach ($item in $plan) {
+        if ((Get-FileHash -LiteralPath $item.target).Hash -ne $item.sha256) { throw "Managed update verification failed: $($item.target)" }
+    }
+    @{status='PASS';managedOnly=$true;files=$plan;gameDeployed=$false;updatedUtc=[DateTimeOffset]::UtcNow.ToString('o')} |
+        ConvertTo-Json -Depth 7 | Set-Content -LiteralPath (Join-Path $target '归档\测试报告\腕配置手部联动-工具同步-20261108.json') -Encoding utf8
+    Write-Output "Verified $($plan.Count) managed targets; updated $(@($plan | Where-Object {$_.changed}).Count). Python/config/library/game unchanged."
+    return
+}
 if (!$SkipBuild) {
     & (Join-Path $PSScriptRoot 'BuildNativeRuntime.ps1')
     & dotnet publish (Join-Path $repo 'HD2ModManager\HD2ModManager.csproj') -c Release --no-restore -p:CETCompat=false -o $publish -v minimal

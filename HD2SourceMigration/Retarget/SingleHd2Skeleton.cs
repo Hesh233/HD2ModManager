@@ -8,7 +8,7 @@ namespace HD2SourceMigration.Retarget;
 public sealed record SingleHd2BindManifest(int Version, string Policy, double ModelScale,
     IReadOnlyList<uint> DriverHashes, IReadOnlyList<float[]> DriverWorld,
     bool MeshOnlyPostprocessing = false, string ControlMarkerPolicy = "original-hd2-local-v1",
-    string ArmSegmentPolicy = "native-axis-source-length-v1");
+    string ArmSegmentPolicy = "native-axis-source-length-hand-follow-v2");
 
 public sealed record SingleHd2Conversion(RetargetResult Result, SingleHd2BindManifest Manifest)
 {
@@ -123,7 +123,7 @@ public static class SingleHd2Skeleton
     // axis. Fixed T/A rotations alone left test07 segments 40 deg off that axis.
     // Re-pose the mesh AND joint heads together, keeping source bone lengths and
     // restoring the original HD2 animation axes. No mesh-only fitting is used.
-    private static RetargetResult NormalizeArmSegments(RetargetInputs inputs,
+    internal static RetargetResult NormalizeArmSegments(RetargetInputs inputs,
         RetargetResult result, Hd2Rig rig)
     {
         var bones = rig.Bones.ToDictionary(b => b.Index);
@@ -159,14 +159,15 @@ public static class SingleHd2Skeleton
             var newElbow = upper.TransformPoint(ep);
             var lowerRotation = RetargetMath.MinArcRotation(upperRotation.Transform(second), nativeSecond);
             var lower = RetargetMath.Trans(newElbow) * lowerRotation.ToMat4() * RetargetMath.Trans(newElbow * -1) * upper;
-            var newHand = lower.TransformPoint(hp);
-            var wrist = RetargetMath.Trans(newHand - hp);
-            var twist = rig.Find(side + "_hand_twist");
             foreach (var bone in rig.Bones)
             {
                 if (!Below(bone.Index, shoulder.Index)) continue;
-                corrections[bone.Index] = Below(bone.Index, hand.Index) || (twist is not null && Below(bone.Index, twist.Index))
-                    ? wrist : Below(bone.Index, elbow.Index) ? lower : upper;
+                // The complete distal subtree follows the same rigid lower-arm
+                // correction: hand, fingers and sibling hand_twist alike. A
+                // translation-only hand correction bent test07 by another 31 deg.
+                // Only joint heads and mesh Deform change; original HD2 bind axes
+                // and control-marker local contracts are retained below.
+                corrections[bone.Index] = Below(bone.Index, elbow.Index) ? lower : upper;
             }
         }
         var worlds = result.ShippedRest.ToDictionary(x => x.Key, x =>

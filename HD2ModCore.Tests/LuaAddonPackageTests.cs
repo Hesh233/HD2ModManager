@@ -1,4 +1,4 @@
-﻿using HD2ModCore.Infrastructure;
+using HD2ModCore.Infrastructure;
 
 namespace HD2ModCore.Tests;
 
@@ -315,5 +315,21 @@ public sealed class LuaAddonPackageTests
 		Assert.NotEqual(LuaAddonCatalog.PhysicsModGuid, LuaAddonCatalog.WardrobeModGuid);
 		Assert.True(Guid.TryParse(LuaAddonCatalog.PhysicsModGuid, out _));
 		Assert.True(Guid.TryParse(LuaAddonCatalog.WardrobeModGuid, out _));
+	}
+
+	[Fact]
+	public void PhysicsPackageCarriesSingleFrontSkirtPolicyAndTipLimitDiagnostic()
+	{
+		var source = LuaAddonCatalog.Physics().Source;
+		Assert.Contains("M.version = \"1.2.3\"", source, StringComparison.Ordinal);
+		Assert.Contains("M.VERSION = \"2.2.3\"", source, StringComparison.Ordinal);
+		Assert.Contains("single-front-skirt-driver-v1", source, StringComparison.Ordinal);
+		Assert.Contains("native-front-skirt-driver-v1", source, StringComparison.Ordinal);
+		Assert.Contains("childNs ~= namespace", source, StringComparison.Ordinal);
+		Assert.Contains("controlRole ~= \"anim\"", source, StringComparison.Ordinal);
+		Assert.Contains("rig.drivers.version ~= 3", source, StringComparison.Ordinal);
+		Assert.Contains("root.parentName ~= expected.helper", source, StringComparison.Ordinal);
+		Assert.Contains("item.tip and item.tip.bones or item.bones", source, StringComparison.Ordinal);
+		Assert.DoesNotContain("local simBone = item.bones and item.bones[index]", source, StringComparison.Ordinal);
 	}
 }

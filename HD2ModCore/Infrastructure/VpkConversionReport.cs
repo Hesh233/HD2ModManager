@@ -23,7 +23,8 @@ public sealed record VpkConversionSettings(
 	string? Cutout,
 	double? AlbedoFactor,
 	bool? NormalFlipY = null,
-	double ModelScale = 1)
+	double ModelScale = 1,
+    bool MergeWristWeights = false)
 {
 	/// <summary>什么都没记（旧产物）：重构建只能按默认值来，并且必须说出来。</summary>
 	public static VpkConversionSettings Default { get; } = new(null, null, null, null, null, null);
@@ -44,7 +45,9 @@ public sealed record VpkConversionSettings(
 		if (NormalFlipY == true) arguments.AddRange(["--normal-flip-y", "on"]);
 		if (ModelScale != 1)
 			arguments.AddRange(["--model-scale", ModelScale.ToString("R", CultureInfo.InvariantCulture)]);
-		return arguments;
+        // Historical effective outcome only. Rebuilds read the current config.toml,
+        // never re-enable this option from an old conversion report.
+        return arguments;
 	}
 }
 
@@ -278,7 +281,8 @@ public sealed record VpkConversionReport(
 			ReadString(conversion, "cutout"),
 			ReadDouble(conversion, "albedoFactor"),
 			ReadBool(conversion, "normalFlipY"),
-			ReadDouble(conversion, "modelScale") ?? 1);
+			ReadDouble(conversion, "modelScale") ?? 1,
+            ReadBool(conversion, "mergeWristWeights") == true);
 	}
 
 	private static string? ReadString(JsonElement element, string name)

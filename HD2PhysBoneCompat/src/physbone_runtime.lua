@@ -43,7 +43,7 @@ local M = {}
 -- 2.1.1：外置导出声明 Chef 的 render/shutdown/on_stop，日志走加载器允许的目录。
 -- 2.1.2：从独立 VPK 参考骨选择挂点姿态，保留原生瞄准控制节点。
 -- 2.1.3：按最终模型布局识别护甲；配置影子链先融合再映射挂点，记录 render 回读与双手诊断。
-M.VERSION = "2.2.1"
+M.VERSION = "2.2.3"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -1068,7 +1068,7 @@ local function drive(runtime)
 	-- 求解器夹的是"相对父节"的偏转，而多节链上第 k 节的"偏离绑定"会把前面每一节的偏转累加进去
 	-- ——5 节 × 25° 累到 100° 完全合法。上一版把它算成"超限骨"，报了 28~77，纯属误报。
 	-- 判"限位有没有生效"要看相对父节的偏转，那是求解器内部量，不在这一层。
-	-- 骨名取 item.chain[index].name，限位取 item.bones[index].gains —— **两个不同的对象**。
+	-- 骨名取 item.chain[index].name，尖端核限位取 item.tip.bones[index].gains。
 	-- 混用过一次，于是限位永远打印 0°，看着像"限位没生效"，白查一轮。
 	local framePeak, worstName, worstLimit = 0, nil, 0
 	for _, session in ipairs(runtime.sessions) do
@@ -1081,7 +1081,8 @@ local function drive(runtime)
 						framePeak = angle
 						local chainBone = item.chain and item.chain[index]
 						worstName = chainBone and chainBone.name or nil
-						local simBone = item.bones and item.bones[index]
+						local simBones = item.tip and item.tip.bones or item.bones
+						local simBone = simBones and simBones[index]
 						local gains = simBone and simBone.gains
 						worstLimit = (gains and gains.limit or 0) * 180 / math.pi
 					end

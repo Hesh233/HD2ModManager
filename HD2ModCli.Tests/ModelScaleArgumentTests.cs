@@ -26,4 +26,17 @@ public sealed class ModelScaleArgumentTests
     [InlineData("0")][InlineData("-1")][InlineData("11")][InlineData("NaN")][InlineData("Infinity")][InlineData("1,2")]
     public void InvalidScaleIsRejected(string scale)
         => Assert.Throws<CliUserException>(() => CliArgumentParser.Parse(["vpk2patch","test.vpk","--model-scale",scale]));
+
+    [Fact] public void WristWeightMergeUsesConfigNotCliFlag()
+    {
+        Assert.False(CliArgumentParser.Parse(new[]{"vpk2patch","test07.vpk"}).Options.MergeWristWeights);
+        Assert.Throws<CliUserException>(()=>CliArgumentParser.Parse(new[]{"vpk2patch","test07.vpk","--merge-wrist-weights"}));
+    }
+    [Fact] public void ConversionConfigPathDoesNotActAsAnEnableFlag()
+    {
+        var parsed=CliArgumentParser.Parse(new[]{"vpk2patch","test07.vpk","--conversion-config","config.toml"});
+        Assert.Equal("config.toml",parsed.Options.ConversionConfig);
+        Assert.False(parsed.Options.MergeWristWeights);
+    }
+
 }

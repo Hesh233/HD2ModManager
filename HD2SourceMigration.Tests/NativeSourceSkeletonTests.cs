@@ -218,4 +218,34 @@ public sealed class NativeSourceSkeletonTests
         File.WriteAllText(Path.ChangeExtension(auditPath,"manifest.json"),JsonSerializer.Serialize(native.Manifest,
             new JsonSerializerOptions{PropertyNamingPolicy=JsonNamingPolicy.CamelCase,WriteIndented=true}));
     }
+    [Theory]
+    [InlineData("L")][InlineData("R")]
+    public void NativeDualRigKeepsSourceForearmPalmGeometryWithoutSingleArmNormalize(string side)
+    {
+        var (input,_,_)=Fixture();
+        var (_,rig)=TestRig.MatchingRigs();
+        var avatar=new UnitTransformInfo(0,0,0,
+            rig.Bones.Select(b=>new UnitLocalTransform([1,0,0,0,1,0,0,0,1],[(float)b.WorldOrigin.X,0,0],[1,1,1],0)).ToArray(),
+            rig.Bones.Select(b=>new UnitTransformMatrix(TestRig.RowVectorAt(b.WorldOrigin.X,0,0))).ToArray(),
+            rig.Bones.Select(b=>new UnitTransformEntry(1,(ushort)b.Index)).ToArray(),
+            rig.Bones.Select(b=>Hd2NameHash.Of(b.DisplayName)).ToArray());
+        var b0=TestRig.SourceBone(0,side+"_Forearm",1,2,3);
+        var b1=TestRig.SourceBone(1,side+"_Hand",4,6,3) with {ParentIndex=0};
+        var b2=TestRig.SourceBone(2,side+"_Finger2",6,8,3) with {ParentIndex=1};
+        var source=new[]{b0,b1,b2};
+        var geometry=new SourceGeometry(new[]{new SourceVertex(new Vec3(4.5,6.2,3.1),new(0,0,1),.2f,.3f,
+            new SourceVertexWeight(1,.7f),new SourceVertexWeight(0,.3f),default)},[],[]);
+        input=input with {Model=TestRig.SourceModel(source),Geometry=geometry};
+        const double scale=1.02;
+        var native=NativeSourceSkeleton.Convert(input,rig,avatar,scale);
+        Vec3 P(int i)=>native.Result.ShippedRest[native.Result.JiggleWeightTargets[i]].Origin;
+        double Cos(Vec3 a,Vec3 b)=>Vec3.Dot(a,b)/a.Length/b.Length;
+        Assert.Equal(Cos(b1.WorldOrigin-b0.WorldOrigin,b2.WorldOrigin-b1.WorldOrigin),Cos(P(1)-P(0),P(2)-P(1)),precision:12);
+        var p=geometry.Vertices[0].Position;
+        Assert.True((native.Result.Output[0]-new Vec3(-p.X*.0254*scale,-p.Y*.0254*scale,p.Z*.0254*scale)).Length<1e-12);
+        Assert.Equal(1, native.Manifest.Bones[2].Parent);
+        Assert.NotNull(native.Result.SourceNativeTransforms);
+        Assert.Null(native.Result.SingleHd2Transforms);
+    }
+
 }

@@ -1,4 +1,4 @@
-﻿using HD2ModCore.Infrastructure;
+using HD2ModCore.Infrastructure;
 
 namespace HD2ModCore.Tests;
 
@@ -243,4 +243,14 @@ public sealed class VpkConversionReportTests : IDisposable
 		Assert.Null(report.FindPatch("不存在的.vpk"));
 		Assert.Null(report.FindPatch(null));
 	}
+
+    [Fact] public void WristWeightMergeOutcomeIsRecordedButCannotOverrideCurrentConfig()
+    {
+        var legacy=VpkConversionReport.TryParse("{}")!;
+        Assert.False(legacy.Settings.MergeWristWeights);Assert.Empty(legacy.Settings.ToArguments());
+        var no=VpkConversionReport.TryParse("{\"conversion\":{\"mergeWristWeights\":false}}")!;
+        Assert.False(no.Settings.MergeWristWeights);Assert.DoesNotContain("--merge-wrist-weights",no.Settings.ToArguments());
+        var yes=VpkConversionReport.TryParse("{\"conversion\":{\"mergeWristWeights\":true}}")!;
+        Assert.True(yes.Settings.MergeWristWeights);Assert.DoesNotContain("--merge-wrist-weights",yes.Settings.ToArguments());
+    }
 }

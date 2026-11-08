@@ -16,3 +16,7 @@ This repository is a heavily modified derivative of [AssestinaR/HD2ModManager](h
 - [test01 原生挂点工程（B23-LR-M 1.0.8）](projects/test01-native-grip/README.md)：固定配置/输入、共享实现、不可变发布包和可重建工作目录。
 - 一键重新打包：`projects/test01-native-grip/build.ps1`；不自动重烘动作或部署游戏。
 - 完整动作仅保留必要依赖，不放入每个握持运行时工程；归档及清理记录见 `outputs/project-archive-cleanup-20261105/归档与清理报告.md`。
+
+### VPK腕权重配置（2026-11-08）
+
+管理器根目录 `config.toml` 中使用 `[vpk_conversion]` / `merge_wrist_weights = false`，默认不合并；设为true仅转移程序腕辅助骨权重到下臂，保留骨骼与VRD。两种骨架路线共用，初次界面不再询问，重构建以当前配置为准而不是旧报告。单骨架臂段归一化已修正手掌/手指联动；已有模型/动画须重新生成。详见固定manager的说明文档/腕权重配置与手部联动修复-20261108.md。

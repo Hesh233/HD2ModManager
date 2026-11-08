@@ -97,6 +97,8 @@ public static class CliApplication
 				"CommandOptionNotSupported",
 				"--limit、--cursor、--with-effective 与 --only-competition 仅适用于 gamedata 只读查询。 ");
 		}
+        if (invocation.Options.ConversionConfig is not null && (command.Length == 0 || command[0] != "vpk2patch"))
+            throw new CliUserException("CommandOptionNotSupported", "--conversion-config 仅适用于 vpk2patch。");
 		if (!string.IsNullOrWhiteSpace(invocation.Options.RegistryRoot)
 			&& (command.Length == 0 || command[0] is not ("armor-registry" or "wardrobe")))
 		{
@@ -2261,6 +2263,14 @@ public static class CliApplication
 					+ "[--material-source <目录或 VPK>] [--components merge|all|none|<名字,...>] [--json] "
 					+ "（VPK 多到命令行放不下时用 --vpk-list <清单文件>，每行一个路径）");
 
+            // This is a tool-wide config setting, not a dialog/per-model choice.
+            // Snapshot it once for the entire conversion batch; reports record the
+            // effective value but cannot override the current config on rebuild.
+            invocation = invocation with { Options = invocation.Options with {
+                MergeWristWeights = invocation.Options.ConversionConfig is { } conversionConfig
+                    ? VpkConversionConfig.LoadFile(conversionConfig)
+                    : VpkConversionConfig.Load(invocation.Options.ManagerRoot ?? AppContext.BaseDirectory)
+            } };
 			var outputRoot = RequireOutput(invocation.Options, "vpk2patch");
 			var vpkPaths = new List<string>();
 			var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -2573,6 +2583,8 @@ public static class CliApplication
 						components = invocation.Options.Components,
 						sourceSkeleton = invocation.Options.SourceSkeleton,
 						singleHd2Skeleton = invocation.Options.SingleHd2Skeleton,
+                        mergeWristWeights = invocation.Options.MergeWristWeights,
+                        wristWeightConfig = invocation.Options.ConversionConfig ?? VpkConversionConfig.ResolvePath(invocation.Options.ManagerRoot ?? AppContext.BaseDirectory),
 						modelScale = invocation.Options.ModelScale,
 						matcap = invocation.Options.Matcap,
 						matcapGain = invocation.Options.MatcapGain,
@@ -2999,7 +3011,10 @@ public static class CliApplication
 		string ModelKey,
 		string ModelName,
 		IReadOnlyDictionary<BodyRegion, UnitDonor> Donors,
-		string? RegistryError);
+		string? RegistryError)
+    {
+        public SourceWristWeightMergeSummary? WristWeightMerge { get; init; }
+    }
 
 	/// <summary>
 	/// 这次 <c>vpk rekey</c> 要不要做**头身合并**。只有显式传 <c>--head-merge on</c> 才做。
@@ -3516,11 +3531,20 @@ public static class CliApplication
 				"转换需要 --game-data <游戏 data 目录>：外壳 Unit 与 avatar 骨架都从游戏本体读。");
 
 		var inputs = SourceRetargetPipeline.LoadSource(full, modelStem);
+        SourceWristWeightMergeSummary? wristMerge = null;
+        if (options.MergeWristWeights)
+        {
+            var merged = SourceWristWeightMerger.Merge(inputs.Model, inputs.Geometry);
+            wristMerge = merged.Summary;
+        }
+
 		var avatar = await ResolveAvatarTransformInfoAsync(options, gameData).ConfigureAwait(false);
 		var rig = SourceRetargetPipeline.LoadRigFromTransformInfo(avatar, ResolveBoneHashPath(options, workspace));
 		var native = options.SourceSkeleton ? NativeSourceSkeleton.Convert(inputs, rig, avatar, options.ModelScale) : null;
 		var single = options.SingleHd2Skeleton ? SingleHd2Skeleton.Convert(inputs, rig, avatar, options.ModelScale) : null;
 		var retarget = native?.Result ?? single?.Result ?? SourceRetargetPipeline.Run(inputs, rig, options: new RetargetOptions { ModelScale = options.ModelScale });
+        if (wristMerge is not null)
+            retarget = retarget with { WristWeightMergeTargets = wristMerge.Bones.ToDictionary(b => b.SourceIndex, b => b.TargetIndex) };
 
 		var split = SourceSegmentation.Split(
 			inputs.Model, inputs.Geometry, new BodyRegionResolver(rig), retarget.Resolved);
@@ -3840,7 +3864,7 @@ public static class CliApplication
 		}
 
 		return new(full, "model", outputDirectory, inputs.MdlPath, split.Groups.Count,
-			selectedGroups.Length, package, modelKey, displayName, donors, registryError);
+			selectedGroups.Length, package, modelKey, displayName, donors, registryError) { WristWeightMerge = wristMerge };
 	}
 
 	/// <summary>
@@ -4033,6 +4057,7 @@ public static class CliApplication
 			groups = outcome.GroupCount,
 			selected = outcome.SelectedCount,
 			registryError = outcome.RegistryError,
+            wristWeightMerge = outcome.WristWeightMerge,
 			diagnostics = package.Diagnostics,
 			// 降级问题：包写出来了，但这些没到位。**不能只放在 human 输出里**——
 			// 管理器要靠它决定"导入成功但需要提示用户"。
@@ -8342,6 +8367,8 @@ Unit 数据视图（只读；直接解析 Patch 内的 Unit 网格与骨骼，�
 	                   token 形如 vpk-060d479e4bc677d0，用于"只重转一批里的某一个包"。
 	    --source-skeleton  保留 L4D2 原生骨架，产出 source-skeleton.json；须配套生成动画工程
 	    --single-hd2-skeleton  单 HD2 骨架：模型与绑定骨位同步转换，配套原 batch 动画
+	    --conversion-config <config.toml>  可选：显式指定转换配置；默认读取管理器 config.toml
+	    config.toml [vpk_conversion].merge_wrist_weights = false（默认）；设 true 仅合并腕辅助骨权重
 	    --model-scale <倍率>  模型整体大小倍率，默认 1，范围 (0, 10]；骨架模式同步缩放骨架与几何
 	    --reuse-model <旧产物的 custom-model.json>
 	                   沿用那份记下的素体 key 与 unit id 基。重构建（管理器里的「重构建」按钮）
