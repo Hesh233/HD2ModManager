@@ -78,8 +78,11 @@ public sealed class LuaAddonPackageTests
 	public void AttachmentFix_CompactLogHasTimeAndSizeLimits()
 	{
 		var source = LuaAddonCatalog.AttachmentFix("return {testProfile=true}").Source;
-		Assert.Contains("hd2_grip_b23_compact.log", source, StringComparison.Ordinal);
-		Assert.Contains("io.open(path,'w')", source, StringComparison.Ordinal);
+		// 详细测试日志轮后文件名改为运行时拼接：普通会话仍是 hd2_grip_b23_compact.log，
+		// 仅 testRepairs.detailed 会话换用 hd2_grip_TEST_DETAILED_<模型>_<时间>.partNN 分段。
+		Assert.Contains("hd2_grip_b23_compact", source, StringComparison.Ordinal);
+		Assert.Contains("..'.log'", source, StringComparison.Ordinal);
+		Assert.Contains("io.open(logPath(),'w')", source, StringComparison.Ordinal);
 		Assert.Contains("limits.recordSeconds or 90", source, StringComparison.Ordinal);
 		Assert.Contains("limits.maxBytes or 524288", source, StringComparison.Ordinal);
 		Assert.Contains("log_recording_stopped", source, StringComparison.Ordinal);
@@ -318,11 +321,28 @@ public sealed class LuaAddonPackageTests
 	}
 
 	[Fact]
+	public void PhysicsPackageCarriesFlagDrivenLinearDegreesOfFreedom()
+	{
+		var source = LuaAddonCatalog.Physics().Source;
+		Assert.Contains("gains.freeLength = true", source, StringComparison.Ordinal);
+		Assert.Contains("function M.step_base_springs", source, StringComparison.Ordinal);
+		Assert.Contains("function M.reset_linear_state", source, StringComparison.Ordinal);
+		Assert.Contains("flag_set(flags, M.FLAG_LENGTH_CONSTRAINED)", source, StringComparison.Ordinal);
+		Assert.Contains("flag_set(flags, M.FLAG_BASE_SPRING)", source, StringComparison.Ordinal);
+		Assert.Contains("baseSpringState", source, StringComparison.Ordinal);
+		Assert.Contains("tip.localPositions and tip.localPositions[index]", source, StringComparison.Ordinal);
+		Assert.Contains("positionEpsilon2", source, StringComparison.Ordinal);
+	}
+
+	[Fact]
 	public void PhysicsPackageCarriesSingleFrontSkirtPolicyAndTipLimitDiagnostic()
 	{
 		var source = LuaAddonCatalog.Physics().Source;
-		Assert.Contains("M.version = \"1.2.3\"", source, StringComparison.Ordinal);
-		Assert.Contains("M.VERSION = \"2.2.3\"", source, StringComparison.Ordinal);
+		Assert.Contains("M.version = \"1.3.0\"", source, StringComparison.Ordinal);
+		Assert.Contains("M.VERSION = \"2.3.0\"", source, StringComparison.Ordinal);
+		Assert.Contains("function M.is_wrist_driver(bone)", source, StringComparison.Ordinal);
+		Assert.Contains("if M.is_wrist_driver(bone) then", source, StringComparison.Ordinal);
+		Assert.Contains("excludedWristDrivers = excludedWristDrivers", source, StringComparison.Ordinal);
 		Assert.Contains("single-front-skirt-driver-v1", source, StringComparison.Ordinal);
 		Assert.Contains("native-front-skirt-driver-v1", source, StringComparison.Ordinal);
 		Assert.Contains("childNs ~= namespace", source, StringComparison.Ordinal);

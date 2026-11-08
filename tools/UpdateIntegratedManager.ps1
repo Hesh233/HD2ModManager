@@ -69,7 +69,7 @@ if (!$SkipBuild) {
     if ($LASTEXITCODE -ne 0) { throw 'Manager publish failed.' }
 }
 $info = Get-Content -LiteralPath (Join-Path $publish 'anim_batch_mod\build-info.json') -Raw | ConvertFrom-Json
-if ($info.pipelineVersion -ne '1.0.15' -or $info.singleSkeletonPipelineVersion -ne '1.0.20' -or $info.singleProcessingProfile -ne 'standard-single-v3-normal-reference' -or $info.singlePlaybackRevision -ne 'normal-reference-r2') {
+if ($info.pipelineVersion -ne '1.0.15' -or $info.singleSkeletonPipelineVersion -ne '1.0.21' -or $info.singleOutputEncodingProfile -ne 'single-constant-float-boundary2-v1' -or $info.singleProcessingProfile -ne 'standard-single-v3-normal-reference' -or $info.singlePlaybackRevision -ne 'normal-reference-r2') {
     throw 'Refusing an old or mixed runtime without the single HD2 bind fix.'
 }
 foreach ($file in $info.files) {
@@ -80,7 +80,7 @@ foreach ($file in $info.files) {
 foreach ($file in $info.presetFiles) {
     if ((Get-FileHash -LiteralPath (Join-Path $publish ('anim_batch_mod\' + $file.name)) -Algorithm SHA256).Hash -ne $file.sha256) { throw "Published template differs from build-info: $($file.name)" }
 }
-foreach ($required in @('anim_batch_mod\playback_reference.py','anim_batch_mod\presets\single-normal-reference\playback.zip','HD2ModManager.dll','HD2ModCore.dll','HD2SourceMigration.dll','hd2mod.dll','anim_batch_mod\single_skeleton.py')) {
+foreach ($required in @('anim_batch_mod\single_animation_compaction.py','anim_batch_mod\playback_reference.py','anim_batch_mod\presets\single-normal-reference\playback.zip','HD2ModManager.dll','HD2ModCore.dll','HD2SourceMigration.dll','hd2mod.dll','anim_batch_mod\single_skeleton.py')) {
     if (!(Test-Path -LiteralPath (Join-Path $publish $required))) { throw "Incomplete publish: $required" }
 }
 # Existing presets/configuration are user-owned. The new single converter normalizes

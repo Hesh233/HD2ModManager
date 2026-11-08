@@ -19,7 +19,7 @@
 
 local M = {}
 
-M.version = "1.2.3"
+M.version = "1.3.0"
 
 -- ---------------------------------------------------------------------------
 -- 二进制读取（无 string.unpack 的替代）
@@ -902,6 +902,54 @@ local function flag_set(flags, bit)
 	return math.floor(flags / bit) % 2 == 1
 end
 
+-- Source linear DOFs use the same acceleration equation as the angular springs.
+-- Invalid authored linear parameters fail closed; inactive flag groups are not read.
+local function linear_number(value, fallback)
+ if value == nil then return fallback end
+ if type(value) ~= "number" or value ~= value or value == math.huge or value == -math.huge then return nil end
+ return value
+end
+
+local function linear_gains(gains, params, flags, lengthScale, gravityScale)
+ if flags == nil then return end -- legacy numeric fixtures retain the old fixed-length contract
+ local flexible = flag_set(flags, M.FLAG_FLEXIBLE)
+ local rigid = flag_set(flags, M.FLAG_RIGID)
+ gains.noTipFlex = not flexible and not rigid or nil
+ gains.rigidTip = rigid and not flexible or nil
+ if (flexible or rigid) and not flag_set(flags, M.FLAG_LENGTH_CONSTRAINED) then
+  gains.freeLength = true
+  if flexible then
+   local k = linear_number(params.alongStiffness, 100)
+   local c = linear_number(params.alongDamping, 0)
+   if k == nil or c == nil or k < 0 or c < 0 then
+    gains.freeLength = nil
+    gains.invalidLinearParams = true
+   else gains.kAlong, gains.cAlong = k, c end
+  end
+ end
+ if flag_set(flags, M.FLAG_BASE_SPRING) then
+  local k = linear_number(params.baseStiffness, 100)
+  local c = linear_number(params.baseDamping, 0)
+  local gravity = linear_number(params.baseMass, 0)
+  local minNames = { "baseMinLeft", "baseMinUp", "baseMinForward" }
+  local maxNames = { "baseMaxLeft", "baseMaxUp", "baseMaxForward" }
+  local frictionNames = { "baseLeftFriction", "baseUpFriction", "baseForwardFriction" }
+  local minimum, maximum, friction = {}, {}, {}
+  local valid = k ~= nil and c ~= nil and gravity ~= nil and k >= 0 and c >= 0
+  for axis = 1, 3 do
+   local lo = linear_number(params[minNames[axis]], -100)
+   local hi = linear_number(params[maxNames[axis]], 100)
+   local f = linear_number(params[frictionNames[axis]], 0)
+   if lo == nil or hi == nil or f == nil or lo > hi or f < 0 then valid = false
+   else minimum[axis], maximum[axis], friction[axis] = lo * lengthScale, hi * lengthScale, f end
+  end
+  if valid then
+   gains.baseSpring = { k = k, c = c, g = gravity * gravityScale,
+    minimum = minimum, maximum = maximum, friction = friction }
+  else gains.invalidLinearParams = true end
+ end
+end
+
 --- 29 个源参数 → 求解器增益。
 --- <para>
 --- 关键：`k` 的量纲是 1/s²、`c` 是 1/s，**与长度单位无关**，所以 ωn/ζ 可以直用。
@@ -1003,6 +1051,7 @@ function M.gains_of(params, lengthScale, gravityScale, opts)
 	else
 		gains.normalized = false
 	end
+	linear_gains(gains, params, flags, lengthScale, gravityScale)
 	return gains
 end
 
@@ -1122,6 +1171,7 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 		local gy = by + gains.L * prevY
 		local gz = bz + gains.L * prevZ
 		if not tip.ready then
+            if tip.baseSpringState ~= nil then tip.baseSpringState.ready = false end
 			tip.px, tip.py, tip.pz = gx, gy, gz
 			tip.vx, tip.vy, tip.vz = 0, 0, 0
 			tip.ready = true
@@ -1133,17 +1183,48 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 		local velPitch = ux * tip.vx + uy * tip.vy + uz * tip.vz
 		local accYaw = gains.kYaw * errYaw - gains.cYaw * velYaw
 		local accPitch = gains.kPitch * errPitch - gains.cPitch * velPitch
+        if gains.rigidTip or gains.noTipFlex then accYaw, accPitch = 0, 0 end
 		-- 重力：上的反面（一致性电池 E1 实测世界 +Z 朝上）
 		local ax = accYaw * lx + accPitch * ux
 		local ay = accYaw * ly + accPitch * uy
 		local az = accYaw * lz + accPitch * uz - gains.g
+        if gains.kAlong ~= nil then
+            -- Complete the SAME orthonormal frame used by yaw/pitch. The chain
+            -- goal can bend with its predecessor; projecting onto that goal instead
+            -- would double-count components and break an isotropic 3D spring.
+            local fx, fy, fz = ly * uz - lz * uy, lz * ux - lx * uz, lx * uy - ly * ux
+            local errorAlong = ex * fx + ey * fy + ez * fz
+            local velocityAlong = tip.vx * fx + tip.vy * fy + tip.vz * fz
+            local alongAccel = gains.kAlong * errorAlong - gains.cAlong * velocityAlong
+            ax, ay, az = ax + alongAccel * fx, ay + alongAccel * fy, az + alongAccel * fz
+        end
+        if gains.noTipFlex then
+            tip.px, tip.py, tip.pz = gx, gy, gz
+            tip.vx, tip.vy, tip.vz = 0, 0, 0
+            ax, ay, az = 0, 0, 0
+        end
 		tip.vx, tip.vy, tip.vz = tip.vx + ax * dt, tip.vy + ay * dt, tip.vz + az * dt
 		tip.px, tip.py, tip.pz = tip.px + tip.vx * dt, tip.py + tip.vy * dt, tip.pz + tip.vz * dt
-		-- 定长约束（样本 flags=0x31 含 lenC ⇒ 尖端钉在半径 L 的球面上，且没有 along 弹簧）
+        -- Source only projects a length-constrained tip. Free tips retain radial state;
+        -- their displayed bone direction is still normalized (this is NOT mesh scaling).
+        if gains.freeLength then
+            local finite = tip.px == tip.px and tip.py == tip.py and tip.pz == tip.pz
+                and tip.vx == tip.vx and tip.vy == tip.vy and tip.vz == tip.vz
+                and math.abs(tip.px - bx) < 1e4 and math.abs(tip.py - by) < 1e4 and math.abs(tip.pz - bz) < 1e4
+                and math.abs(tip.vx) < 1e6 and math.abs(tip.vy) < 1e6 and math.abs(tip.vz) < 1e6
+            if not finite then
+                tip.px, tip.py, tip.pz = gx, gy, gz
+                tip.vx, tip.vy, tip.vz = 0, 0, 0
+                tip.linearResets = (tip.linearResets or 0) + 1
+            end
+        end
 		local dx, dy, dz = tip.px - bx, tip.py - by, tip.pz - bz
 		local length = math.sqrt(dx * dx + dy * dy + dz * dz)
 		if length < 1e-6 then
-			dx, dy, dz, length = prevX, prevY, prevZ, 1
+            if gains.freeLength then
+                length = math.max(gains.L * 1e-6, 1e-7)
+                dx, dy, dz = prevX * length, prevY * length, prevZ * length
+            else dx, dy, dz, length = prevX, prevY, prevZ, 1 end
 		end
 		local nx, ny, nz = dx / length, dy / length, dz / length
 		if gains.axisLimits then
@@ -1250,9 +1331,14 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 				nx, ny, nz = prevX, prevY, prevZ
 			end
 		end
-		tip.px, tip.py, tip.pz = bx + gains.L * nx, by + gains.L * ny, bz + gains.L * nz
-		local radial = tip.vx * nx + tip.vy * ny + tip.vz * nz
-		tip.vx, tip.vy, tip.vz = tip.vx - radial * nx, tip.vy - radial * ny, tip.vz - radial * nz
+        if gains.freeLength then
+            tip.px, tip.py, tip.pz = bx + length * nx, by + length * ny, bz + length * nz
+            tip.span = length
+        else
+		    tip.px, tip.py, tip.pz = bx + gains.L * nx, by + gains.L * ny, bz + gains.L * nz
+		    local radial = tip.vx * nx + tip.vy * ny + tip.vz * nz
+		    tip.vx, tip.vy, tip.vz = tip.vx - radial * nx, tip.vy - radial * ny, tip.vz - radial * nz
+        end
 		-- 记录本帧最大尖端速度**的平方**：消费方只做阈值比较（< 1e-8），
 		-- 所以这里不必开平方（每骨每子步省一次 sqrt）。
 		-- ⚠️ 累加到 **item**（链容器）而不是 tip（本节）：update_tip 读的是 item.tip.maxSpeed2。
@@ -1272,6 +1358,7 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 	if item.bendBlend ~= nil and item.bendBlend > 0 then
 		M.relax_bending(item, item.bendBlend, item.bendBudget)
 	end
+    if item.hasBaseSpring then M.step_base_springs(item, dt, apx, apy, apz, qx, qy, qz, qw) end
 end
 
 --- 由"每节世界方向"反算**每节的 local 旋转**（父→子，累积）。
@@ -1597,6 +1684,106 @@ function M.compose_bind_rotation(rotation, base)
 	x,y,z,w=qmul(x,y,z,w,p[1],p[2],p[3],p[4])
 	x,y,z,w=qmul(-p[1],-p[2],-p[3],p[4],x,y,z,w)
 	return qmul(x,y,z,w,b[1],b[2],b[3],b[4])
+end
+
+-- Root springs run AFTER tip flex, just like Source. Goals come from the numeric
+-- parent/bind hierarchy, never by reading back our own poses. A parent's displacement
+-- propagates once; each child spring then adds only its own parent-local displacement.
+function M.step_base_springs(item, dt, apx, apy, apz, qx, qy, qz, qw)
+ local basePoses = item.basePoses
+ if basePoses == nil or type(dt) ~= "number" or dt ~= dt or dt <= 0 then return false end
+ local rotations = M.local_rotations(item, qx, qy, qz, qw)
+ local px, py, pz, pqx, pqy, pqz, pqw = apx, apy, apz, qx, qy, qz, qw
+ local positions = item.localPositions
+ if positions == nil then positions = {}; item.localPositions = positions end
+ item.maxBaseOffset = 0
+ for index = 1, #item.bones do
+  local base, tip = basePoses[index], item.tips[index]
+  if base == nil then return false end
+  local ox, oy, oz = qrot(pqx, pqy, pqz, pqw, base.px, base.py, base.pz)
+  local gx, gy, gz = px + ox, py + oy, pz + oz
+  local gains = item.bones[index].gains.baseSpring
+  if gains ~= nil then
+   local bq = base.bindQ or { 0, 0, 0, 1 }
+   local bqx, bqy, bqz, bqw = qmul(pqx, pqy, pqz, pqw, bq[1], bq[2], bq[3], bq[4])
+   local st = tip.baseSpringState
+   if st == nil then st = { ready = false }; tip.baseSpringState = st end
+   if not st.ready then
+    st.px, st.py, st.pz = gx, gy, gz
+    st.vx, st.vy, st.vz, st.fx, st.fy, st.fz = 0, 0, 0, 0, 0, 0
+    st.ready = true
+   end
+   local lastX, lastY, lastZ = st.px, st.py, st.pz
+   local ax = gains.k * (gx - st.px) - gains.c * st.vx + st.fx
+   local ay = gains.k * (gy - st.py) - gains.c * st.vy + st.fy
+   local az = gains.k * (gz - st.pz) - gains.c * st.vz + st.fz - gains.g
+   st.vx, st.vy, st.vz = st.vx + ax * dt, st.vy + ay * dt, st.vz + az * dt
+   st.px, st.py, st.pz = st.px + st.vx * dt, st.py + st.vy * dt, st.pz + st.vz * dt
+   local ex, ey, ez = qrot(-bqx, -bqy, -bqz, bqw, st.px - gx, st.py - gy, st.pz - gz)
+   local lvx, lvy, lvz = qrot(-bqx, -bqy, -bqz, bqw, st.vx, st.vy, st.vz)
+   local values, velocities, contact = st.values, st.velocities, st.contact
+   if values == nil then
+    values, velocities, contact = {}, {}, {}
+    st.values, st.velocities, st.contact = values, velocities, contact
+   end
+   values[1], values[2], values[3] = ex, ey, ez
+   velocities[1], velocities[2], velocities[3] = lvx, lvy, lvz
+   contact[1], contact[2], contact[3] = 0, 0, 0
+   local valid = true
+   for axis = 1, 3 do
+    local value = values[axis]
+    if value ~= value or math.abs(value) > 1e4 or velocities[axis] ~= velocities[axis] or math.abs(velocities[axis]) > 1e6 then valid = false end
+    if value < gains.minimum[axis] or value > gains.maximum[axis] then
+     values[axis] = math.max(gains.minimum[axis], math.min(gains.maximum[axis], value))
+     -- Contact friction is a tangential acceleration carried to the next step.
+     for other = 1, 3 do
+      if other ~= axis then contact[other] = contact[other] - gains.friction[axis] * velocities[other] end
+     end
+    end
+   end
+   if not valid then
+    st.px, st.py, st.pz = gx, gy, gz
+    st.vx, st.vy, st.vz, st.fx, st.fy, st.fz = 0, 0, 0, 0, 0, 0
+    values[1], values[2], values[3] = 0, 0, 0
+    tip.linearResets = (tip.linearResets or 0) + 1
+   else
+    local dx, dy, dz = qrot(bqx, bqy, bqz, bqw, values[1], values[2], values[3])
+    st.px, st.py, st.pz = gx + dx, gy + dy, gz + dz
+    st.vx, st.vy, st.vz = (st.px - lastX) / dt, (st.py - lastY) / dt, (st.pz - lastZ) / dt
+    st.fx, st.fy, st.fz = qrot(bqx, bqy, bqz, bqw, contact[1], contact[2], contact[3])
+   end
+   local dx, dy, dz = st.px - gx, st.py - gy, st.pz - gz
+   local lpx, lpy, lpz = qrot(-pqx, -pqy, -pqz, pqw, dx, dy, dz)
+   local position = positions[index]
+   if position == nil then position = {}; positions[index] = position end
+   position[1], position[2], position[3] = base.px + lpx, base.py + lpy, base.pz + lpz
+   local offset = math.sqrt(dx * dx + dy * dy + dz * dz)
+   if offset > item.maxBaseOffset then item.maxBaseOffset = offset end
+   local speed2 = st.vx * st.vx + st.vy * st.vy + st.vz * st.vz
+   if speed2 > (item.maxSpeed2 or 0) then item.maxSpeed2 = speed2 end
+   px, py, pz = st.px, st.py, st.pz
+  else
+   positions[index] = nil
+   px, py, pz = gx, gy, gz
+  end
+  local lqx, lqy, lqz, lqw = M.compose_bind_rotation(rotations[index], base)
+  pqx, pqy, pqz, pqw = qmul(pqx, pqy, pqz, pqw, lqx, lqy, lqz, lqw)
+ end
+ return true
+end
+
+-- A resync/release clears only the newly-owned linear state. Fixed-length angular
+-- sessions keep the accepted legacy reset contract; dead units are never touched.
+function M.reset_linear_state(tip)
+ if tip == nil or not tip.hasLinearDofs then return end
+ for index = 1, #tip.tips do
+  local state = tip.tips[index]
+  state.ready = false
+  state.baseSpringState = nil
+  state.span = nil
+  state.vx, state.vy, state.vz = 0, 0, 0
+ end
+ tip.localPositions, tip.maxBaseOffset, tip.maxSpeed2 = nil, nil, 0
 end
 
 --- 用已验证的原语重建一个 local pose：轴角 → from_quaternion_position。
@@ -1942,6 +2129,28 @@ local function native_node_name(name)
     if namespace == nil or #namespace ~= 17 then return nil end
     return namespace, role, label
 end
+-- Wrist QuatInterp helpers must not compete with the animated grip. Match
+-- parent/control semantics, not helper labels (handl, wrist_L, zhandtwist_l...).
+-- Native rows must belong to one exported namespace; ordinary hand/finger bones
+-- and unrelated cloth drivers remain untouched. Parsing keeps every rig record.
+function M.is_wrist_driver(bone)
+    if type(bone) ~= "table" or type(bone.name) ~= "string"
+        or type(bone.parentName) ~= "string" or type(bone.controlName) ~= "string" then return false end
+    local name, parent, control = bone.name:lower(), bone.parentName:lower(), bone.controlName:lower()
+    if name:match("^hd2n_") or parent:match("^hd2n_") or control:match("^hd2n_") then
+        local namespace, role = native_node_name(name)
+        local parentNs, parentRole, parentLabel = native_node_name(parent)
+        local controlNs, controlRole, controlLabel = native_node_name(control)
+        if namespace == nil or role ~= "aux" or parentNs ~= namespace or parentRole ~= "anim"
+            or controlNs ~= namespace or controlRole ~= "anim" then return false end
+        parent, control = parentLabel, controlLabel
+    elseif name == control or name == "l_hand" or name == "r_hand" then
+        return false
+    end
+    return (control == "l_hand" and (parent == "l_elbow" or parent == "l_forearm"))
+        or (control == "r_hand" and (parent == "r_elbow" or parent == "r_forearm"))
+end
+
 function M.native_front_skirt_anchor_policy(rig, chain)
     if type(rig) ~= "table" or type(rig.drivers) ~= "table"
         or (rig.drivers.version ~= 1 and rig.drivers.version ~= 2)
@@ -2294,6 +2503,23 @@ function M.attach(S, unit, rig, options)
 							goalQ = worldAnchored and { qbx, qby, qbz, qbw } or nil,
 							anchorPolicy = anchorPolicy,
 						}
+                        local baseCount, alongCount = 0, 0
+                        for index = 1, #bonesNew do
+                            local gains = bonesNew[index].gains
+                            if gains.baseSpring ~= nil then baseCount = baseCount + 1 end
+                            if gains.freeLength then alongCount = alongCount + 1 end
+                            if gains.invalidLinearParams then
+                                logger("[physbone] %s: invalid linear parameters; affected DOF disabled", tostring(chain[index].name))
+                            end
+                        end
+                        if baseCount > 0 then
+                            tipData.hasBaseSpring = true
+                            tipData.basePoses = basePoses
+                        end
+                        if baseCount > 0 or alongCount > 0 then
+                            tipData.hasLinearDofs = true
+                            tipData.hasFreeLength = alongCount > 0
+                        end
 						-- 曲率扩散默认开（1.0）：多节链的弯曲沿长度铺开，而不是塌到一个关节上。
 						tipData.bendBlend = options.bendBlend == nil and 1.0 or options.bendBlend
 						-- 分轴限位的**静止参考系**：右/上/前三个轴一次性在 goalQ 里算好。
@@ -2372,60 +2598,67 @@ function M.attach(S, unit, rig, options)
 	-- VRD driver 骨（QuatInterp）：解析"自身/父级/控制骨"三个节点 + 缓存 bind 姿态。
 	-- 逐根降级：缺任何一环就跳过那一根并记账，绝不影响弹簧链（它们是独立的节点集合）。
 	-- 与链缓存同理：同款护甲的第二个实例直接复用三个下标。
-	local drivers, skippedDrivers = {}, 0
+	local drivers, skippedDrivers, excludedWristDrivers = {}, 0, 0
 	if rig.drivers ~= nil and type(rig.drivers.bones) == "table" and #rig.drivers.bones > 0 then
 		local driverCacheKey = cacheKey and (cacheKey .. "|drv") or nil
 		local cachedDrivers = driverCacheKey and attachCache[driverCacheKey] or nil
 		for driverIndex = 1, #rig.drivers.bones do
 			local bone = rig.drivers.bones[driverIndex]
-			local node, parentNode, controlNode
-			local cachedRow = cachedDrivers ~= nil and cachedDrivers[driverIndex] or nil
-			if cachedRow ~= nil then
-				-- 抽查 driver 节点还在（同链缓存的抽查同款）：不在就整行重解析。
-				local okHas, has = pcall(function() return S.Unit.has_node(unit, id32(bone.name)) end)
-				if okHas and has == true then
-					node, parentNode, controlNode = cachedRow[1], cachedRow[2], cachedRow[3]
-				end
-			end
-			if node == nil then
-				node = resolveNode(bone.name)
-				if node ~= nil then
-					parentNode = resolveNode(bone.parentName)
-					controlNode = resolveNode(bone.controlName)
-				end
-			end
-			-- ⚠️ node 为 nil 时绝不能调 local_pose（对 nil 下标的引擎调用是原生 AV，pcall 拦不住）。
-			local okPose, pose = nil, nil
-			if node ~= nil then
-				okPose, pose = pcall(function() return S.Unit.local_pose(unit, node) end)
-			end
-			local snap = (okPose and pose ~= nil) and snapshot_pose(S, pose) or nil
-			local canonicalOk = rig.drivers.version ~= 3 or (type(bone.controlBindQ) == "table" and #bone.controlBindQ == 4)
-			if node == nil or parentNode == nil or controlNode == nil or snap == nil or not canonicalOk then
-				skippedDrivers = skippedDrivers + 1
+			-- Exclude before cache lookup, pose snapshots and any engine call: no
+			-- update or release row can ever take ownership of these wrist helpers.
+			if M.is_wrist_driver(bone) then
+				excludedWristDrivers = excludedWristDrivers + 1
 			else
-				snap.bindQ = { stored9_quaternion(snap.r) }
-				drivers[#drivers + 1] = {
-					name = bone.name,
-					node = node,
-					parentNode = parentNode,
-					controlNode = controlNode,
-					base = snap,
-					rules = bone.rules,
-					controlBindQ = bone.controlBindQ,
-					fadeOutside = rig.drivers.version == 3,
-					lastWritten = nil,
-				}
-				if driverCacheKey ~= nil then
-					if cachedDrivers == nil then
-						cachedDrivers = {}
-						attachCache[driverCacheKey] = cachedDrivers
+				local node, parentNode, controlNode
+				local cachedRow = cachedDrivers ~= nil and cachedDrivers[driverIndex] or nil
+				if cachedRow ~= nil then
+					-- 抽查 driver 节点还在（同链缓存的抽查同款）：不在就整行重解析。
+					local okHas, has = pcall(function() return S.Unit.has_node(unit, id32(bone.name)) end)
+					if okHas and has == true then
+						node, parentNode, controlNode = cachedRow[1], cachedRow[2], cachedRow[3]
 					end
-					cachedDrivers[driverIndex] = { node, parentNode, controlNode }
+				end
+				if node == nil then
+					node = resolveNode(bone.name)
+					if node ~= nil then
+						parentNode = resolveNode(bone.parentName)
+						controlNode = resolveNode(bone.controlName)
+					end
+				end
+				-- ⚠️ node 为 nil 时绝不能调 local_pose（对 nil 下标的引擎调用是原生 AV，pcall 拦不住）。
+				local okPose, pose = nil, nil
+				if node ~= nil then
+					okPose, pose = pcall(function() return S.Unit.local_pose(unit, node) end)
+				end
+				local snap = (okPose and pose ~= nil) and snapshot_pose(S, pose) or nil
+				local canonicalOk = rig.drivers.version ~= 3 or (type(bone.controlBindQ) == "table" and #bone.controlBindQ == 4)
+				if node == nil or parentNode == nil or controlNode == nil or snap == nil or not canonicalOk then
+					skippedDrivers = skippedDrivers + 1
+				else
+					snap.bindQ = { stored9_quaternion(snap.r) }
+					drivers[#drivers + 1] = {
+						name = bone.name,
+						node = node,
+						parentNode = parentNode,
+						controlNode = controlNode,
+						base = snap,
+						rules = bone.rules,
+						controlBindQ = bone.controlBindQ,
+						fadeOutside = rig.drivers.version == 3,
+						lastWritten = nil,
+					}
+					if driverCacheKey ~= nil then
+						if cachedDrivers == nil then
+							cachedDrivers = {}
+							attachCache[driverCacheKey] = cachedDrivers
+						end
+						cachedDrivers[driverIndex] = { node, parentNode, controlNode }
+					end
 				end
 			end
 		end
-		logger("[physbone] driver：可驱动 %d 根（缺节点/控制骨/bind %d）", #drivers, skippedDrivers)
+		logger("[physbone] driver：可驱动 %d 根（主动排除手腕 %d、缺节点/控制骨/bind %d）",
+			#drivers, excludedWristDrivers, skippedDrivers)
 	end
 
 	logger(string.format("[physbone] attach：可用链 %d 条（缺节点 %d、缺锚点 %d）",
@@ -2477,7 +2710,8 @@ function M.attach(S, unit, rig, options)
 		unit = unit,
 		rig = rig,
 		sessions = sessions,
-		drivers = drivers,          -- VRD QuatInterp driver 行（可空表）；update/release 同链一起处理
+		drivers = drivers,          -- VRD QuatInterp driver 行（不含手腕）；update/release 同链一起处理
+		excludedWristDrivers = excludedWristDrivers,
 		logger = logger,     -- update 也要能打日志（update 里没有 options）
 		nodeCount = nodeCount,          -- 生命周期闸：场景图节点数（仅用于漂移观测）
 		identityNode = identityNode,    -- 生命周期闸：抽样骨名 id（仅用于漂移观测）
@@ -2742,6 +2976,7 @@ function M.release(session)
 	-- 这时唯一正确的动作是**忘掉它**（弹簧数值清零，不碰引擎）。
 	if not M.unit_alive(S, unit) then
 		for _, item in ipairs(session.sessions) do
+            M.reset_linear_state(item.tip)
 			for index = 1, #item.springs do
 				local spring = item.springs[index]
 				spring.yaw, spring.pitch = 0, 0
@@ -2753,6 +2988,7 @@ function M.release(session)
 	end
 	local restored = 0
 	for _, item in ipairs(session.sessions) do
+        M.reset_linear_state(item.tip)
 		item.lastWritten = nil   -- 交还姿态后脏标记必须失效，否则下次驱动会以为"没变"而不写
 		for index = 1, #item.chain do
 			local base = item.basePoses[index]
@@ -2807,11 +3043,11 @@ end
 ---     = **每骨 2 次引擎调用**；
 ---   矩阵路径（默认/回退）：`Vector3` + `axis_angle` + `Vector3` + `from_quaternion_position` + `set_local_pose`
 ---     = 每骨 5 次。
---- 位置不需要写：我们从不改平移，`set_local_rotation` 会保留它。
+--- 无 base_spring 的骨仍只写旋转并保留平移；有该标志时用矩阵路径输出已求解的局部位置。
 --- </para>
-local function write_pose(S, unit, node, rotation, base)
+local function write_pose(S, unit, node, rotation, base, position)
 	local qx, qy, qz, qw = M.compose_bind_rotation(rotation, base)
-	if M._fastWrite == true then
+	if M._fastWrite == true and position == nil then
 		local q = S.Quaternion.from_elements(qx, qy, qz, qw)
 		if q == nil then return false end
 		S.Unit.set_local_rotation(unit, node, q)
@@ -2820,7 +3056,9 @@ local function write_pose(S, unit, node, rotation, base)
 	local ax,ay,az,angle=quaternion_axis_angle(qx,qy,qz,qw)
 	local q = S.Quaternion.axis_angle(S.Vector3(ax,ay,az), angle)
 	if q == nil then return false end
-	local pose = S.Matrix4x4.from_quaternion_position(q, S.Vector3(base.px, base.py, base.pz))
+    local px, py, pz = base.px, base.py, base.pz
+    if position ~= nil then px, py, pz = position[1], position[2], position[3] end
+	local pose = S.Matrix4x4.from_quaternion_position(q, S.Vector3(px, py, pz))
 	if pose == nil then return false end
 	S.Unit.set_local_pose(unit, node, pose)
 	return true
@@ -2921,11 +3159,13 @@ function M.probe_fast_write(S, logger)
 end
 
 --- 调试版：额外做 `is_valid` + `pose_sane` 回读校验。**只在 debugPoseCheck 打开时用**。
-local function write_pose_checked(S, unit, node, rotation, base)
+local function write_pose_checked(S, unit, node, rotation, base, position)
 	local ax,ay,az,angle=quaternion_axis_angle(M.compose_bind_rotation(rotation, base))
 	local q = S.Quaternion.axis_angle(S.Vector3(ax,ay,az), angle)
 	if q == nil then return false end
-	local pose = S.Matrix4x4.from_quaternion_position(q, S.Vector3(base.px, base.py, base.pz))
+    local px, py, pz = base.px, base.py, base.pz
+    if position ~= nil then px, py, pz = position[1], position[2], position[3] end
+	local pose = S.Matrix4x4.from_quaternion_position(q, S.Vector3(px, py, pz))
 	if pose == nil then return false end
 	if not S.Matrix4x4.is_valid(pose) then return false end
 	if not pose_sane(S, pose) then return false end
@@ -2940,7 +3180,7 @@ end
 --- 所以在这里把输入验掉就够了，等价但零引擎调用。
 --- 真正的回读校验保留在 `write_pose_checked`，`debugPoseCheck` 打开时使用。
 --- </para>
-local function rotation_sane(rotation, base)
+local function rotation_sane(rotation, base, position)
 	local angle = rotation[4]
 	if angle ~= angle or angle < 0 or angle > 6.2832 then return false end
 	local ax, ay, az = rotation[1], rotation[2], rotation[3]
@@ -2948,6 +3188,7 @@ local function rotation_sane(rotation, base)
 	local norm = ax * ax + ay * ay + az * az
 	if norm < 0.5 or norm > 1.5 then return false end       -- 轴必须接近单位长度
 	local px, py, pz = base.px, base.py, base.pz
+    if position ~= nil then px, py, pz = position[1], position[2], position[3] end
 	if px ~= px or py ~= py or pz ~= pz then return false end
 	if math.abs(px) > 1e4 or math.abs(py) > 1e4 or math.abs(pz) > 1e4 then return false end
 	return true
@@ -3145,6 +3386,8 @@ function M.update_tip(session, dt, maxWrite)
 		weight = session.remoteWriteWeight
 	end
 	epsilon = epsilon / weight
+    local positionEpsilon = (session.positionWriteEpsilon or 0.00005) / weight
+    local positionEpsilon2 = positionEpsilon * positionEpsilon
 	-- 保险：每 refreshEvery 帧无条件全量写一次。
 	-- 脏标记假设"我们上次写的姿态引擎会保留"——这条实测成立，但万一某条路径把节点重置了
 	-- （切 LOD / 引擎重算 bind），没有这次全量刷新就会永久停在错的位置上。
@@ -3233,7 +3476,8 @@ function M.update_tip(session, dt, maxWrite)
 				if lastQ ~= nil and (tip.maxSpeed2 or 0) < 1e-8
 					and (item.staticFrames or 0) < staticLimit then
 					local dx, dy, dz = apx - lastQ[1], apy - lastQ[2], apz - lastQ[3]
-					if (dx * dx + dy * dy + dz * dz) < motionEps2 then
+                    local itemMotionEps2 = tip.hasLinearDofs and math.min(motionEps2, positionEpsilon2) or motionEps2
+					if (dx * dx + dy * dy + dz * dz) < itemMotionEps2 then
 						local d = lastQ[4] * qx + lastQ[5] * qy + lastQ[6] * qz + lastQ[7] * qw
 						if d < 0 then d = -d end
 						if d > motionDot then static = true end
@@ -3259,6 +3503,7 @@ function M.update_tip(session, dt, maxWrite)
 				end
 				local tips = tip.tips
 				if jumped then
+                    M.reset_linear_state(tip)
 					for index = 1, #tips do tips[index].ready = false end
 					item.lastWritten = nil   -- 跳变后必须整条重写（否则脏标记会让我们以为"没变"）
 					item.jumps = (item.jumps or 0) + 1
@@ -3284,9 +3529,10 @@ function M.update_tip(session, dt, maxWrite)
 					if maxWrite and written >= maxWrite then break end
 					local base = basePoses[index]
 					local rotation = rotations[index]
+                    local position = tip.localPositions and tip.localPositions[index]
 					if base ~= nil and rotation ~= nil then
 						if rotation[4] > maxAngle then maxAngle = rotation[4] end
-						if rotation_sane(rotation, base) then
+						if rotation_sane(rotation, base, position) then
 							-- 和上次写进去的值比：几乎没变就跳过（引擎里那一份还在）。
 							-- 用两次比较代替 math.abs（省一次标准库 C 调用）。
 							local prev = lastWritten[index]
@@ -3298,16 +3544,24 @@ function M.update_tip(session, dt, maxWrite)
 										+ prev[3] * rotation[3]) > 0.99999
 								end
 							end
+                            if same and position ~= nil then
+                                if prev[5] == nil then same = false
+                                else
+                                    local dx, dy, dz = prev[5] - position[1], prev[6] - position[2], prev[7] - position[3]
+                                    same = dx * dx + dy * dy + dz * dz <= positionEpsilon2
+                                end
+                            end
 							if same then
 								skippedSame = skippedSame + 1
 							else
-								local okWrite, didWrite = pcall(writePose, S, unit, nodeIds[index], rotation, base)
+								local okWrite, didWrite = pcall(writePose, S, unit, nodeIds[index], rotation, base, position)
 								if okWrite and didWrite == true then
 									written = written + 1
-									calls = calls + perWrite
+									calls = calls + (position ~= nil and 5 or perWrite)
 									if prev == nil then prev = {}; lastWritten[index] = prev end
 									prev[1], prev[2], prev[3], prev[4] =
 										rotation[1], rotation[2], rotation[3], rotation[4]
+                                    if position ~= nil then prev[5], prev[6], prev[7] = position[1], position[2], position[3] end
 								else
 									session.skippedWrites = (session.skippedWrites or 0) + 1
 									if session.firstFailReason == nil then
@@ -3333,7 +3587,14 @@ function M.update_tip(session, dt, maxWrite)
 				local angleDeg = maxAngle * 180 / math.pi
 				if angleDeg > (item.maxAngleDeg or 0) then item.maxAngleDeg = angleDeg end
 				item.frames = (item.frames or 0) + 1
-				if angleDeg > 0.5 then item.lastMoveFrame = item.frames end
+                local linearMoving = (tip.maxBaseOffset or 0) > 0.00005
+                if not linearMoving and tip.hasFreeLength then
+                    for index = 1, #tip.tips do
+                        local span = tip.tips[index].span
+                        if span ~= nil and math.abs(span - tip.bones[index].gains.L) > 0.00005 then linearMoving = true break end
+                    end
+                end
+				if angleDeg > 0.5 or linearMoving then item.lastMoveFrame = item.frames end
 				if (item.frames - (item.lastMoveFrame or 0)) > 600 and not item.frozenLogged then
 					item.frozenLogged = true
 					logger("[physbone][G4] 连续 600 帧最大偏角只有 %.2f° ⇒ 求解器活着但冻结（查输入为 0 / 增益映射）",

@@ -233,6 +233,31 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
     end
     local performance=cfg.performance or {}
     local fixes=cfg.gripFixes or {}
+    -- TEST ONLY: opt-in repair lines, never alter the archived default policy.
+    local test=cfg.testRepairs
+    local contactEnabled=test and test.enabled and test.lines and test.lines.handContact
+    if test and test.enabled and test.beacon and test.beacon.enabled then
+        local b=test.beacon
+        assert(b.resource=='16f397ca5f51f271' and b.count==37,'beacon_resource_layout_required')
+        assert(b.linkNode and b.linkNode.index==9 and b.linkNode.name=='skeleton','beacon_link_node_required')
+        assert(finite(b.linkMetres) and b.linkMetres>0 and b.linkMetres<=.1,'beacon_link_distance')
+        assert(finite(b.linkDegrees) and b.linkDegrees>=0 and b.linkDegrees<=30,'beacon_link_angle')
+        for _,node in ipairs(b.probeNodes or {}) do
+            assert(finite(node.index) and node.index%1==0 and node.index>=0 and node.index<b.count,'beacon_probe_layout')
+        end
+    end
+    if contactEnabled then
+        assert(test.anchorKind=='knuckle-contact-proxy','test_contact_anchor_kind')
+        for _,side in ipairs({'left','right'}) do
+            local c=test.contacts[side]
+            assert(c and c.native and c.source,'test_contact_missing:'..side)
+            for _,v in ipairs({c.native,c.source}) do
+                assert(#v==3,'test_contact_vector')
+                local n=0;for i=1,3 do assert(finite(v[i]),'test_contact_nonfinite');n=n+v[i]*v[i] end
+                assert(n<=.04,'test_contact_out_of_range')
+            end
+        end
+    end
     local rightEnabled=cfg.rightGrip and cfg.rightGrip.enabled==true and cfg.rightAttachmentEnabled~=false
     if fixes.nativeSidearmAim then
         assert(cfg.rightGrip and #cfg.rightGrip.nodes==4 and #cfg.rightGrip.outputs==3,'right_output_contract_required')
@@ -269,10 +294,10 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         end
     end
     local self = {validation={},nodeValidation={},negativeResources={},leftIntent={},rightIntent={},pending={}, actors={}, observerActors={}, models={}, consumers={}, sequence=0, identities={},
-        monitored={},syncFrame=nil,lastSync=nil,fpHidden={},
+        monitored={},syncFrame=nil,lastSync=nil,fpHidden={},proximityEvidence={},lastAimProbe={},lastTrackingProbe={},lastBodyProbe={},lastLifecycleState={},observedAnimator={},
         lastScan=nil, lastLog=nil, lastStatus=nil, disabled=false, stopped=false, records=0,
         stats={writes=0, readbacks=0, restores=0, freshPreserved=0, skipped=0,mountSkipped=0,mountRollbacks=0,
-            modelRefreshes=0, consumerRefreshes=0, refreshErrors=0,
+            modelRefreshes=0, consumerRefreshes=0, refreshErrors=0,lifecycleBypasses=0,
             leftWrites=0,leftNodeWrites=0,leftRestores=0,leftFreshPreserved=0,leftSkipped=0,
             syncSamples=0,syncErrors=0,bodyNodeWrites=0,bodyRestores=0,bodyFreshPreserved=0,
             attachmentWrites=0,attachmentRestores=0,attachmentFreshPreserved=0,
@@ -280,6 +305,9 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
     local function emit(row, urgent)
         if self.records >= cfg.maxRecords and not urgent then return end
         row.variant = cfg.variant
+        if test and test.enabled then
+            row.testOnly=true;row.testVersion=test.version;row.detailedLog=cfg.logging and cfg.logging.detailed==true
+        end
         self.records = self.records + 1; logger(M.encodeDiagnostic(row,cfg.logging and cfg.logging.compact==true))
     end
     local function resource(u)
@@ -317,11 +345,11 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         for _, node in ipairs(spec.nodes) do
             local id = name_id(node.name)
             assert(U.has_node(u,id)==true and U.node(u,id)==node.index+1, 'node_identity:'..node.name)
-            if node.parent ~= nil and (spec.kind=='avatar' or spec.kind=='model') then
+            if node.parent ~= nil and (spec.kind=='avatar' or spec.kind=='model' or spec.verifiedComponent) then
                 local parent = U.scene_graph_parent(u,node.index+1)
                 -- B21 live captures show nil parents for externally linked model bones.
                 -- Their five world poses must still match one Avatar before any write.
-                local externalModelParent = spec.kind=='model' and parent==nil
+                local externalModelParent = (spec.kind=='model' or spec.verifiedComponent) and parent==nil
                 assert(externalModelParent or parent==node.parent+1, 'node_parent:'..node.name)
             end
         end
@@ -400,7 +428,26 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                     if visible(item.unit)~=false then
                         if performance.scopedRefresh and actor then
                             local root=matrix(item.unit,item.spec.root,true)
-                            if math.min(distance(root,right),distance(root,left))>(performance.refreshRadius or 1.5) then return end
+                            local radius=performance.refreshRadius or 1.5
+                            local nearest=math.min(distance(root,right),distance(root,left))
+                            if (test and test.sg225Parts and test.sg225Parts.enabled and item.spec.repairFamily=='SG225') or (test and test.reloadParts and test.reloadParts.enabled and item.spec.repairFamily=='HMG_LAS') then
+                                -- A component skeleton root can retain an old cache while
+                                -- its mesh is still next to the verified held equipment.
+                                for _,node in ipairs(item.spec.nodes) do
+                                    if node.name=='game_mesh' or (item.spec.repairFamily=='HMG_LAS' and (node.name=='root' or node.name=='boss' or node.name=='skeleton')) then
+                                        local mesh=matrix(item.unit,node.index,true)
+                                        local meshDistance=math.min(distance(mesh,right),distance(mesh,left))
+                                        if nearest>radius and meshDistance<=radius and not self.proximityEvidence[item.unit] then
+                                            self.proximityEvidence[item.unit]=true
+                                            emit({event='test_component_proximity',avatar=actor.id,resource=item.spec.resource,
+                                                rootWorld=root,meshWorld=mesh,rootDistance=nearest,meshDistance=meshDistance,alternateAnchor=node.name,
+                                                policy='verified_component_mesh_proximity_not_root_cache_only'})
+                                        end
+                                        nearest=math.min(nearest,meshDistance)
+                                    end
+                                end
+                            end
+                            if nearest>radius then return end
                         end
                         if item.spec.kind=='linked_item' then
                             local near=false
@@ -714,7 +761,7 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         if key=='rootToIKRight' then return cfg.weaponRight end
         return cfg.weaponForegripLeft
     end
-    local function solve_source_arm(actor,c,armAxes,gripPose)
+    local function solve_source_arm(actor,c,armAxes,gripPose,nativeHandReference,side)
         local function pose(m)
             return {p={m[10],m[11],m[12]},q=ArmMath.quaternion(rigid(m))}
         end
@@ -733,6 +780,21 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         local axes={p={0,0,0},q=ArmMath.quaternion(armAxes)}
         local inverseAxes=ArmMath.relative(axes,{p={0,0,0},q={0,0,0,1}})
         local desiredHand=ArmMath.compose(pose(gripPose),inverseAxes)
+        local contact
+        if contactEnabled and nativeHandReference then
+            local spec=test.contacts[side]
+            local reference=pose(rigid(nativeHandReference))
+            desiredHand.q=ArmMath.compose(reference,inverseAxes).q
+            local nativeOffset,sourceOffset={},{}
+            for i=1,3 do nativeOffset[i]=spec.native[i]*parentScale;sourceOffset[i]=spec.source[i]*parentScale end
+            local nr=ArmMath.rotate(reference.q,nativeOffset)
+            local sr=ArmMath.rotate(desiredHand.q,sourceOffset)
+            local target={};for i=1,3 do target[i]=reference.p[i]+nr[i];desiredHand.p[i]=target[i]-sr[i] end
+            contact={anchorKind=test.anchorKind,nativeReference=copy(nativeHandReference),
+                sourceOffset=sourceOffset,targetContact=target,orientationAuthority='rebased_native_post_ik_hand'}
+        end
+        local requested=copy(gripPose)
+        for j=1,3 do requested[j+9]=desiredHand.p[j] end
         desiredHand.referencePosition=hand.p
         local chain={upperCalibration={0,0,0,1},forearmCalibration={0,0,0,1},handCalibration={0,0,0,1},
             upperOffset={locals[3][10],locals[3][11],locals[3][12]},
@@ -741,15 +803,15 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         -- Match processor._apply_two_bone_ik's reachable interval and soft extension.
         -- Native contact is telemetry only: an unreachable target still extends the arm.
         local first,second=distance(worlds[2],worlds[3]),distance(worlds[3],worlds[4])
-        local actualDistance=distance(worlds[2],gripPose)
+        local actualDistance=distance(worlds[2],requested)
         local minimum,maximum=math.abs(first-second)+1e-7,first+second-1e-7
         local reach=math.max(minimum,math.min(maximum,actualDistance))
-        local soft=math.min(c.softDistance or 0,(maximum-minimum)*0.25)
+        local soft=contact and 0 or math.min(c.softDistance or 0,(maximum-minimum)*0.25)
         if soft>0 and actualDistance>maximum-soft then
             reach=maximum-soft*math.exp(-(actualDistance-(maximum-soft))/soft)
         end
         for j=1,3 do
-            local direction=actualDistance>1e-8 and (gripPose[j+9]-root.p[j])/actualDistance
+            local direction=actualDistance>1e-8 and (requested[j+9]-root.p[j])/actualDistance
                 or (mid.p[j]-root.p[j])/first
             desiredHand.p[j]=root.p[j]+direction*reach
         end
@@ -774,7 +836,18 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                     written=relative(worlds[i+1],expected),touched=false}
             else rows[i]={index=c.nodes[i+1].index,before=before,written=written,touched=false} end
         end
-        return {rows=rows,target=gripPose,expected=expected,before=worlds[4],reachResidual=residual}
+        if contact then
+            local after=compose(rigid(expected),{1,0,0,0,1,0,0,0,1,unpack(contact.sourceOffset)})
+            contact.afterContact={after[10],after[11],after[12]}
+            local error=0;for i=1,3 do error=error+(contact.afterContact[i]-contact.targetContact[i])^2 end
+            contact.contactResidual=math.sqrt(error)
+            local registered=compose(rigid(expected),armAxes)
+            contact.registeredHandAngle=angle(registered,nativeHandReference)
+        end
+        return {rows=rows,target=gripPose,expected=expected,before=worlds[4],reachResidual=residual,contact=contact,
+            reachDetails={requestedDistance=actualDistance,minimum=minimum,maximum=maximum,clampedDistance=reach,
+                constraint=actualDistance>maximum and 'too_far' or actualDistance<minimum and 'too_close' or 'reachable',
+                sourceParentWorld=worlds[1],sourceRootWorld=worlds[2],sourceMidWorld=worlds[3],referenceHandWorld=worlds[4],requestedHandWorld=requested}}
     end
     local function plan_left(actor,target,nativeBefore,nativeLeft,membership,attachmentSnapshots)
         local c=cfg.leftGrip
@@ -861,6 +934,7 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                 end
             end
         end
+        local nativeGripReference
         local intent=c.intent
         if intent and intent.enabled then
             -- A TESTED pose-intent proxy, not a claim of reading engine ADS/reload flags.
@@ -877,6 +951,7 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
             end
             if not nativeMount then return nil,'native_intent_mount_unavailable' end
             local nativeGrip=compose(nativeMount,relative(linkPose,gripPose))
+            nativeGripReference=nativeGrip
             local separation=distance(nativeLeft,nativeGrip)
             local sidearm=c.weaponTargets[weapon.spec.resource].leftPolicy=='aim_only'
             local enter=sidearm and intent.sidearmEnterMetres or intent.primaryEnterMetres
@@ -893,7 +968,10 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         local oldGrip=compose(nativeBefore,weapon_static(weapon.spec.resource,'rootToIKLeft'))
         local contact=distance(nativeLeft,oldGrip)
         local inContact=contact<=c.contactMetres and angle(nativeLeft,oldGrip)<=c.contactDegrees
-        local result=solve_source_arm(actor,c,cfg.leftAxes,gripPose)
+        -- Rebase the untouched native hand onto the already corrected live gun.
+        -- Copying native hand position directly would chase the pre-B23 gun path.
+        local rebased=contactEnabled and compose(gripPose,relative(nativeGripReference or oldGrip,nativeLeft)) or nil
+        local result=solve_source_arm(actor,c,cfg.leftAxes,gripPose,rebased,'left')
         result.nativeContactDistance=contact;result.nativeInContact=inContact;result.weapon=weapon.id
         result.weaponResource=weapon.spec.resource;result.link=weapons[1].link
         result.gripResource=gripItem.spec.resource;result.gripKind=gripKind
@@ -942,7 +1020,7 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
             return parents[index]
         end
         for _,row in ipairs(rows) do
-            if (row.spec.native.name=='l_hand' or row.spec.native.name=='l_elbow')==leftPhase then
+            if not row.preserveNative and (row.spec.native.name=='l_hand' or row.spec.native.name=='l_elbow')==leftPhase then
                 local source=source_pose(row.spec.source.index)
                 local destination=compose(row.spec.sourceMount and source or compose(source,row.spec.axes),row.offset)
                 local desired=copy(row.basis)
@@ -1025,14 +1103,16 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                 local id=item.spec.resource
                 if item.world==actor.world and present(item,membership)
                     and (id=='8d3d52a3b2f19402' or id=='b96cc3b704a76464' or id=='4851d75853622a47'
-                        or (c.resources and c.resources[id])) then
+                        or (c.resources and c.resources[id]) or (cfg.logging and cfg.logging.detailed and cfg.allowedConsumers[id])) then
                     identity(item)
                     local root=matrix(item.unit,item.spec.root,true)
-                    if distance(root,hands.currentMount)<cfg.consumerRadius then
+                    local rootDistance=distance(root,hands.currentMount)
+                    local familyProbe=(test and test.sg225Parts and test.sg225Parts.enabled and item.spec.repairFamily=='SG225') or (test and test.reloadParts and test.reloadParts.enabled and item.spec.repairFamily=='HMG_LAS')
+                    if rootDistance<cfg.consumerRadius or familyProbe then
                         local nodes={};local ncount=U.num_scene_graph_items(item.unit)
                         for _,name in ipairs({'skeleton','root','IK_right','IK_left','game_mesh','g_body',
                             'boss','attach_underbarrel','attach_optic','attach_offset',
-                            'cylinder_swivel','cylinder','attach_mag','eject_rod','attach_ammo','attach_muzzle'}) do
+                            'cylinder_swivel','cylinder','attach_mag','bullet_01','shells_drum','spindle','follower','shell_breach','g_mag','mag_compartment','magazine_tilt','belt_01','belt_08','eject_rod','attach_ammo','attach_muzzle'}) do
                             local h=name_id(name)
                             if U.has_node(item.unit,h)==true then
                                 local n=U.node(item.unit,h);assert(n>=1 and n<=ncount,'probe_index')
@@ -1043,7 +1123,7 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                             end
                         end
                         parts[#parts+1]={resource=id,instance=item.id,count=ncount,kind=item.spec.kind,
-                            owner='unverified',nodes=nodes}
+                            owner='unverified',nodes=nodes,rootDistanceToMount=rootDistance,repairFamily=item.spec.repairFamily}
                     end
                 end
             end
@@ -1058,8 +1138,46 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         end)
         if not ok then emit({event='sidearm_probe_unavailable',frame=frame,phase=phase,reason=tostring(why)}) end
     end
+    -- Keep the native beacon path authoritative: moving only the mesh/mount
+    -- cannot move particle emitters already evaluated by the game. Never write
+    -- beacon Unit/FX/projectile poses; only the custom hand follows its owner.
+    local function held_beacon_target(actor,native,membership)
+        local policy=test and test.enabled and test.beacon
+        if not (policy and policy.enabled and rightEnabled) then return nil end
+        local matches={}
+        for _,item in ipairs(self.consumers) do
+            if item.spec.resource==policy.resource and item.world==actor.world and present(item,membership) then
+                local ok,row=pcall(function()
+                    identity(item)
+                    if visible(item.unit)==false then return end
+                    local root=matrix(item.unit,policy.linkNode.index,true)
+                    local mount=native;local link='attach_hand_r'
+                    for _,a in ipairs(cfg.attachments) do
+                        if a.node.name=='attach_weapon' then
+                            local other=matrix(actor.unit,a.node.index,true)
+                            if distance(root,other)<distance(root,mount) then mount=other;link=a.node.name end
+                        end
+                    end
+                    if distance(root,mount)>policy.linkMetres or angle(root,mount)>policy.linkDegrees then return end
+                    local hand=matrix(actor.unit,cfg.nativeRight.index,true)
+                    return {desired=copy(native),resource=policy.resource,hand=hand,nativeHandReference=hand,
+                        nativeFollow=true,nativeAim=false,preserveNativeMount=true,heldItemType='stratagem_beacon',
+                        nativeLink=link,beacon=item,policy='held_beacon_native_path_custom_hand_only'}
+                end)
+                if ok and row then matches[#matches+1]=row end
+            end
+        end
+        if #matches==1 then return matches[1] end
+        if #matches>1 then
+            return {desired=copy(native),resource=policy.resource,nativeFollow=false,preserveNativeMount=true,
+                heldItemType='stratagem_beacon',policy='ambiguous_beacon_preserve_native_no_hand_writer'}
+        end
+        return nil
+    end
     local function sidearm_target(actor,native,equivalent,membership)
         if cfg.rightAttachmentEnabled==false or not fixes.sidearmRightIK then return nil end
+        local beacon=held_beacon_target(actor,native,membership)
+        if beacon then return beacon end
         local candidates={}
         for _,item in ipairs(self.consumers) do
             local isSidearm=fixes.sidearms and fixes.sidearms[item.spec.resource]
@@ -1101,7 +1219,7 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                                     for i=10,12 do desired[i]=native[i]+equivalent[i]-projected[i] end
                                 end
                                 return {desired=desired,resource=item.spec.resource,
-                                    hand=follow and projected or copy(equivalent),nativeAim=aim,nativeFollow=follow,
+                                    hand=follow and projected or copy(equivalent),nativeHandReference=contactEnabled and matrix(actor.unit,cfg.nativeRight.index,true) or nil,nativeAim=aim,nativeFollow=follow,
                                     nativeContactDistance=separation,
                                     policy=follow and 'preserve_native_held_path_sync_source_right_arm' or 'live_right_ik_to_registered_hand'}
                             end
@@ -1117,6 +1235,279 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         end
         self.rightIntent[actor.unit]=nil
         return nil
+    end
+    local function test_trace(actor,membership,stage,frame,now,diagnostic)
+        if not (test and test.enabled and cfg.logging and cfg.logging.detailed and diagnostic) then return end
+        local hands={};for _,key in ipairs({'nativeRight','nativeLeft','sourceRight','sourceLeft','originalMount','target'}) do
+            local node=cfg[key];if node then hands[key]={world=matrix(actor.unit,node.index,true),localPose=matrix(actor.unit,node.index,false)} end
+        end
+        local probes={};for _,node in ipairs(test.poseProbes or {}) do
+            verify_node(actor.unit,node,false)
+            probes[node.name]={world=matrix(actor.unit,node.index,true),localPose=matrix(actor.unit,node.index,false)}
+        end
+        local models={};for _,item in ipairs(self.models) do
+            if item.world==actor.world and present(item,membership) and self.modelOwners[item.unit]==actor.unit then
+                local poses={};for _,node in ipairs(item.spec.observeNodes or item.spec.nodes) do
+                    if node.name:match('_hand$') or node.name:match('_elbow$') then poses[node.name]={world=matrix(item.unit,node.index,true),localPose=matrix(item.unit,node.index,false)} end
+                end
+                -- Physics drivers run on armor Units, not this Avatar's aux bones.
+                for _,node in ipairs(item.spec.testWristProbes or {}) do
+                    assert(node.index>=0 and node.index<item.spec.count,'model_wrist_probe_index')
+                    poses[node.name]={world=matrix(item.unit,node.index,true),localPose=matrix(item.unit,node.index,false)}
+                end
+                models[#models+1]={resource=item.spec.resource,instance=item.id,poses=poses}
+            end
+        end
+        local policy=test.beacon
+        if policy and policy.enabled then
+            for _,item in ipairs(self.consumers) do
+                if item.spec.resource==policy.resource and item.world==actor.world and present(item,membership) then
+                    identity(item)
+                    local root=matrix(item.unit,policy.linkNode.index,true)
+                    if distance(root,hands.originalMount.world)<=cfg.consumerRadius then
+                        local nodes={}
+                        for _,node in ipairs(policy.probeNodes) do
+                            assert(node.index>=0 and node.index<item.spec.count,'beacon_probe_index')
+                            nodes[#nodes+1]={index=node.index,name=node.name,hash=node.hash,
+                                world=matrix(item.unit,node.index,true),localPose=matrix(item.unit,node.index,false)}
+                        end
+                        emit({event='test_beacon_probe',frame=frame,time=now,avatar=actor.id,stage=stage,
+                            resource=policy.resource,instance=item.id,nativeMount=hands.originalMount.world,
+                            actualMount=hands.target.world,sourceHand=hands.sourceRight.world,nodes=nodes,
+                            effectsStateObserved=false,auxiliaryNodeSemanticsVerified=false})
+                    end
+                end
+            end
+        end
+        emit({event='test_pose_trace',frame=frame,time=now,avatar=actor.id,stage=stage,
+            hands=hands,probes=probes,models=models,skinMatricesObserved=false,driverStateObserved=false})
+    end
+    -- TEST ONLY: independent live gun-frame and rendered-model node telemetry.
+    -- No offset learning, links, setters, or inference about GPU/palm surfaces.
+    local function grip_tracking_probe(actor,membership,stage,frame,now)
+        local policy=test and test.gripTracking
+        if not (policy and policy.enabled and cfg.logging and cfg.logging.detailed) then return end
+        if not present(actor,membership) then return end
+        local states=self.lastTrackingProbe[actor.unit] or {};self.lastTrackingProbe[actor.unit]=states
+        local last=states[stage]
+        if last and now>=last and now-last<(policy.intervalSeconds or .10) then return end
+        states[stage]=now
+        local ok,why=pcall(function()
+            identity(actor)
+            local mount=matrix(actor.unit,cfg.target.index,true)
+            local candidates={}
+            for _,item in ipairs(self.consumers) do
+                if policy.resources[item.spec.resource] and item.world==actor.world and present(item,membership) then
+                    identity(item)
+                    if visible(item.unit)~=false then
+                        local spec=cfg.leftGrip.weaponTargets[item.spec.resource]
+                        for _,name in ipairs(spec and spec.linkNodes or {}) do
+                            local id=name_id(name)
+                            if U.has_node(item.unit,id)==true then
+                                local link=matrix(item.unit,U.node(item.unit,id)-1,true)
+                                if distance(link,mount)<=cfg.leftGrip.linkMetres and angle(link,mount)<=cfg.leftGrip.linkDegrees then
+                                    candidates[#candidates+1]={item=item,link=link,linkName=name};break
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+            if #candidates~=1 then
+                emit({event='test_grip_tracking_probe',frame=frame,time=now,stage=stage,avatar=actor.id,
+                    status=#candidates==0 and 'no_verified_p40k_link' or 'ambiguous_p40k_link',
+                    candidates=#candidates,readOnly=true,poseWritten=false,skinMatricesObserved=false})
+                return
+            end
+            local selected=candidates[1];local item=selected.item
+            local marker=name_id('IK_right');assert(U.has_node(item.unit,marker)==true,'tracking_right_marker_missing')
+            local grip=matrix(item.unit,U.node(item.unit,marker)-1,true)
+            local source=matrix(actor.unit,cfg.sourceRight.index,true)
+            local native=matrix(actor.unit,cfg.nativeRight.index,true)
+            local actorNodes={}
+            for key,node in pairs(policy.actorNodes or {}) do
+                verify_node(actor.unit,node,false)
+                actorNodes[key]={world=matrix(actor.unit,node.index,true),localPose=matrix(actor.unit,node.index,false)}
+            end
+            local models={}
+            for _,model in ipairs(self.models) do
+                if model.world==actor.world and present(model,membership) and self.modelOwners[model.unit]==actor.unit then
+                    identity(model)
+                    local poses={}
+                    for _,node in ipairs(model.spec.testGripProbes or {}) do
+                        verify_node(model.unit,node,false)
+                        poses[node.name]={world=matrix(model.unit,node.index,true),localPose=matrix(model.unit,node.index,false)}
+                    end
+                    models[#models+1]={resource=model.spec.resource,instance=model.id,poses=poses}
+                end
+            end
+            local camera,cameraReason
+            if type(W.debug_camera_pose)=='function' and sceneContext and type(sceneContext.world)=='function' then
+                local cok,value=pcall(function()
+                    local world=sceneContext.world();if not world or world~=actor.world then return nil end
+                    local m={X.to_elements(W.debug_camera_pose(world))};assert(#m==12,'tracking_camera_matrix')
+                    for _,v in ipairs(m)do assert(finite(v),'tracking_camera_nonfinite')end
+                    return m
+                end)
+                if cok then camera=value else cameraReason=tostring(value) end
+            else cameraReason='main_view_camera_api_unavailable' end
+            local contacts={}
+            for _,side in ipairs({'source','native'}) do
+                local index=actorNodes[side..'IndexBase'];local middle=actorNodes[side..'MiddleBase']
+                if index and middle then
+                    local point={1,0,0,0,1,0,0,0,1,0,0,0}
+                    for j=10,12 do point[j]=(index.world[j]+middle.world[j])*.5 end
+                    contacts[side]={world={point[10],point[11],point[12]},inGrip=relative(grip,point),
+                        kind='live_index_middle_base_midpoint_not_palm_surface'}
+                end
+            end
+            emit({event='test_grip_tracking_probe',frame=frame,time=now,stage=stage,avatar=actor.id,
+                status='verified_p40k_link',resource=item.spec.resource,weaponInstance=item.id,
+                linkName=selected.linkName,linkWorld=selected.link,gripWorld=grip,mountWorld=mount,
+                sourceWristInGrip=relative(grip,source),nativeWristInGrip=relative(grip,native),
+                sourceHand=source,nativeHand=native,actorNodes=actorNodes,models=models,liveSkeletonContacts=contacts,
+                cameraWorld=camera,cameraUnavailable=cameraReason,
+                readOnly=true,poseWritten=false,skinMatricesObserved=false,driverStateObserved=false,
+                positionAuthority='observed_live_ik_right_not_internal_contact_target'})
+        end)
+        if not ok then emit({event='test_grip_tracking_probe_error',frame=frame,time=now,stage=stage,
+            avatar=actor.id,reason=tostring(why),readOnly=true,poseWritten=false}) end
+    end
+    local function aim_sync_probe(actor,frame,now)
+        local policy=test and test.aimDiagnostics
+        if not (policy and policy.enabled) then return end
+        local last=self.lastAimProbe[actor.unit]
+        if last and now>=last and now-last<(policy.intervalSeconds or .05) then return end
+        self.lastAimProbe[actor.unit]=now
+        local poses={}
+        for key,node in pairs(test.aimNodes or {}) do
+            verify_node(actor.unit,node,false)
+            poses[key]={world=matrix(actor.unit,node.index,true),localPose=matrix(actor.unit,node.index,false)}
+        end
+        local camera,cameraReason
+        if type(W.debug_camera_pose)=='function' and sceneContext and type(sceneContext.world)=='function' then
+            local ok,value=pcall(function()
+                local world=sceneContext.world();if not world then return nil end
+                local m={X.to_elements(W.debug_camera_pose(world))}
+                assert(#m==12,'aim_camera_matrix')
+                for _,v in ipairs(m)do assert(finite(v),'aim_camera_nonfinite')end
+                return m
+            end)
+            if ok then camera=value else cameraReason=tostring(value) end
+        else cameraReason='main_view_camera_api_unavailable' end
+        emit({event='test_aim_sync_probe',frame=frame,time=now,avatar=actor.id,
+            phase='final_after_apply',cameraWorld=camera,cameraUnavailable=cameraReason,
+            poses=poses,nativeRightHand=matrix(actor.unit,cfg.nativeRight.index,true),
+            nativeLeftHand=matrix(actor.unit,cfg.nativeLeft.index,true),
+            sourceRightHand=matrix(actor.unit,cfg.sourceRight.index,true),
+            sourceLeftHand=matrix(actor.unit,cfg.sourceLeft.index,true),readOnly=true})
+    end
+    -- TEST ONLY lifecycle evidence. Presence of an FSM is not proof that a
+    -- temporary ragdoll is inactive; never invent unsupported ragdoll APIs.
+    local function lifecycle_state(actor)
+        local policy=test and test.bodyDiagnostics
+        local state={writeAllowed=true,reason='lifecycle_gate_disabled'}
+        if not (policy and policy.enabled) then return state end
+        state.reason='animation_state_api_unavailable'
+        if type(U.has_animation_state_machine)=='function' then
+            local ok,value=pcall(U.has_animation_state_machine,actor.unit)
+            if ok and type(value)=='boolean' then
+                state.stateMachinePresent=value
+                if value then self.observedAnimator[actor.unit]=actor.id end
+                local observed=self.observedAnimator[actor.unit]==actor.id
+                state.observedPresentForThisActor=observed
+                state.reason=value and 'state_machine_present_not_ragdoll_proof'
+                    or observed and 'animation_state_machine_lost_after_observed_present'
+                    or 'no_state_machine_without_active_baseline_unverified'
+                if value==false and observed and policy.bypassNoAnimationStateMachine then state.writeAllowed=false end
+            else state.reason='animation_state_query_unknown' end
+        end
+        return state
+    end
+    local function body_lifecycle_probe(actor,membership,stage,frame,now)
+        local policy=test and test.bodyDiagnostics
+        if not (policy and policy.enabled and cfg.logging and cfg.logging.detailed) then return end
+        if not present(actor,membership) then return end
+        local states=self.lastBodyProbe[actor.unit] or {};self.lastBodyProbe[actor.unit]=states
+        local last=states[stage]
+        if last and now>=last and now-last<(policy.intervalSeconds or .25) then return end
+        states[stage]=now
+        local ok,why=pcall(function()
+            identity(actor)
+            local state=lifecycle_state(actor)
+            if type(U.animation_bone_mode)=='function' then
+                local mok,mode=pcall(U.animation_bone_mode,actor.unit)
+                if mok and type(mode)=='string' then state.animationBoneMode=mode else state.boneModeReason='query_unknown' end
+            else state.boneModeReason='api_unavailable' end
+            local poses={}
+            local function read(u,node)
+                local ok,result=pcall(function()
+                verify_node(u,node,false)
+                local world=matrix(u,node.index,true);local localPose=matrix(u,node.index,false)
+                local _,ws=rigid(world);local _,ls=rigid(localPose)
+                local result={world=world,localPose=localPose,worldScale=ws,localScale=ls}
+                if u==actor.unit and node.parent and node.parent>=0 then
+                    local parent=matrix(u,node.parent,true);local predicted=compose(parent,localPose)
+                    result.restParentWorld=parent
+                    result.worldVsRestParentFkDistance=distance(world,predicted)
+                    result.worldVsRestParentFkMatrixError=difference(world,predicted)
+                    result.parentInterpretation='verified_export_parent_not_ragdoll_controller_state'
+                end
+                return result
+                end)
+                if ok then return result end
+                return {unavailableReason=tostring(result),nodeIndex=node.index,name=node.name}
+            end
+            local nativeOnly=actor.spec.kind=='native_observer'
+            state.sourceWriterRigAuthorized=not nativeOnly
+            if nativeOnly then state.writeAllowed=false end
+            for _,pair in ipairs(policy.pairs or {}) do
+                poses[pair.name]={native=read(actor.unit,pair.native)}
+                if not nativeOnly then
+                    poses[pair.name].source=read(actor.unit,pair.source)
+                    if pair.reference then poses[pair.name].sourceReference=read(actor.unit,pair.reference) end
+                end
+            end
+            local models={};local includeSkin=false
+            for _,tag in ipairs(policy.skinStages or {}) do if tag==stage then includeSkin=true end end
+            local orphanCount=0
+            for _,model in ipairs(self.models) do
+                local owned=self.modelOwners[model.unit]==actor.unit
+                local orphan=nativeOnly and not self.modelOwners[model.unit] and orphanCount<(policy.maxUnownedModels or 6)
+                if includeSkin and model.world==actor.world and present(model,membership) and (owned or orphan) then
+                    identity(model)
+                    local nearby=true
+                    if orphan then
+                        local anchor=poses.hips and poses.hips.native.world or matrix(actor.unit,cfg.nativeRight.index,true)
+                        local rok,root=pcall(matrix,model.unit,0,true)
+                        if rok then nearby=distance(root,anchor)<=(policy.unownedProbeRadius or 4)
+                        else
+                            nearby=false;orphanCount=orphanCount+1
+                            models[#models+1]={resource=model.spec.resource,instance=model.id,
+                                ownership='unowned_root_pose_unavailable_not_matched',unavailableReason=tostring(root)}
+                        end
+                    end
+                    if nearby then
+                    if orphan then orphanCount=orphanCount+1 end
+                    local weighted={}
+                    for _,node in ipairs(model.spec.testSkinProbes or {}) do
+                        weighted[node.name]=read(model.unit,node)
+                        weighted[node.name].weightedVertices=node.weightedVertices
+                        weighted[node.name].avatarSameHashAvailable=node.avatarSameHashAvailable
+                        weighted[node.name].kind=node.kind
+                    end
+                    models[#models+1]={resource=model.spec.resource,instance=model.id,weightedBonePoses=weighted,
+                        ownership=owned and 'existing_pose_match' or 'unverified_near_native_observer_read_only'}
+                    end
+                end
+            end
+            emit({event='test_body_lifecycle_probe',frame=frame,time=now,avatar=actor.id,stage=stage,
+                lifecycle=state,poses=poses,models=models,nativeOnlyObserver=nativeOnly,weightedModelsCaptured=includeSkin,readOnly=true,posesWritten=false,
+                skinMatricesObserved=false,ragdollStateDirectlyObserved=false,
+                note='CPU bone graph and drawn-triangle weighted-node poses, not live GPU palette'})
+        end)
+        if not ok then emit({event='test_body_lifecycle_probe_error',frame=frame,time=now,avatar=actor.id,stage=stage,
+            reason=tostring(why),readOnly=true,posesWritten=false}) end
     end
     local function apply(actor, model, membership, frame, now, diagnostic)
         local record, rangeFailure
@@ -1141,6 +1532,8 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         local ok, why=pcall(function()
             identity(actor);identity(model)
             probe_sidearm(actor,membership,'before_write',frame,now,'lua')
+            test_trace(actor,membership,'before_write',frame,now,diagnostic)
+            body_lifecycle_probe(actor,membership,'before_write',frame,now)
             assert(visible(model.unit),'model_hidden_before_write')
             local u=actor.unit
             local original=matrix(u,cfg.originalMount.index,false)
@@ -1185,6 +1578,7 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                     mode=cfg.bodySync.mode,outputs=#record.body,nativeLocalsWritten=false,
                     positionPolicy='source_chain_animated_offsets'}) end
             end
+            body_lifecycle_probe(actor,membership,'after_body_sync',frame,now)
             local native=matrix(u,cfg.target.index,true)
             local nativeLeftBefore=leftEnabled and matrix(u,cfg.nativeLeft.index,true) or nil
             local source=matrix(u,cfg.sourceRight.index,true)
@@ -1192,6 +1586,11 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
             local equivalent=compose(rigid(source),cfg.rightAxes)
             -- Capture the live right-IK offset before modifying any hand mount.
             local sidearm=sidearm_target(actor,native,equivalent,membership)
+            if sidearm and sidearm.preserveNativeMount then
+                for _,row in ipairs(record.attachments) do
+                    if row.spec.native.name=='r_hand' then row.preserveNative=true end
+                end
+            end
             for _,node in ipairs(cfg.protected) do
                 record.protected[#record.protected+1]={node=node,localPose=matrix(u,node.index,false),
                     worldPose=node.world and matrix(u,node.index,true) or nil}
@@ -1199,8 +1598,9 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
             if sidearm and sidearm.nativeFollow then
                 for _,node in ipairs(cfg.rightGrip.nodes) do verify_node(u,node,true) end
                 for _,node in ipairs(cfg.rightGrip.outputs) do verify_node(u,node,true) end
-                local solved=solve_source_arm(actor,cfg.rightGrip,cfg.rightAxes,sidearm.hand)
+                local solved=solve_source_arm(actor,cfg.rightGrip,cfg.rightAxes,sidearm.hand,sidearm.nativeHandReference,'right')
                 record.right=solved.rows
+                record.rightContact=solved.contact
                 for _,row in ipairs(record.right) do
                     row.touched=true;U.set_local_pose(u,row.index+1,X.from_elements(unpack(row.written)))
                     assert(difference(matrix(u,row.index,false),row.written)<=cfg.localTolerance,'right_local_readback')
@@ -1210,14 +1610,15 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                 assert(difference(matrix(u,cfg.sourceRight.index,true),solved.expected)<=cfg.worldTolerance,'right_world_readback')
                 self.stats.rightWrites=self.stats.rightWrites+1
                 source=matrix(u,cfg.sourceRight.index,true);equivalent=compose(rigid(source),cfg.rightAxes)
+                test_trace(actor,membership,'after_right_ik',frame,now,diagnostic)
                 -- Opt-in P-92 contact fix: the existing rotation-only solver cannot
                 -- lengthen Source arms. Translate the existing native hand mount by
                 -- only the endpoint residual; never write gun/part locals or aim axes.
-                if fixes.reachableRightIK and fixes.reachableRightIK[sidearm.resource]
-                    and distance(source,sidearm.hand)>cfg.worldTolerance then
+                if not sidearm.preserveNativeMount and ((not contactEnabled and fixes.reachableRightIK and fixes.reachableRightIK[sidearm.resource]) or (contactEnabled and solved.contact and solved.contact.contactResidual<=test.maxReachCorrection))
+                    and ((solved.contact and solved.contact.contactResidual>cfg.worldTolerance) or (not solved.contact and distance(source,sidearm.hand)>cfg.worldTolerance)) then
                     sidearm.reachCorrection={}
                     for j=10,12 do
-                        local delta=source[j]-sidearm.hand[j]
+                        local delta=solved.contact and (solved.contact.afterContact[j-9]-solved.contact.targetContact[j-9]) or (source[j]-sidearm.hand[j])
                         sidearm.desired[j]=sidearm.desired[j]+delta
                         sidearm.reachCorrection[j-9]=delta
                     end
@@ -1228,7 +1629,7 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                     target=sidearm.hand,sourceBefore=solved.before,sourceAfter=source,
                     reachResidual=solved.reachResidual,nativeLocalsWritten=false,
                     outputMode='unanimated_reference_children',nativeAimMountPreserved=not sidearm.reachCorrection,
-                    reachCorrection=sidearm.reachCorrection}) end
+                    reachCorrection=sidearm.reachCorrection,contact=solved.contact,reachDetails=solved.reachDetails,preserveNativeMount=sidearm.preserveNativeMount,heldItemType=sidearm.heldItemType}) end
             end
             local reference=compose(equivalent,original)
             if cfg.sourceRightMount then
@@ -1268,9 +1669,15 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
             refresh_models(actor.world,membership,actor)
             refresh_consumers(actor.world,membership,actor)
             probe_sidearm(actor,membership,'after_mount_refresh',frame,now,'lua')
+            test_trace(actor,membership,'after_mount_refresh',frame,now,diagnostic)
             local leftResult,leftReason
             if leftEnabled then
-                local planned,result,reason=pcall(plan_left,actor,desired,native,nativeLeftBefore,membership,record.attachments)
+                local planned,result,reason
+                if sidearm and sidearm.preserveNativeMount then
+                    planned=true;reason='held_beacon_no_weapon_left_ik'
+                else
+                    planned,result,reason=pcall(plan_left,actor,desired,native,nativeLeftBefore,membership,record.attachments)
+                end
                 if planned then leftResult,leftReason=result,reason else leftReason=tostring(result) end
                 if leftResult then
                     record.left=leftResult.rows
@@ -1288,19 +1695,21 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                     end
                     local actualLeft=matrix(u,cfg.sourceLeft.index,true)
                     assert(difference(actualLeft,leftResult.expected)<=cfg.worldTolerance,'left_world_readback')
+                    test_trace(actor,membership,'after_left_ik',frame,now,diagnostic)
                     self.stats.leftWrites=self.stats.leftWrites+1
                     sourceLeft=compose(rigid(actualLeft),cfg.leftAxes)
                     if diagnostic then emit({event='left_applied',frame=frame,time=now,avatar=actor.id,
                         weapon=leftResult.weapon,weaponResource=leftResult.weaponResource,owner='unverified',
                         link=leftResult.link,
-                        mode='existing_two_bone_solver',nativeContactDistance=leftResult.nativeContactDistance,
+                        mode='existing_two_bone_solver',nativeContactDistance=leftResult.nativeContactDistance,contact=leftResult.contact,reachDetails=leftResult.reachDetails,
                         intent=self.leftIntent[actor.unit],gripResource=leftResult.gripResource,gripKind=leftResult.gripKind,
                         outputMode=cfg.leftGrip.outputs and 'unanimated_reference_children' or 'animated_source_nodes',
                         nativeInContact=leftResult.nativeInContact,requireNativeContact=false,
-                        reachPolicy=cfg.leftGrip.reachPolicy,softDistance=cfg.leftGrip.softDistance,
+                        reachPolicy=cfg.leftGrip.reachPolicy,softDistance=leftResult.contact and 0 or cfg.leftGrip.softDistance,
                         beforeDistance=distance(leftResult.before,leftResult.target),
                         afterDistance=distance(actualLeft,leftResult.target),
-                        afterAngleDegrees=angle(sourceLeft,leftResult.target),reachResidual=leftResult.reachResidual,
+                        afterAngleDegrees=leftResult.contact and leftResult.contact.registeredHandAngle or angle(sourceLeft,leftResult.target),
+                        angleReference=leftResult.contact and 'rebased_native_hand' or 'weapon_marker',reachResidual=leftResult.reachResidual,
                         target=leftResult.target,sourceBefore=leftResult.before,sourceAfter=actualLeft}) end
                 else
                     self.stats.leftSkipped=self.stats.leftSkipped+1
@@ -1329,6 +1738,29 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
             end
             self.stats.readbacks=self.stats.readbacks+1
             probe_sidearm(actor,membership,'final_output',frame,now,'lua')
+            if diagnostic and test and test.enabled and (record.rightContact or (leftResult and leftResult.contact)) then
+                local results={}
+                local function final_contact(side,c,shift)
+                    local source=matrix(u,cfg[side=='right' and 'sourceRight' or 'sourceLeft'].index,true)
+                    local actualContact=compose(rigid(source),{1,0,0,0,1,0,0,0,1,unpack(c.sourceOffset)})
+                    local target=copy(c.targetContact)
+                    if shift then for j=1,3 do target[j]=target[j]+shift[j] end end
+                    local d=0;for j=1,3 do d=d+(actualContact[j+9]-target[j])^2 end
+                    results[side]={targetContact=target,actualContact={actualContact[10],actualContact[11],actualContact[12]},
+                        finalResidual=math.sqrt(d),beforeCompensationResidual=c.contactResidual,nativeMountShift=shift}
+                end
+                if record.rightContact then
+                    local shift={};for j=1,3 do shift[j]=actual[j+9]-native[j+9] end
+                    final_contact('right',record.rightContact,shift)
+                end
+                if leftResult and leftResult.contact then final_contact('left',leftResult.contact,nil) end
+                emit({event='test_final_contacts',frame=frame,time=now,avatar=actor.id,results=results,
+                    anchorKind=test.anchorKind,skinSurfaceObserved=false})
+            end
+            test_trace(actor,membership,'final_output',frame,now,diagnostic)
+            grip_tracking_probe(actor,membership,'final_output',frame,now)
+            body_lifecycle_probe(actor,membership,'final_output',frame,now)
+            aim_sync_probe(actor,frame,now)
             if diagnostic then
                 local nativeLeft=matrix(u,cfg.nativeLeft.index,true)
                 local rightMarker=leftResult and weapon_static(leftResult.weaponResource,'rootToIKRight')
@@ -1637,6 +2069,17 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         -- Match the working B19/B20 lifetime: hold the write through update,
         -- restore immediately before the next render transaction or shutdown.
         if phase=='update' then
+            if test and test.bodyDiagnostics and test.bodyDiagnostics.enabled and next(self.monitored) then
+                local mok,mission=false,false;local wok,world=false,nil
+                if sceneContext and type(sceneContext.inMission)=='function' then mok,mission=pcall(sceneContext.inMission) end
+                if sceneContext and type(sceneContext.world)=='function' then wok,world=pcall(sceneContext.world) end
+                if mok and mission==true and wok and world then
+                    local membership=members(false)
+                    for actor in pairs(self.monitored) do
+                        if actor.world==world then body_lifecycle_probe(actor,membership,'update_input',frame,now) end
+                    end
+                end
+            end
             if cfg.missionGuard and cfg.missionGuard.enabled then return end
             begin_sync(frame,now)
             if self.syncFrame==frame then capture_sync('update',self.monitored,members(),frame,now) end
@@ -1658,7 +2101,11 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         local membership=members(rescanned)
         begin_sync(frame,now)
         capture_sync('render_input',self.monitored,membership,frame,now)
-        for actor in pairs(self.monitored) do probe_sidearm(actor,membership,'next_input',frame,now,'lua') end
+        for actor in pairs(self.monitored) do
+            probe_sidearm(actor,membership,'next_input',frame,now,'lua')
+            grip_tracking_probe(actor,membership,'next_render_input',frame,now)
+            body_lifecycle_probe(actor,membership,'next_render_input',frame,now)
+        end
         self:release(membership)
         if self.disabled then return end
         self.validation={};self.nodeValidation={}
@@ -1685,7 +2132,28 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         if rescanned then scan(membership,now) end
         local diagnostic=not self.lastLog or now<self.lastLog or now-self.lastLog>=cfg.logSeconds
         local selected,reasons=matching_actors(membership);local active=0
-        for _,actor in ipairs(self.observerActors) do probe_sidearm(actor,membership,'native_only',frame,now,'native') end
+        -- Evaluate activity after restoring the previous transaction. Only a
+        -- verified missing FSM blocks writes; unknown API states keep baseline.
+        for actor,model in pairs(selected) do
+            local state=lifecycle_state(actor)
+            local previous=self.lastLifecycleState[actor.unit]
+            if not previous or previous~=state.reason then
+                self.lastLifecycleState[actor.unit]=state.reason
+                if test and test.bodyDiagnostics and test.bodyDiagnostics.enabled then
+                    emit({event='test_actor_lifecycle',frame=frame,time=now,avatar=actor.id,state=state,
+                        priorTransactionRestored=#self.pending==0,ragdollStateDirectlyObserved=false})
+                end
+            end
+            if not state.writeAllowed then
+                selected[actor]=nil;self.leftIntent[actor.unit]=nil;self.rightIntent[actor.unit]=nil
+                self.stats.lifecycleBypasses=self.stats.lifecycleBypasses+1
+                body_lifecycle_probe(actor,membership,'inactive_after_restore',frame,now)
+            end
+        end
+        for _,actor in ipairs(self.observerActors) do
+            probe_sidearm(actor,membership,'native_only',frame,now,'native')
+            body_lifecycle_probe(actor,membership,'native_only_observer',frame,now)
+        end
         for _,actor in ipairs(self.actors) do
             if not selected[actor] then probe_sidearm(actor,membership,'native_only',frame,now,'native') end
         end
@@ -1730,7 +2198,7 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         emit({event='complete',reason=reason or 'shutdown',stats=self.stats,pendingRestores=#self.pending,
             disabled=self.disabled,pendingFpVisibility=(function()local n=0;for _ in pairs(self.fpHidden) do n=n+1 end;return n end)()},true)
     end
-    emit({event='loaded',version=M.VERSION,writePhase='render',restorePhase='before_render_and_shutdown',
+    emit({event='loaded',version=test and test.version or M.VERSION,writePhase='render',restorePhase='before_render_and_shutdown',
         target='attach_hand_r',originalReference=cfg.originalMount.name,axisRegistration=cfg.axisRegistration,
         writePolicy='position_only_preserve_native_aim',discovery='B19_B20_all_worlds_all_units',
         refreshOrder='avatar_model_weapon_components',
@@ -1747,7 +2215,7 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         syncMode=cfg.sync and cfg.sync.enabled and 'update_render_input_render_output' or 'off',
         fpTemporaryArmHide=cfg.firstPersonArmHide and cfg.firstPersonArmHide.enabled==true or false,
         logging=cfg.logging or {compact=false,recordSeconds=90,maxBytes=524288,exceptionIntervalSeconds=2},
-        physics='separate_addon',palmSurfaceCalibrated=false},true)
+        physics='separate_addon',palmSurfaceCalibrated=false,testRepairs=test,contactProxyCalibrated=contactEnabled or false,testOnly=test and test.enabled or false},true)
     return self
 end
 

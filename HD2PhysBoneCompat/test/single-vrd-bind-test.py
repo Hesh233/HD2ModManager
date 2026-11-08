@@ -1,12 +1,12 @@
 """Single v3 canonical bind / return / boundary continuity; legacy v1/v2 differential tests."""
-import contextlib,io,math,json,os
+import argparse,contextlib,io,math,json,os
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
 os.environ['LOCALAPPDATA']=str(ROOT/'tmp')
-base=ROOT/'outputs/vrd-analysis-20261107/lua-check/driver-update-test.py'
+base=ROOT/'HD2PhysBoneCompat/test/driver-update-test.py'
 g={'__file__':str(base),'__name__':'__main__'}
 with contextlib.redirect_stdout(io.StringIO()):
-    exec(compile(base.read_text(encoding='utf-8-sig').replace('1.2.0','1.2.1'),str(base),'exec'),g)
+    exec(compile(base.read_text(encoding='utf-8-sig'),str(base),'exec'),g)
 compat,lua,result,state=g['compat'],g['lua'],g['result'],g['state']
 row=result.drivers[1]
 result.rig.drivers.version=3;row.controlBindQ=lua.table(0,0,0,1);row.fadeOutside=True
@@ -92,5 +92,7 @@ for deg in range(-180,181):
     q=lua.table(*qz(deg));a=old.quatinterp(q,row);b=compat.quatinterp(q,row)
     check(a==b,'legacy quaternion solver changed')
 report=dict(status='PASS_OFFLINE_NOT_GAME_ACCEPTANCE',checks=checks,syntheticStepDeg=.25,syntheticMaxOutputStepDeg=peak_jump,actualAxisSweepMaxOutputStepDeg=real_peak,actualDrivers=8,legacyMathExact=True,worstRawRuleStep=worst,maxTemporalRateDegPerSecond=max_rate)
-(ROOT/'outputs/vrd-analysis-20261107/single-vrd-runtime-audit.json').write_text(json.dumps(report,indent=2),encoding='utf8')
+ap=argparse.ArgumentParser();ap.add_argument('--report',type=Path,default=ROOT/'outputs/vrd-analysis-20261107/single-vrd-runtime-audit.json');args=ap.parse_args()
+args.report.parent.mkdir(parents=True,exist_ok=True)
+args.report.write_text(json.dumps(report,indent=2),encoding='utf8')
 print(json.dumps(report))

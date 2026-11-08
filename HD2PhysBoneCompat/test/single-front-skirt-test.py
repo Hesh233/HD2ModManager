@@ -44,7 +44,7 @@ def module(path,previous_anchor=False):
 
 lua,current=module(ROOT/'HD2PhysBoneCompat/src/physbone_compat.lua')
 oldlua,old=module(ROOT/'HD2PhysBoneCompat/src/physbone_compat.lua',previous_anchor=True)
-check(current.version=='1.2.3','wrong compat version')
+check(current.version=='1.3.0','wrong compat version')
 spring=py(current.parse_rig((args.model/'physbone-rig.bin').read_bytes()))
 drivers=py(current.parse_driver_rig((args.model/'physbone-driver-rig.bin').read_bytes()))
 rig=dict(spring,drivers=drivers)
@@ -128,7 +128,7 @@ for rid,model in models:
  a=engine(lua,model,rid);b=engine(oldlua,model,rid)
  result=current.attach(a[0],a[1],table(lua,rig),a[2]);baseline=old.attach(b[0],b[1],table(oldlua,rig),b[2])
  check(len(result.sessions)==37 and len(baseline.sessions)==37,'real chain count changed')
- check(len(result.drivers)==8 and len(baseline.drivers)==8,'real driver count changed')
+ check(len(result.drivers)==6 and len(baseline.drivers)==6 and result.excludedWristDrivers==2,'real wrist exclusion changed')
  rb={x.chain[1].name:x for _,x in result.sessions.items()};ob={x.chain[1].name:x for _,x in baseline.sessions.items()}
  for name,item in rb.items():
   if name in ('skirt_0_0','skirt_0_3'):
@@ -205,7 +205,7 @@ for directory in args.native_model:
         a=engine(lua,model,rid);b=engine(oldlua,model,rid)
         result=current.attach(a[0],a[1],table(lua,r),a[2]);baseline=old.attach(b[0],b[1],table(oldlua,r),b[2])
         check(len(result.sessions)==37 and len(baseline.sessions)==37,'native spring count changed')
-        check(len(result.drivers)==8 and len(baseline.drivers)==8,'native driver count changed')
+        check(len(result.drivers)==6 and len(baseline.drivers)==6 and result.excludedWristDrivers==2,'native wrist exclusion changed')
         rb={x.chain[1].name:x for _,x in result.sessions.items()};ob={x.chain[1].name:x for _,x in baseline.sessions.items()}
         for name,item in rb.items():
             if name.endswith(('_skirt_0_0','_skirt_0_3')):
@@ -218,7 +218,7 @@ for directory in args.native_model:
                     item_motion.append(dict(chain=name,before=before,after=after))
             else:
                 check(py(item.tip)==py(ob[name].tip),'non-front native spring state changed')
-        bound.append(dict(resource=f'{rid:016x}',nodes=len(model.transforms),chains=37,drivers=8))
+        bound.append(dict(resource=f'{rid:016x}',nodes=len(model.transforms),chains=37,drivers=6,excludedWrists=2))
     native.append(dict(directory=str(directory),driverVersion=version,units=bound,movingAnchor=item_motion))
 # Actual test01 native fixtures do not have the 0x1d world-anchor path.
 for directory in [INSTALL/'test-library/[原比例模型]test01/vpk2patch',PROJECT/'outputs/vrd-analysis-20261107/e2e-diag/test01']:

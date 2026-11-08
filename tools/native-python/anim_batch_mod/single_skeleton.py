@@ -11,13 +11,14 @@ from .archive import PackageStore,ResourceIndex,TocArchive
 from .constants import UNIT_TYPE_ID,BONE_TYPE_ID,STATE_MACHINE_TYPE_ID,ANIMATION_TYPE_ID
 from .formats import UnitData,BonesData
 from .playback_reference import NormalPlaybackReference,PLAYBACK_REVISION,FRAME_TIME_POLICY
+from .single_animation_compaction import compact_single_animation,OUTPUT_ENCODING_PROFILE,BOUNDARY_FRAMES_EACH_END
 from .processor import ModConfig
 from .batch import discover_batch_jobs,build_batch_entries
 from .cli import parse_thread_count,calculate_bone_offsets,calculate_bone_rotation_compensations,write_generated_config,write_output_patch,verify_patch
 
 REFERENCE_UNIT=0x4d1c334d294dfa97
 REFERENCE_ARCHIVE='18235e0c9ec0e636'
-PIPELINE_VERSION='1.0.20'
+PIPELINE_VERSION='1.0.21'
 PROCESSING_PROFILE='standard-single-v3-normal-reference'
 BIND_POLICY='hd2-source-sized-shared-bind-v1'
 CONTROL_MARKERS={'attach_hand_l','attach_hand_r','weapon_aim','attach_weapon','aim_weapon','head_aim','boss_aim'}
@@ -246,6 +247,35 @@ def prepare_model(folder,game_data,config_path=None):
         for suffix in ('','-wal','-shm'):(folder/('single-resource-index.sqlite3'+suffix)).unlink(missing_ok=True)
 
 
+def _compact_single_entries(entries,expected_channels,progress=None):
+    """Output-only pass AFTER the complete R2 pose bake. Dual/batch defaults stay unchanged."""
+    animation_entries=[e for e in entries if e.type_id==ANIMATION_TYPE_ID]
+    stats=dict(profile=OUTPUT_ENCODING_PROFILE,clips=len(animation_entries),normalClips=0,additiveClips=0,
+        originalBytes=0,outputBytes=0,removedBytes=0,removedKeysOneBlock=0,
+        boundaryFramesEachEnd=BOUNDARY_FRAMES_EACH_END,verified=True)
+    rows={}
+    for index,entry in enumerate(animation_entries,1):
+        if entry.file_id in rows:raise ValueError('Duplicate single animation output ID')
+        original=bytes(entry.toc_data)
+        candidate,metrics=compact_single_animation(original,expected_channels=expected_channels)
+        # The cutter validates both blocks, initial/header bytes, boundary anchors,
+        # exact retained-record hashes and events before returning a candidate.
+        entry.toc_data=bytearray(candidate)
+        stats['additiveClips' if metrics['additive'] else 'normalClips']+=1
+        stats['originalBytes']+=len(original);stats['outputBytes']+=len(candidate)
+        stats['removedBytes']+=metrics['removed_bytes'];stats['removedKeysOneBlock']+=metrics['removed_keys_one_block']
+        rows[entry.file_id]=dict(id=f'{entry.file_id:016x}',inputBytes=len(original),outputBytes=len(candidate),
+            additiveBytePassthrough=metrics['additive'],removedKeysOneBlock=metrics['removed_keys_one_block'])
+        if progress:progress('compact',index,len(animation_entries),f'保留播放边界，裁剪恒定轨道 {index}/{len(animation_entries)}')
+    return stats,rows
+
+
+def _output_compaction_contract():
+    return dict(outputEncodingProfile=OUTPUT_ENCODING_PROFILE,preserveDenseFrames=False,
+        preserveRetainedKeyBytes=True,preserveOriginalScaleRecords=True,additiveBytePassthrough=True,
+        boundaryFramesEachEnd=BOUNDARY_FRAMES_EACH_END,constantTrackEquality='serialized-exact-no-epsilon-no-quaternion-sign-folding')
+
+
 def build_project(folder,game_data,output,sample_count=None,threads=2,config_path=None):
     _progress('prepare',0,0,'正在校验单骨架绑定及标准IK配置')
     folder=Path(folder);output=Path(output)
@@ -291,6 +321,9 @@ def build_project(folder,game_data,output,sample_count=None,threads=2,config_pat
             apply_rotation_compensations=o['rotation_compensation'],apply_ik_correction=o['ik_correction'],add_unit=False,threads=threads,use_processes=True,
             preserve_hand_bend_frame=False,preserve_source_key_times=True,preserve_unmodified_channels=True,source_arm_constraints=o['source_arm_constraints'],preserve_playback_timing=True,preserve_unchanged_bytes=True,playback_reference_loader=playback.read)
         if build.fatal_issues or len(build.animations)!=len(jobs):raise ValueError('Incomplete single batch build: '+repr(build.fatal_issues))
+        compaction,compacted_rows=_compact_single_entries(build.entries,len(bones.names),_progress)
+        if set(compacted_rows)!={r.animation_id for r in build.animations}:raise ValueError('Single compaction coverage differs from batch output')
+        report.update(_output_compaction_contract());report['animationCompaction']=compaction
         _progress('package',0,0,'正在写入单骨架动画包')
         staging=output/'runtime-incomplete';staging.mkdir()
         paths=write_output_patch(store,SimpleNamespace(output=staging,patch_index=2,force=False),build.entries)
@@ -301,7 +334,7 @@ def build_project(folder,game_data,output,sample_count=None,threads=2,config_pat
         (staging/'single-config.toml').write_bytes(effective.read_bytes());(staging/'standard-input.toml').write_bytes(standard['raw'])
         certificate=json.loads((folder/'single-hd2-bind.json').read_text(encoding='utf-8-sig'))
         runtime_marker=_standard_manifest(folder,certificate,units,bones,config,standard,digest)
-        runtime_marker.update(playback.report())
+        runtime_marker.update(playback.report());runtime_marker.update(_output_compaction_contract())
         runtime_marker.update(inputModelManifestVersion=marker['version'],inputModelConfigSha256=marker.get('configSha256'),legacyModelConfigurationIgnored=marker['version']<4)
         (staging/'single-skeleton.json').write_text(json.dumps(runtime_marker,ensure_ascii=False,indent=2),encoding='utf-8')
         staging.rename(output/'runtime')
@@ -309,7 +342,7 @@ def build_project(folder,game_data,output,sample_count=None,threads=2,config_pat
             armRequestedTargetMaxDistance=max((r.modification.arm_requested_target_max_distance for r in build.animations),default=0),
             armTargetPolicy='source-angle-standard-ray-v1' if o['source_arm_constraints'] else 'legacy-world',ikEvaluations=sum(r.modification.ik_evaluations for r in build.animations),ikCorrections=sum(r.modification.ik_corrections for r in build.animations),
             ikMaxErrorBefore=max((r.modification.ik_max_error_before for r in build.animations),default=0),ikMaxErrorAfter=max((r.modification.ik_max_error_after for r in build.animations),default=0),
-            animations=[dict(id=f'{i:016x}') for i in ids],files=[dict(name=p.name,sha256=hashlib.sha256((output/'runtime'/p.name).read_bytes()).hexdigest()) for p in paths])
+            animations=[compacted_rows[i] for i in ids],files=[dict(name=p.name,sha256=hashlib.sha256((output/'runtime'/p.name).read_bytes()).hexdigest()) for p in paths])
         return report
     except BaseException as error:
         report.update(status='failed',error=str(error));raise

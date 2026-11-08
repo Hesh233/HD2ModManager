@@ -1,141 +1,148 @@
-﻿{
-    "builtUtc":  "2026-11-07T13:16:21.8765502Z",
-    "runtime":  "Official CPython 3.11.9 embeddable x64",
-    "archiveSha256":  "009D6BF7E3B2DDCA3D784FA09F90FE54336D5B60F0E0F305C37F400BF83CFD3B",
-    "signer":  "CN=Python Software Foundation, O=Python Software Foundation, L=Beaverton, S=Oregon, C=US",
-    "pipelineVersion":  "1.0.15",
-    "singleSkeletonPipelineVersion":  "1.0.20",
-    "singleProcessingProfile":  "standard-single-v3-normal-reference",
-    "singlePlaybackRevision":  "normal-reference-r2",
-    "singlePlaybackReferenceSha256":  "4030765f8066141df8ecd0440322d128a4827d2cf9f5064a3a918b34eaefbf18",
-    "singleAnimationProgress":  "stderr-v1",
-    "runtimePolicy":  "b23-1.0.8",
-    "luaVersion":  "1.0.17",
-    "physicsRuntimeVersion":  "2.2.1",
-    "gripFixVersion":  "test07-1.0.11",
-    "gripFixRevision":  "bounded-runtime-logs-20261107",
-    "presetFiles":  [
-                        {
-                            "sha256":  "444A28038E89463A3A74D652FFE8BB6291FBE581721A29EFCD8343D4BCA340B7",
-                            "name":  "presets/native-v15/arm-reference.patch_0"
-                        },
-                        {
-                            "sha256":  "D318EF86419B38AFBD0C86251F3E2E287C3B689923E8AA48E2DE017C7B07A4BB",
-                            "name":  "presets/native-v15/avatar-template.patch_0"
-                        },
-                        {
-                            "sha256":  "FE42182B024FAB191A1B1B8A0D3B67A1BB9D2B8A4060D10E7A325BE2BA87F52E",
-                            "name":  "presets/native-v15/avatar-template.patch_0.gpu_resources"
-                        },
-                        {
-                            "sha256":  "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
-                            "name":  "presets/native-v15/avatar-template.patch_0.stream"
-                        },
-                        {
-                            "sha256":  "8C085595C51C588CAEBF8A0E5037FE335651B866290A9F9A221428FF1F16A07F",
-                            "name":  "presets/native-v15/grip-fixes-1.0.10.json"
-                        },
-                        {
-                            "sha256":  "CAEB64FF55A4FE7978CC7151518C6CD0578699934E8063F5175968A82FB5D449",
-                            "name":  "presets/native-v15/grip-fixes-1.0.11.json"
-                        },
-                        {
-                            "sha256":  "4D9581027E1914282AABF0E9EBA477110B6600CFDD8E9BA9707AEF772600DCD7",
-                            "name":  "presets/native-v15/preset.json"
-                        },
-                        {
-                            "sha256":  "7B43D347C18583A08D71CF12ABCD865523549DE02E816D968AF3265AC8B7225B",
-                            "name":  "presets/native-v15/runtime-policy.json"
-                        },
-                        {
-                            "sha256":  "5DF2F22B11BBA8B30FFA4A231C6C56949ADA67B66D56B429482E260E052DDC5A",
-                            "name":  "presets/single-normal-reference/playback.zip"
-                        }
-                    ],
-    "files":  [
-                  {
-                      "sha256":  "9AF659598EBACA4D66A89AD97F44EB6A28458E88260A83795E2E6DDE85578B8E",
-                      "name":  "__init__.py"
-                  },
-                  {
-                      "sha256":  "1BD4A1143FE32476FA421EA4CF7A498FEED373DA6E249886933ABEF683DB63AA",
-                      "name":  "main.py"
-                  },
-                  {
-                      "sha256":  "2FD26E5BA995FAB6F191C766DB7CEDAE579BDC3BC794B0DD86206446B6A33C4D",
-                      "name":  "cli.py"
-                  },
-                  {
-                      "sha256":  "CA8CD446B3F24834A449EF23BFAD57B96E8E139C90DACB066F8A765BBE02A421",
-                      "name":  "native_skeleton.py"
-                  },
-                  {
-                      "sha256":  "F0E854A01589373F1EF07C55A178E9FAFC8E52B96482DD6F7814EB3158007E02",
-                      "name":  "native_animation.py"
-                  },
-                  {
-                      "sha256":  "27FC844BECF6FEDF78F385885CEC22A7F839260DCDE2D86EACF71C865C23900B",
-                      "name":  "native_arm_reference.py"
-                  },
-                  {
-                      "sha256":  "07185ED39A7429443333110ADACFA8A797146CF711286C34C8FEA9DBBDBECCBE",
-                      "name":  "attachment_skeleton.py"
-                  },
-                  {
-                      "sha256":  "0BF5C450906F20DFA9936CE81D8F329A531B5313B6CDE0A1B0B50204F7034D53",
-                      "name":  "attachment-fix.json"
-                  },
-                  {
-                      "sha256":  "51554264CA068663E644B66AB2ED396D7D65143E4E9883C9301CD4B681E11187",
-                      "name":  "single_skeleton.py"
-                  },
-                  {
-                      "sha256":  "041EDB78715A9706B3185151F7DEE32B45753BDD0346058FBCEC5E1ECB598AEF",
-                      "name":  "playback_reference.py"
-                  },
-                  {
-                      "sha256":  "182A1C456F10586D626D110360101125986C2DE98B3E795B054EBB4F68BC5046",
-                      "name":  "native_config.py"
-                  },
-                  {
-                      "sha256":  "49F99ABCE4F9890AF92076BF2BF89618FD0979C80AC0017C12EA3784D24D6E89",
-                      "name":  "motion_skeleton.py"
-                  },
-                  {
-                      "sha256":  "FB5D4035B400EED521649C5F30282EEE6D0E883FEDC14470E38619D655B1C473",
-                      "name":  "archive.py"
-                  },
-                  {
-                      "sha256":  "50737C012EB94D109DBCD952B2B818065701B908FC2ACE6821ADFAD4F67C8FFE",
-                      "name":  "batch.py"
-                  },
-                  {
-                      "sha256":  "F1F9B1D84EA87F76860C526827BB11C0F8AC8F7658DCEBE70A97257C974C1B19",
-                      "name":  "binary.py"
-                  },
-                  {
-                      "sha256":  "2105525FD5BB77D22844B6A251F829BF94AF387CEF78B79F4BD7C2F64C8746F2",
-                      "name":  "constants.py"
-                  },
-                  {
-                      "sha256":  "FCABA3565CB720FA51F515AD2FFED24B31F21A96E08657E91C5C696F5B026D37",
-                      "name":  "formats.py"
-                  },
-                  {
-                      "sha256":  "49638C4FCF0E0BB2B9F61A56BA0EC515DDE6CA7418750E1A549E10089B4049DA",
-                      "name":  "math3d.py"
-                  },
-                  {
-                      "sha256":  "7F65FFBCF544F5741D8F9A5A714769B3FCDEECFFF8AA81AE9CD3C6A7A0B6D307",
-                      "name":  "processor.py"
-                  },
-                  {
-                      "sha256":  "80D1736C80DB8A28B22DD1EF9A0771BD572DAA451FFEA2FD702B642310C9DBF8",
-                      "name":  "weapon_grip_targets.json"
-                  },
-                  {
-                      "sha256":  "44C4014AF117597928E8E3849EA4B56B1AD6A8EA302E9D74A4FED15E9CB7AF66",
-                      "name":  "config.toml"
-                  }
-              ]
+{
+  "builtUtc": "2026-11-07T13:16:21.8765502Z",
+  "runtime": "Official CPython 3.11.9 embeddable x64",
+  "archiveSha256": "009D6BF7E3B2DDCA3D784FA09F90FE54336D5B60F0E0F305C37F400BF83CFD3B",
+  "signer": "CN=Python Software Foundation, O=Python Software Foundation, L=Beaverton, S=Oregon, C=US",
+  "pipelineVersion": "1.0.15",
+  "singleSkeletonPipelineVersion": "1.0.21",
+  "singleProcessingProfile": "standard-single-v3-normal-reference",
+  "singlePlaybackRevision": "normal-reference-r2",
+  "singlePlaybackReferenceSha256": "4030765f8066141df8ecd0440322d128a4827d2cf9f5064a3a918b34eaefbf18",
+  "singleAnimationProgress": "stderr-v1",
+  "runtimePolicy": "b23-1.0.8",
+  "luaVersion": "1.0.17",
+  "physicsRuntimeVersion": "2.3.0",
+  "gripFixVersion": "test07-1.0.11",
+  "gripFixRevision": "bounded-runtime-logs-20261107",
+  "presetFiles": [
+    {
+      "sha256": "444A28038E89463A3A74D652FFE8BB6291FBE581721A29EFCD8343D4BCA340B7",
+      "name": "presets/native-v15/arm-reference.patch_0"
+    },
+    {
+      "sha256": "D318EF86419B38AFBD0C86251F3E2E287C3B689923E8AA48E2DE017C7B07A4BB",
+      "name": "presets/native-v15/avatar-template.patch_0"
+    },
+    {
+      "sha256": "FE42182B024FAB191A1B1B8A0D3B67A1BB9D2B8A4060D10E7A325BE2BA87F52E",
+      "name": "presets/native-v15/avatar-template.patch_0.gpu_resources"
+    },
+    {
+      "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+      "name": "presets/native-v15/avatar-template.patch_0.stream"
+    },
+    {
+      "sha256": "8C085595C51C588CAEBF8A0E5037FE335651B866290A9F9A221428FF1F16A07F",
+      "name": "presets/native-v15/grip-fixes-1.0.10.json"
+    },
+    {
+      "sha256": "CAEB64FF55A4FE7978CC7151518C6CD0578699934E8063F5175968A82FB5D449",
+      "name": "presets/native-v15/grip-fixes-1.0.11.json"
+    },
+    {
+      "sha256": "4D9581027E1914282AABF0E9EBA477110B6600CFDD8E9BA9707AEF772600DCD7",
+      "name": "presets/native-v15/preset.json"
+    },
+    {
+      "sha256": "7B43D347C18583A08D71CF12ABCD865523549DE02E816D968AF3265AC8B7225B",
+      "name": "presets/native-v15/runtime-policy.json"
+    },
+    {
+      "sha256": "5DF2F22B11BBA8B30FFA4A231C6C56949ADA67B66D56B429482E260E052DDC5A",
+      "name": "presets/single-normal-reference/playback.zip"
+    }
+  ],
+  "files": [
+    {
+      "sha256": "9AF659598EBACA4D66A89AD97F44EB6A28458E88260A83795E2E6DDE85578B8E",
+      "name": "__init__.py"
+    },
+    {
+      "sha256": "1BD4A1143FE32476FA421EA4CF7A498FEED373DA6E249886933ABEF683DB63AA",
+      "name": "main.py"
+    },
+    {
+      "sha256": "2FD26E5BA995FAB6F191C766DB7CEDAE579BDC3BC794B0DD86206446B6A33C4D",
+      "name": "cli.py"
+    },
+    {
+      "sha256": "CA8CD446B3F24834A449EF23BFAD57B96E8E139C90DACB066F8A765BBE02A421",
+      "name": "native_skeleton.py"
+    },
+    {
+      "sha256": "F0E854A01589373F1EF07C55A178E9FAFC8E52B96482DD6F7814EB3158007E02",
+      "name": "native_animation.py"
+    },
+    {
+      "sha256": "27FC844BECF6FEDF78F385885CEC22A7F839260DCDE2D86EACF71C865C23900B",
+      "name": "native_arm_reference.py"
+    },
+    {
+      "sha256": "07185ED39A7429443333110ADACFA8A797146CF711286C34C8FEA9DBBDBECCBE",
+      "name": "attachment_skeleton.py"
+    },
+    {
+      "sha256": "0BF5C450906F20DFA9936CE81D8F329A531B5313B6CDE0A1B0B50204F7034D53",
+      "name": "attachment-fix.json"
+    },
+    {
+      "sha256": "474856A50CAFB5D459987933D6D347F4F32F6B844A1E87470FC99C4CE7F43AEF",
+      "name": "single_skeleton.py"
+    },
+    {
+      "sha256": "041EDB78715A9706B3185151F7DEE32B45753BDD0346058FBCEC5E1ECB598AEF",
+      "name": "playback_reference.py"
+    },
+    {
+      "sha256": "182A1C456F10586D626D110360101125986C2DE98B3E795B054EBB4F68BC5046",
+      "name": "native_config.py"
+    },
+    {
+      "sha256": "49F99ABCE4F9890AF92076BF2BF89618FD0979C80AC0017C12EA3784D24D6E89",
+      "name": "motion_skeleton.py"
+    },
+    {
+      "sha256": "FB5D4035B400EED521649C5F30282EEE6D0E883FEDC14470E38619D655B1C473",
+      "name": "archive.py"
+    },
+    {
+      "sha256": "50737C012EB94D109DBCD952B2B818065701B908FC2ACE6821ADFAD4F67C8FFE",
+      "name": "batch.py"
+    },
+    {
+      "sha256": "F1F9B1D84EA87F76860C526827BB11C0F8AC8F7658DCEBE70A97257C974C1B19",
+      "name": "binary.py"
+    },
+    {
+      "sha256": "2105525FD5BB77D22844B6A251F829BF94AF387CEF78B79F4BD7C2F64C8746F2",
+      "name": "constants.py"
+    },
+    {
+      "sha256": "FCABA3565CB720FA51F515AD2FFED24B31F21A96E08657E91C5C696F5B026D37",
+      "name": "formats.py"
+    },
+    {
+      "sha256": "49638C4FCF0E0BB2B9F61A56BA0EC515DDE6CA7418750E1A549E10089B4049DA",
+      "name": "math3d.py"
+    },
+    {
+      "sha256": "7F65FFBCF544F5741D8F9A5A714769B3FCDEECFFF8AA81AE9CD3C6A7A0B6D307",
+      "name": "processor.py"
+    },
+    {
+      "sha256": "80D1736C80DB8A28B22DD1EF9A0771BD572DAA451FFEA2FD702B642310C9DBF8",
+      "name": "weapon_grip_targets.json"
+    },
+    {
+      "sha256": "44C4014AF117597928E8E3849EA4B56B1AD6A8EA302E9D74A4FED15E9CB7AF66",
+      "name": "config.toml"
+    },
+    {
+      "name": "single_animation_compaction.py",
+      "sha256": "3AE0BD6EA54B9829F499A83710036C4739239E8FC5DD589E27F528DBD7DB4541"
+    }
+  ],
+  "singleOutputEncodingProfile": "single-constant-float-boundary2-v1",
+  "singleBoundaryFramesEachEnd": 2,
+  "physicsCompatVersion": "1.3.0"
 }

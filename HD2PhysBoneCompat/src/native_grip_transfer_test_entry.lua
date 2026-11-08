@@ -19,12 +19,21 @@ local profile=(function()
 -- INSERT TRANSFER PROFILE
 end)()
 -- A new latest-session file leaves the old multi-day evidence untouched.
-local path=assert(loader.log_directory,'Chef log directory unavailable')..'/hd2_grip_b23_compact.log'
-local handle,why=io.open(path,'w');assert(handle,'Cannot open B23 log: '..tostring(why))
+local directory=assert(loader.log_directory,'Chef log directory unavailable')
+local detailed=profile.testRepairs and profile.testRepairs.enabled and profile.logging.detailed==true
+local stem=detailed and ('hd2_grip_TEST_DETAILED_'..profile.testRepairs.modelLabel..(profile.testRepairs.logTag and ('_'..profile.testRepairs.logTag) or '')..'_'..os.date('%Y%m%d_%H%M%S')) or 'hd2_grip_b23_compact'
+local part,partBytes=1,0
+local function logPath() return directory..'/'..stem..(detailed and string.format('.part%02d',part) or '')..'.log' end
+local handle,why=io.open(logPath(),'w');assert(handle,'Cannot open B23 log: '..tostring(why))
 local closed,frame,lastFlush=false,0,0
 local log,logContext=Transfer.newLogSink(function(line,urgent)
     if handle then
-        handle:write(os.date('%Y-%m-%d %H:%M:%S'),' [grip_b23] ',line,'\n')
+        if detailed and partBytes+#line+64>(profile.logging.segmentBytes or 16777216) then
+            handle:flush();handle:close();part=part+1;partBytes=0
+            handle,why=io.open(logPath(),'w');assert(handle,'Cannot rotate TEST log: '..tostring(why))
+        end
+        handle:write(os.date('%Y-%m-%d %H:%M:%S'),detailed and ' [TEST_ONLY_DETAILED] ' or ' [grip_b23] ',line,'\n')
+        partBytes=partBytes+#line+64
         local now=stingray.Application.time_since_launch()
         if urgent or now-lastFlush>=2 then handle:flush();lastFlush=now end
     end
@@ -53,5 +62,5 @@ local function step(phase)
         stop('callback_error');error(err)
     end
 end
-return {version=Transfer.VERSION,update=function()step('update')end,render=function()step('render')end,
+return {version=detailed and profile.testRepairs.version or Transfer.VERSION,update=function()step('update')end,render=function()step('render')end,
     shutdown=function()stop('shutdown')end,on_stop=function()stop('on_stop')end}

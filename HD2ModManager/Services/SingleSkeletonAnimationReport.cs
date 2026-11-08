@@ -17,7 +17,9 @@ internal static class SingleSkeletonAnimationReport
         {value=0;return root.TryGetProperty(name,out var item) && item.ValueKind==JsonValueKind.Number && item.TryGetInt32(out value);}
         var built=root.TryGetProperty("animations",out var animations) && animations.ValueKind==JsonValueKind.Array?animations.GetArrayLength():-1;
         var sampleOnly=root.TryGetProperty("sampleOnly",out var sample) && sample.ValueKind==JsonValueKind.True;
-        var valid=Text("status","complete") && Text("pipelineVersion","1.0.20") && Text("skeleton","hd2")
+        var optimized=Text("pipelineVersion","1.0.21");
+        var legacy=Text("pipelineVersion","1.0.20") && !root.TryGetProperty("outputEncodingProfile",out _);
+        var valid=Text("status","complete") && (legacy || optimized) && Text("skeleton","hd2")
             && Text("processor","anim_batch_mod.batch.build_batch_entries") && Text("processingProfile","standard-single-v3-normal-reference")
             && Text("playbackRevision","normal-reference-r2") && Text("frameTimePolicy","user-normal-pack-template")
             && Flag("preservePlaybackTiming",false) && Flag("preserveReferencePlayback",true)
@@ -32,6 +34,34 @@ internal static class SingleSkeletonAnimationReport
             && Number("available_animations",out var available) && available==3180 && available>=expected
             && (allowSample || (!sampleOnly && available==expected)) && (available==expected || sampleOnly)
             && root.TryGetProperty("ikChains",out var chainDocument) && chainDocument.ValueKind==JsonValueKind.Object;
+        // The accepted size pass is output-only: the R2 reference/IK contract
+        // remains authoritative. Never accept a test profile or unverified sparse output.
+        if (optimized)
+        {
+            valid &= Text("outputEncodingProfile","single-constant-float-boundary2-v1")
+                && Flag("preserveDenseFrames",false) && Flag("preserveRetainedKeyBytes",true)
+                && Flag("preserveOriginalScaleRecords",true) && Flag("additiveBytePassthrough",true)
+                && Text("constantTrackEquality","serialized-exact-no-epsilon-no-quaternion-sign-folding")
+                && Number("boundaryFramesEachEnd",out var boundary) && boundary==2;
+            if (!root.TryGetProperty("animationCompaction",out var compaction) || compaction.ValueKind!=JsonValueKind.Object)
+                valid=false;
+            else
+            {
+                bool Count(string key,out long value)
+                {value=0;return compaction.TryGetProperty(key,out var item) && item.ValueKind==JsonValueKind.Number && item.TryGetInt64(out value);}
+                valid &= compaction.TryGetProperty("profile",out var profile) && profile.ValueKind==JsonValueKind.String
+                    && profile.GetString()=="single-constant-float-boundary2-v1"
+                    && compaction.TryGetProperty("verified",out var verified) && verified.ValueKind==JsonValueKind.True
+                    && Count("clips",out var clips) && clips==built
+                    && Count("normalClips",out var normal) && normal>=0 && normal<=built
+                    && Count("additiveClips",out var additive) && additive>=0 && additive<=built && normal+additive==built
+                    && Count("boundaryFramesEachEnd",out var frames) && frames==2
+                    && Count("originalBytes",out var original) && original>0
+                    && Count("outputBytes",out var output) && output>0 && output<=original
+                    && Count("removedBytes",out var removed) && removed==original-output
+                    && Count("removedKeysOneBlock",out var keys) && keys>=0;
+            }
+        }
         var targets=new[]{"l_hand","r_hand","l_foot","r_foot"};
         if(valid)
         {
@@ -61,6 +91,6 @@ internal static class SingleSkeletonAnimationReport
             || !root.TryGetProperty("armRequestedTargetMaxDistance", out var displacement)
             || displacement.ValueKind != JsonValueKind.Number || !displacement.TryGetDouble(out var deviation) || !double.IsFinite(deviation) || deviation < 0) valid = false;
         if(!Number("ikEvaluations",out var evaluations) || evaluations<0 || (ikEnabled && evaluations==0))valid=false;
-        if(!valid)throw new InvalidDataException("单骨架动画缺少1.0.20正常包R2播放模板契约、标准手脚IK或来源约束偏差记录；旧版错误绑定和不完整动画不能入库。");
+        if(!valid)throw new InvalidDataException("单骨架动画缺少正常包R2播放模板、标准手脚IK或已验收体积优化的字节保留/播放边界契约；旧版错误绑定和不完整动画不能入库。");
     }
 }

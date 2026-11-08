@@ -36,4 +36,28 @@ public sealed class SingleSkeletonAnimationReportTests
     [Fact]public void FullGuiCannotAcceptSample(){var r=Report();r["available_animations"]=3180;r["sampleOnly"]=true;Assert.Throws<InvalidDataException>(()=>SingleSkeletonAnimationReport.Validate(JsonSerializer.Serialize(r)));}
     [Fact]public void ExplicitDiagnosticSamplingIsAccepted(){var r=Report();r["available_animations"]=3180;r["expected_animations"]=2;r["animations"]=new[]{new{id="a"},new{id="b"}};r["sampleOnly"]=true;SingleSkeletonAnimationReport.Validate(JsonSerializer.Serialize(r),true);}
     [Fact]public void TruncationCannotMasqueradeAsFull(){var r=Report();r["available_animations"]=3180;r["expected_animations"]=2;r["animations"]=new[]{new{id="a"},new{id="b"}};Assert.Throws<InvalidDataException>(()=>SingleSkeletonAnimationReport.Validate(JsonSerializer.Serialize(r),true));}
+    private static Dictionary<string,object> OptimizedReport()
+    {
+        var r=Report();r["pipelineVersion"]="1.0.21";
+        r["outputEncodingProfile"]="single-constant-float-boundary2-v1";
+        r["preserveDenseFrames"]=false;r["preserveRetainedKeyBytes"]=true;
+        r["preserveOriginalScaleRecords"]=true;r["additiveBytePassthrough"]=true;r["boundaryFramesEachEnd"]=2;
+        r["constantTrackEquality"]="serialized-exact-no-epsilon-no-quaternion-sign-folding";
+        r["animationCompaction"]=new Dictionary<string,object>{["profile"]="single-constant-float-boundary2-v1",["verified"]=true,
+            ["clips"]=3180,["normalClips"]=2993,["additiveClips"]=187,["boundaryFramesEachEnd"]=2,
+            ["originalBytes"]=1109304724L,["outputBytes"]=400000000L,["removedBytes"]=709304724L,["removedKeysOneBlock"]=1000L};
+        return r;
+    }
+    [Fact]public void AcceptedCompactionReportIsAccepted()=>SingleSkeletonAnimationReport.Validate(JsonSerializer.Serialize(OptimizedReport()));
+    [Theory][InlineData("outputEncodingProfile")][InlineData("preserveDenseFrames")][InlineData("preserveRetainedKeyBytes")][InlineData("preserveOriginalScaleRecords")][InlineData("additiveBytePassthrough")][InlineData("boundaryFramesEachEnd")][InlineData("constantTrackEquality")][InlineData("animationCompaction")]
+    public void IncompleteCompactionContractIsRejected(string key){var r=OptimizedReport();r.Remove(key);Assert.Throws<InvalidDataException>(()=>SingleSkeletonAnimationReport.Validate(JsonSerializer.Serialize(r)));}
+    [Theory][InlineData("preserveDenseFrames",true)][InlineData("preserveRetainedKeyBytes",false)][InlineData("preserveOriginalScaleRecords",false)][InlineData("additiveBytePassthrough",false)]
+    public void UnsafeCompactionFlagsRejected(string key,bool value){var r=OptimizedReport();r[key]=value;Assert.Throws<InvalidDataException>(()=>SingleSkeletonAnimationReport.Validate(JsonSerializer.Serialize(r)));}
+    [Theory][InlineData("clips",3179)][InlineData("normalClips",2992)][InlineData("additiveClips",-1)][InlineData("boundaryFramesEachEnd",1)][InlineData("removedBytes",1)][InlineData("originalBytes",0)][InlineData("outputBytes",0)][InlineData("removedKeysOneBlock",-1)]
+    public void InconsistentCompactionCountsRejected(string key,int value){var r=OptimizedReport();((Dictionary<string,object>)r["animationCompaction"])[key]=value;Assert.Throws<InvalidDataException>(()=>SingleSkeletonAnimationReport.Validate(JsonSerializer.Serialize(r)));}
+    [Fact]public void UnverifiedCompactionRejected(){var r=OptimizedReport();((Dictionary<string,object>)r["animationCompaction"])["verified"]=false;Assert.Throws<InvalidDataException>(()=>SingleSkeletonAnimationReport.Validate(JsonSerializer.Serialize(r)));}
+    [Fact]public void TestCompactionProfileRejected(){var r=OptimizedReport();r["outputEncodingProfile"]="single-size-test-constant-float-boundary2-v1";Assert.Throws<InvalidDataException>(()=>SingleSkeletonAnimationReport.Validate(JsonSerializer.Serialize(r)));}
+    [Fact]public void LegacyCannotClaimOptimizedOutput(){var r=OptimizedReport();r["pipelineVersion"]="1.0.20";Assert.Throws<InvalidDataException>(()=>SingleSkeletonAnimationReport.Validate(JsonSerializer.Serialize(r)));}
+    [Fact]public void NewVersionCannotOmitOutputContract(){var r=Report();r["pipelineVersion"]="1.0.21";Assert.Throws<InvalidDataException>(()=>SingleSkeletonAnimationReport.Validate(JsonSerializer.Serialize(r)));}
+
 }

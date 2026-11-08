@@ -1,20 +1,45 @@
-﻿param([switch]$Apply, [ValidateSet('single-vrd-121','front-skirt-122','front-skirt-123')][string]$Revision='single-vrd-121')
+﻿param([switch]$Apply, [ValidateSet('single-vrd-121','front-skirt-122','front-skirt-123','spring-dof-130')][string]$Revision='single-vrd-121')
 $frontSkirt = $Revision -like 'front-skirt-*'
+$linearDofs = $Revision -eq 'spring-dof-130'
+$physicsOnly = $frontSkirt -or $linearDofs
 $frontVersion = if($Revision -eq 'front-skirt-123'){'1.2.3'}else{'1.2.2'}
-$reportPath = if($frontSkirt){"outputs\native-v34-b23-integrated-20261105\manager-1.0.7\归档\测试报告\前裙修复-$frontVersion-同步校验-20261108.json"}else{'outputs\vrd-analysis-20261107\single-vrd-sync-audit.json'}
+$reportPath = if($linearDofs){'outputs\vrd-analysis-20261107\spring-dof-sync-20261108.json'}elseif($frontSkirt){"outputs\native-v34-b23-integrated-20261105\manager-1.0.7\归档\测试报告\前裙修复-$frontVersion-同步校验-20261108.json"}else{'outputs\vrd-analysis-20261107\single-vrd-sync-audit.json'}
 $allowedResources = @('HD2ModCore.PhysBone.physbone_compat.lua')
-if($frontSkirt){$allowedResources += 'HD2ModCore.PhysBone.physbone_runtime.lua'}
-$backupSuffix=if($frontSkirt){'.before-'+$Revision+'-20261108.bak'}else{'.before-single-vrd-fix.bak'}
+if($physicsOnly){$allowedResources += 'HD2ModCore.PhysBone.physbone_runtime.lua'}
+$backupSuffix=if($linearDofs){'.before-spring-dof-130-20261108.bak'}elseif($frontSkirt){'.before-'+$Revision+'-20261108.bak'}else{'.before-single-vrd-fix.bak'}
 $ErrorActionPreference='Stop'
+function RevisionBackupPath([string]$target){
+ $path=$target+$backupSuffix
+ if($linearDofs){
+  $installRoot=[IO.Path]::GetFullPath((Join-Path (Get-Location).Path 'outputs\native-v34-b23-integrated-20261105\manager-1.0.7'))
+  if([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($target)) -eq $installRoot){
+   $category=Join-Path $installRoot '非运行文件\归档\旧版备份'
+   if(!(Test-Path -LiteralPath $category -PathType Container)){throw 'Established backup category is missing'}
+   $path=Join-Path $category ([IO.Path]::GetFileName($target)+$backupSuffix)
+  }
+ }
+ return $path
+}
+
 if($Apply){
  $audit=Get-Content -LiteralPath $reportPath -Raw|ConvertFrom-Json
- if($audit.coreMethodsExact -ne 16744 -or @($audit.changedResources|Where-Object {$_ -notin $allowedResources}).Count){throw 'Missing isolation certification'}
+ if($linearDofs){
+  if($audit.revision -ne $Revision -or !$audit.coreCodeIdentical -or $audit.coreMethodsBefore -le 0 -or $audit.coreMethodsBefore -ne $audit.coreMethodsAfter -or $audit.coreConstantsBefore -ne $audit.coreConstantsAfter){throw 'Missing current-baseline code certification'}
+ }elseif($audit.coreMethodsExact -ne 16744){throw 'Missing isolation certification'}
+ if(@($audit.changedResources|Where-Object {$_ -notin $allowedResources}).Count){throw 'Unrelated resources in certification'}
  foreach($p in $audit.plan){
+  $workspace=[IO.Path]::GetFullPath((Get-Location).Path).TrimEnd('\')+'\'
+  $target=[IO.Path]::GetFullPath($p.target)
+  $source=[IO.Path]::GetFullPath($p.source)
+  if(!$target.StartsWith($workspace,[StringComparison]::OrdinalIgnoreCase) -or !$source.StartsWith($workspace,[StringComparison]::OrdinalIgnoreCase)){throw 'Certified path escapes workspace'}
+  if([IO.Path]::GetFileName($target) -notin @('HD2ModCore.dll','HD2ModCore.pdb','HD2SourceModel.dll','HD2SourceMigration.dll')){throw 'Unexpected certified target'}
+  if((Get-Item -LiteralPath $target).Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Refuse to overwrite a reparse target'}
+
   if((Get-FileHash -LiteralPath $p.source).Hash -ne $p.sourceHash -or (Get-FileHash -LiteralPath $p.target).Hash -ne $p.targetHash){throw "Files changed since certification: $($p.target)"}
   $f=[IO.File]::Open($p.target,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None);$f.Dispose()
  }
  foreach($p in $audit.plan){
-  $backup=$p.target+$backupSuffix
+  $backup=RevisionBackupPath $p.target
   if(!(Test-Path -LiteralPath $backup)){Copy-Item -LiteralPath $p.target -Destination $backup}
   Copy-Item -LiteralPath $p.source -Destination $p.target -Force
   if((Get-FileHash -LiteralPath $p.target).Hash -ne $p.sourceHash){throw "Copy failed: $($p.target)"}
@@ -27,7 +52,7 @@ $root=(Get-Location).Path
 $install=Join-Path $root 'outputs\native-v34-b23-integrated-20261105\manager-1.0.7'
 $stage=Join-Path $root 'outputs\single-hd2-fix-20261106\manager'
 $cli=Join-Path $root 'HD2ModCli\bin\Release\net10.0'
-$core=if($frontSkirt){Join-Path $root 'HD2ModCore\bin\Release\net8.0\HD2ModCore.dll'}else{Join-Path $root 'outputs\vrd-analysis-20261107\lua-package\export-physics\bin\Release\net8.0\HD2ModCore.dll'}
+$core=if($physicsOnly){Join-Path $root 'HD2ModCore\bin\Release\net8.0\HD2ModCore.dll'}else{Join-Path $root 'outputs\vrd-analysis-20261107\lua-package\export-physics\bin\Release\net8.0\HD2ModCore.dll'}
 foreach($p in Get-ChildItem -LiteralPath $cli -Filter *.dll){if($p.Name -notin 'HD2ModCore.dll','hd2mod.dll'){try{[Reflection.Assembly]::LoadFrom($p.FullName)|Out-Null}catch{}}}
 $ctx1=[System.Runtime.Loader.AssemblyLoadContext]::new('isolation-before',$true)
 $ctx2=[System.Runtime.Loader.AssemblyLoadContext]::new('isolation-after',$true)
@@ -50,7 +75,7 @@ $changedResources=@();foreach($n in $a.GetManifestResourceNames()){
  $x.Dispose();$y.Dispose()
 }
 if(@($changedResources|Where-Object {$_ -notin $allowedResources}).Count){throw 'Unrelated embedded resources changed'}
-if($frontSkirt){
+if($physicsOnly){
  function HashConstants($assembly){
   $rows=@{};foreach($t in $assembly.GetTypes()){
    foreach($f in $t.GetFields([Reflection.BindingFlags]'Public,NonPublic,Instance,Static,DeclaredOnly')){
@@ -64,7 +89,7 @@ if($frontSkirt){
  if($a.GetManifestResourceNames().Count -ne $b.GetManifestResourceNames().Count){throw 'Resource count changed'}
 }
 $oldHashes=@{};$plan=@()
-$names=if($frontSkirt){@('HD2ModCore.dll','HD2ModCore.pdb')}else{@('HD2ModCore.dll','HD2SourceModel.dll','HD2SourceMigration.dll')}
+$names=if($linearDofs){@('HD2ModCore.dll')}elseif($frontSkirt){@('HD2ModCore.dll','HD2ModCore.pdb')}else{@('HD2ModCore.dll','HD2SourceModel.dll','HD2SourceMigration.dll')}
 foreach($n in $names){
  $source=if($n -like 'HD2ModCore.*'){Join-Path ([IO.Path]::GetDirectoryName($core)) $n}elseif($n -eq 'HD2SourceModel.dll'){Join-Path $root 'HD2SourceModel\bin\Release\net8.0\HD2SourceModel.dll'}else{Join-Path $cli $n}
  $target=Join-Path $install $n;$oldHashes[$n]=(Get-FileHash -LiteralPath $target).Hash
@@ -79,10 +104,10 @@ foreach($n in $names){
 $a=$null;$b=$null;$ctx1.Unload();$ctx2.Unload();$ctx1=$null;$ctx2=$null
 [GC]::Collect();[GC]::WaitForPendingFinalizers();[GC]::Collect()
 
-$result=@{mode=if($Apply){'apply'}else{'preflight'};revision=$Revision;coreMethodsExact=$m1.Count;coreConstantsExact=if($frontSkirt){$c1.Count}else{$null};changedResources=$changedResources;plan=$plan}
+$result=@{coreCodeIdentical=$true;coreMethodsBefore=$m1.Count;coreMethodsAfter=$m2.Count;coreConstantsBefore=if($physicsOnly){$c1.Count}else{$null};coreConstantsAfter=if($physicsOnly){$c2.Count}else{$null};mode=if($Apply){'apply'}else{'preflight'};revision=$Revision;coreMethodsExact=$m1.Count;coreConstantsExact=if($physicsOnly){$c1.Count}else{$null};changedResources=$changedResources;plan=$plan}
 if($Apply){
  foreach($p in $plan){
-  $backup=$p.target+$backupSuffix
+  $backup=RevisionBackupPath $p.target
   if(!(Test-Path -LiteralPath $backup)){Copy-Item -LiteralPath $p.target -Destination $backup}
   Copy-Item -LiteralPath $p.source -Destination $p.target -Force
   if((Get-FileHash -LiteralPath $p.source).Hash -ne (Get-FileHash -LiteralPath $p.target).Hash){throw "Copy verification failed: $($p.target)"}
