@@ -160,7 +160,7 @@ for label,folder,wanted in CASES:
    axialSpanChangeMetres=span_change,baseWorldOffsetMetres=base_offset,maximumWrittenLocalOffsetMetres=offset,writes=writes,releaseRestored=True))
  reports.append(dict(model=label,units=records,constrainedChainsBitwisePreserved=preserved,bones=bones))
 for path,value in protected.items():check(hashlib.sha256(Path(path).read_bytes()).hexdigest()==value,'model changed during read-only tests')
-result=dict(status='PASS_OFFLINE_NOT_GAME_ACCEPTANCE',compatVersion='1.3.0',checks=checks,models=reports,
+result=dict(status='PASS_OFFLINE_NOT_GAME_ACCEPTANCE',compatVersion='1.3.1',checks=checks,models=reports,
  sourceSha256=hashlib.sha256(source.encode()).hexdigest(),baselineSha256=hashlib.sha256(baseline.encode()).hexdigest(),protectedModelFiles=len(protected))
 args.report.write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
 print(json.dumps(dict(status=result['status'],checks=checks,units=sum(len(r['units']) for r in reports),models=[dict(model=r['model'],preserved=r['constrainedChainsBitwisePreserved'],bones=r['bones']) for r in reports]),ensure_ascii=False,indent=2))

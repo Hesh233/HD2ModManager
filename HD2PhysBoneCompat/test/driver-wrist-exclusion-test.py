@@ -107,11 +107,13 @@ def attach_check(bones, version, expected, label, seed_stale_cache=False):
         if compat.is_wrist_driver(table(bone)):
             protected_names.add(bone['name'])
             protected_nodes.add(nodes[bone['name']])
-    # Give all controls a covered identity trigger, without relying on one fixture name.
+    # Legacy controls use covered identity. The scoped test06 repair needs the
+    # actual canonical Source control bind, not an unrelated identity quaternion.
+    control_references = {}
     def world_rotation(unit, node):
         if node in protected_nodes:
             accesses.append(('world_rotation', node))
-        return lua.table(0, 0, 0, 1)
+        return control_references.get(node) or lua.table(0, 0, 0, 1)
     S.Unit.world_rotation = lua_fn(world_rotation)
     rig = table(dict(bones=copy.deepcopy(seed['bones']), drivers=dict(version=version, bones=bones)))
     compat.clear_attach_cache()
@@ -133,7 +135,10 @@ def attach_check(bones, version, expected, label, seed_stale_cache=False):
         check(driver_logs == [(expected, len(protected_names), 0)], f'{label}: exclusion diagnostic')
         check(not accesses, f'{label}: wrist accessed during attach/cache: {accesses}')
         if expected:
-            check(compat.update_drivers(session, 1 / 60) == expected, f'{label}: unrelated drivers did not write')
+            for row in session.drivers.values():
+                if row.test06ControlBindQ is not None:
+                    control_references[row.controlNode] = row.test06ControlBindQ
+            check(compat.update_drivers(session, 1 / 60) == expected, f'{label}: covered drivers did not write')
             for _ in range(120):
                 compat.update_drivers(session, 1 / 60)
             check(compat.update_drivers(session, 1 / 60) == 0, f'{label}: unrelated dedup changed')

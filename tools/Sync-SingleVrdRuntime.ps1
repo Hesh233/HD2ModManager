@@ -1,16 +1,17 @@
-﻿param([switch]$Apply, [ValidateSet('single-vrd-121','front-skirt-122','front-skirt-123','spring-dof-130')][string]$Revision='single-vrd-121')
+﻿param([switch]$Apply, [ValidateSet('single-vrd-121','front-skirt-122','front-skirt-123','spring-dof-130','test06-vrd-131-accepted')][string]$Revision='single-vrd-121')
 $frontSkirt = $Revision -like 'front-skirt-*'
 $linearDofs = $Revision -eq 'spring-dof-130'
-$physicsOnly = $frontSkirt -or $linearDofs
+$acceptedTest06 = $Revision -eq 'test06-vrd-131-accepted'
+$physicsOnly = $frontSkirt -or $linearDofs -or $acceptedTest06
 $frontVersion = if($Revision -eq 'front-skirt-123'){'1.2.3'}else{'1.2.2'}
-$reportPath = if($linearDofs){'outputs\vrd-analysis-20261107\spring-dof-sync-20261108.json'}elseif($frontSkirt){"outputs\native-v34-b23-integrated-20261105\manager-1.0.7\归档\测试报告\前裙修复-$frontVersion-同步校验-20261108.json"}else{'outputs\vrd-analysis-20261107\single-vrd-sync-audit.json'}
+$reportPath = if($acceptedTest06){'outputs\test06-vrd-skirt-analysis-20261109\accepted-code-sync.json'}elseif($linearDofs -or $acceptedTest06){'outputs\vrd-analysis-20261107\spring-dof-sync-20261108.json'}elseif($frontSkirt){"outputs\native-v34-b23-integrated-20261105\manager-1.0.7\归档\测试报告\前裙修复-$frontVersion-同步校验-20261108.json"}else{'outputs\vrd-analysis-20261107\single-vrd-sync-audit.json'}
 $allowedResources = @('HD2ModCore.PhysBone.physbone_compat.lua')
 if($physicsOnly){$allowedResources += 'HD2ModCore.PhysBone.physbone_runtime.lua'}
-$backupSuffix=if($linearDofs){'.before-spring-dof-130-20261108.bak'}elseif($frontSkirt){'.before-'+$Revision+'-20261108.bak'}else{'.before-single-vrd-fix.bak'}
+$backupSuffix=if($acceptedTest06){'.before-test06-vrd-131-accepted-20261109.bak'}elseif($linearDofs -or $acceptedTest06){'.before-spring-dof-130-20261108.bak'}elseif($frontSkirt){'.before-'+$Revision+'-20261108.bak'}else{'.before-single-vrd-fix.bak'}
 $ErrorActionPreference='Stop'
 function RevisionBackupPath([string]$target){
  $path=$target+$backupSuffix
- if($linearDofs){
+ if($linearDofs -or $acceptedTest06){
   $installRoot=[IO.Path]::GetFullPath((Join-Path (Get-Location).Path 'outputs\native-v34-b23-integrated-20261105\manager-1.0.7'))
   if([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($target)) -eq $installRoot){
    $category=Join-Path $installRoot '非运行文件\归档\旧版备份'
@@ -23,7 +24,7 @@ function RevisionBackupPath([string]$target){
 
 if($Apply){
  $audit=Get-Content -LiteralPath $reportPath -Raw|ConvertFrom-Json
- if($linearDofs){
+ if($linearDofs -or $acceptedTest06){
   if($audit.revision -ne $Revision -or !$audit.coreCodeIdentical -or $audit.coreMethodsBefore -le 0 -or $audit.coreMethodsBefore -ne $audit.coreMethodsAfter -or $audit.coreConstantsBefore -ne $audit.coreConstantsAfter){throw 'Missing current-baseline code certification'}
  }elseif($audit.coreMethodsExact -ne 16744){throw 'Missing isolation certification'}
  if(@($audit.changedResources|Where-Object {$_ -notin $allowedResources}).Count){throw 'Unrelated resources in certification'}
@@ -52,7 +53,7 @@ $root=(Get-Location).Path
 $install=Join-Path $root 'outputs\native-v34-b23-integrated-20261105\manager-1.0.7'
 $stage=Join-Path $root 'outputs\single-hd2-fix-20261106\manager'
 $cli=Join-Path $root 'HD2ModCli\bin\Release\net10.0'
-$core=if($physicsOnly){Join-Path $root 'HD2ModCore\bin\Release\net8.0\HD2ModCore.dll'}else{Join-Path $root 'outputs\vrd-analysis-20261107\lua-package\export-physics\bin\Release\net8.0\HD2ModCore.dll'}
+$core=if($acceptedTest06){Join-Path $root 'tmp\lua-boot\physics131-isolated-core\HD2ModCore.dll'}elseif($physicsOnly){Join-Path $root 'HD2ModCore\bin\Release\net8.0\HD2ModCore.dll'}else{Join-Path $root 'outputs\vrd-analysis-20261107\lua-package\export-physics\bin\Release\net8.0\HD2ModCore.dll'}
 foreach($p in Get-ChildItem -LiteralPath $cli -Filter *.dll){if($p.Name -notin 'HD2ModCore.dll','hd2mod.dll'){try{[Reflection.Assembly]::LoadFrom($p.FullName)|Out-Null}catch{}}}
 $ctx1=[System.Runtime.Loader.AssemblyLoadContext]::new('isolation-before',$true)
 $ctx2=[System.Runtime.Loader.AssemblyLoadContext]::new('isolation-after',$true)
@@ -75,6 +76,18 @@ $changedResources=@();foreach($n in $a.GetManifestResourceNames()){
  $x.Dispose();$y.Dispose()
 }
 if(@($changedResources|Where-Object {$_ -notin $allowedResources}).Count){throw 'Unrelated embedded resources changed'}
+if($acceptedTest06){
+ $accepted=Get-Content -LiteralPath (Join-Path $root 'outputs\test06-vrd-skirt-analysis-20261109\fix-package-readback.json') -Raw|ConvertFrom-Json
+ foreach($pair in @(@('HD2ModCore.PhysBone.physbone_compat.lua','compat'),@('HD2ModCore.PhysBone.physbone_runtime.lua','runtime'))){
+  $stream=$b.GetManifestResourceStream($pair[0])
+  $reader=[IO.StreamReader]::new($stream,[Text.Encoding]::UTF8)
+  $text=$reader.ReadToEnd();$reader.Dispose()
+  $normalized=[Text.Encoding]::UTF8.GetBytes($text.Replace("`r`n","`n"))
+  $hash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($normalized))
+  if($hash -ne $accepted.sourceSha256.($pair[1])){throw 'Candidate Core content differs from accepted physical Lua (LF-normalized)'}
+ }
+}
+
 if($physicsOnly){
  function HashConstants($assembly){
   $rows=@{};foreach($t in $assembly.GetTypes()){
@@ -89,7 +102,7 @@ if($physicsOnly){
  if($a.GetManifestResourceNames().Count -ne $b.GetManifestResourceNames().Count){throw 'Resource count changed'}
 }
 $oldHashes=@{};$plan=@()
-$names=if($linearDofs){@('HD2ModCore.dll')}elseif($frontSkirt){@('HD2ModCore.dll','HD2ModCore.pdb')}else{@('HD2ModCore.dll','HD2SourceModel.dll','HD2SourceMigration.dll')}
+$names=if($linearDofs -or $acceptedTest06){@('HD2ModCore.dll')}elseif($frontSkirt){@('HD2ModCore.dll','HD2ModCore.pdb')}else{@('HD2ModCore.dll','HD2SourceModel.dll','HD2SourceMigration.dll')}
 foreach($n in $names){
  $source=if($n -like 'HD2ModCore.*'){Join-Path ([IO.Path]::GetDirectoryName($core)) $n}elseif($n -eq 'HD2SourceModel.dll'){Join-Path $root 'HD2SourceModel\bin\Release\net8.0\HD2SourceModel.dll'}else{Join-Path $cli $n}
  $target=Join-Path $install $n;$oldHashes[$n]=(Get-FileHash -LiteralPath $target).Hash

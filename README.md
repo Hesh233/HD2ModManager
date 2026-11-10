@@ -20,3 +20,8 @@ This repository is a heavily modified derivative of [AssestinaR/HD2ModManager](h
 ### VPK腕权重配置（2026-11-08）
 
 管理器根目录 `config.toml` 中使用 `[vpk_conversion]` / `merge_wrist_weights = false`，默认不合并；设为true仅转移程序腕辅助骨权重到下臂，保留骨骼与VRD。两种骨架路线共用，初次界面不再询问，重构建以当前配置为准而不是旧报告。单骨架臂段归一化已修正手掌/手指联动；已有模型/动画须重新生成。详见固定manager的说明文档/腕权重配置与手部联动修复-20261108.md。
+
+
+## Arsenal 物理包兼容修复（2026-11-10）
+
+物理外置包改为功能根 manifest＋patch 三件套，修复旧外层选项可能“部署成功但复制 0 文件”的问题；保留已验收 VRD 1.3.1/runtime 2.3.1 数学与其它功能布局。详见 [平铺导出及验收范围](docs/arsenal-physics-flat-export-20261110.md)。

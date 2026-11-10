@@ -17,7 +17,7 @@ from lupa.lua51 import LuaRuntime
 os.chdir(ROOT)
 lua = LuaRuntime(unpack_returned_tuples=True)
 compat = lua.execute((ROOT / "HD2PhysBoneCompat/src/physbone_compat.lua").read_text(encoding="utf-8-sig"))
-assert compat.version == "1.3.0"
+assert compat.version == "1.3.1"
 
 failures = []
 

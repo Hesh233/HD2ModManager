@@ -94,7 +94,7 @@ print(scale)
             await File.WriteAllTextAsync(Path.Combine(project, "physics.json"), physics.Output, cancellationToken);
             if (physics.ExitCode != 0) throw new InvalidDataException(Hd2ModProcess.Explain(physics, "物理参数封包"));
             PhysBoneLuaPackageExport.Export(Path.Combine(project, "physics-runtime"));
-            foreach (var file in Directory.EnumerateFiles(Path.Combine(project, "physics-runtime", "patch版"), "*.patch_0*"))
+            foreach (var file in Directory.EnumerateFiles(Path.Combine(project, "physics-runtime"), "*.patch_0*"))
                 File.Move(file, file.Replace(".patch_0", ".patch_3", StringComparison.Ordinal));
             // 挂点对调（2026-11-05）：原生骨架工程同时产出 [骨骼挂点修正] 独立 lua 包。
             // patch_4 高于物理包的 patch_3，避免同一补丁家族里互相覆盖。

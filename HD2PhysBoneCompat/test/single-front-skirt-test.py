@@ -44,7 +44,7 @@ def module(path,previous_anchor=False):
 
 lua,current=module(ROOT/'HD2PhysBoneCompat/src/physbone_compat.lua')
 oldlua,old=module(ROOT/'HD2PhysBoneCompat/src/physbone_compat.lua',previous_anchor=True)
-check(current.version=='1.3.0','wrong compat version')
+check(current.version=='1.3.1','wrong compat version')
 spring=py(current.parse_rig((args.model/'physbone-rig.bin').read_bytes()))
 drivers=py(current.parse_driver_rig((args.model/'physbone-driver-rig.bin').read_bytes()))
 rig=dict(spring,drivers=drivers)

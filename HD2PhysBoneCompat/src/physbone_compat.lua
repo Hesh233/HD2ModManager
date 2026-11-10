@@ -19,7 +19,7 @@
 
 local M = {}
 
-M.version = "1.3.0"
+M.version = "1.3.1"
 
 -- ---------------------------------------------------------------------------
 -- 二进制读取（无 string.unpack 的替代）
@@ -2151,6 +2151,131 @@ function M.is_wrist_driver(bone)
         or (control == "r_hand" and (parent == "r_elbow" or parent == "r_forearm"))
 end
 
+-- test06/native v2 only. Canonical quaternions come from the shipped source
+-- and all seven model Units, not the first animated frame. Fixture/provenance:
+-- HD2PhysBoneCompat/test/fixtures/test06-native-vrd-bind.json
+local TEST06_VRD_CONTRACT = {
+    ["hd2n_e6dc84f05416_aux_073_j797554dea8d0_source_extra_73"] = { parentName = "hd2n_e6dc84f05416_anim_001_hips", controlName = "hd2n_e6dc84f05416_anim_002_l_thigh" },
+    ["hd2n_e6dc84f05416_aux_074_j797554dea8d0_source_extra_74"] = { parentName = "hd2n_e6dc84f05416_anim_001_hips", controlName = "hd2n_e6dc84f05416_anim_002_l_thigh" },
+    ["hd2n_e6dc84f05416_aux_076_j797554dea8d0_source_extra_76"] = { parentName = "hd2n_e6dc84f05416_anim_001_hips", controlName = "hd2n_e6dc84f05416_anim_002_l_thigh" },
+    ["hd2n_e6dc84f05416_aux_089_j797554dea8d0_source_extra_89"] = { parentName = "hd2n_e6dc84f05416_anim_001_hips", controlName = "hd2n_e6dc84f05416_anim_007_r_thigh" },
+    ["hd2n_e6dc84f05416_aux_091_j797554dea8d0_source_extra_91"] = { parentName = "hd2n_e6dc84f05416_anim_001_hips", controlName = "hd2n_e6dc84f05416_anim_007_r_thigh" },
+    ["hd2n_e6dc84f05416_aux_124_zhandtwist_l"] = { parentName = "hd2n_e6dc84f05416_anim_021_l_elbow", controlName = "hd2n_e6dc84f05416_anim_022_l_hand" },
+    ["hd2n_e6dc84f05416_aux_126_zhandtwist_r"] = { parentName = "hd2n_e6dc84f05416_anim_046_r_elbow", controlName = "hd2n_e6dc84f05416_anim_047_r_hand" },
+}
+local TEST06_VRD_BIND = {
+    ["hd2n_e6dc84f05416_aux_073_j797554dea8d0_source_extra_73"] = {
+        controlBindQ = { -0.49999951287190042, 0.50000033016954348, -0.49999998970935389, 0.50000016724882779 },
+        driverBindQ = { 0.95522281428898381, 0.1932870264502892, 0.12079755205077895, 0.18867287003270536 },
+        rules = {
+            { invTolerance = 0.6366196870803833, trigger = { -2.9802322387695312e-08, 1.4901161193847656e-07, 2.0861625671386719e-07, 1 }, rotation = { 0, 0, 3.7252907425511239e-09, 1 } },
+            { invTolerance = 0.6366196870803833, trigger = { 0.70710712671279907, -7.1525568046126864e-07, -3.8743016261832963e-07, -0.70710641145706177 }, rotation = { -0.6427876353263855, -1.0244548320770264e-07, 4.1909515857696533e-08, 0.76604443788528442 } },
+            { invTolerance = 0.6366196870803833, trigger = { 0.66446298360824585, -0.24184472858905792, -0.24184501171112061, -0.66446298360824585 }, rotation = { -0.60402244329452515, 0.26200243830680847, 0.21984656155109406, 0.71984660625457764 } },
+        },
+    },
+    ["hd2n_e6dc84f05416_aux_074_j797554dea8d0_source_extra_74"] = {
+        controlBindQ = { -0.49999951287190042, 0.50000033016954348, -0.49999998970935389, 0.50000016724882779 },
+        driverBindQ = { 0.94504196946834018, 0.24438296347781185, 0.21573223605022154, 0.025144491125791129 },
+        rules = {
+            { invTolerance = 0.6366196870803833, trigger = { -2.9802322387695312e-08, 1.4901161193847656e-07, 2.0861625671386719e-07, 1 }, rotation = { 0, 0, 5.5879354476928711e-09, 1 } },
+            { invTolerance = 0.6366196870803833, trigger = { 0.70710712671279907, -7.1525568046126864e-07, -3.8743016261832963e-07, -0.70710641145706177 }, rotation = { -0.64278757572174072, 1.7229467630386353e-08, 1.0695657692849636e-08, 0.7660444974899292 } },
+            { invTolerance = 0.6366196870803833, trigger = { 0.66446298360824585, -0.24184472858905792, -0.24184501171112061, -0.66446298360824585 }, rotation = { -0.60402274131774902, 0.26200222969055176, 0.21984668076038361, 0.71984636783599854 } },
+        },
+    },
+    ["hd2n_e6dc84f05416_aux_076_j797554dea8d0_source_extra_76"] = {
+        controlBindQ = { -0.49999951287190042, 0.50000033016954348, -0.49999998970935389, 0.50000016724882779 },
+        driverBindQ = { 0.92167501520572892, 0.2861393661571523, 0.22231586013941651, -0.13861849736299198 },
+        rules = {
+            { invTolerance = 0.6366196870803833, trigger = { -2.9802322387695312e-08, 1.4901161193847656e-07, 2.0861625671386719e-07, 1 }, rotation = { 0, 0, -7.4505805969238281e-09, 1 } },
+            { invTolerance = 0.6366196870803833, trigger = { 0.70710712671279907, -7.1525568046126864e-07, -3.8743016261832963e-07, -0.70710641145706177 }, rotation = { -0.342020183801651, 2.2351741790771484e-08, 3.7252902984619141e-08, 0.93969255685806274 } },
+            { invTolerance = 0.6366196870803833, trigger = { 0.66446298360824585, -0.24184472858905792, -0.24184501171112061, -0.66446298360824585 }, rotation = { -0.37232053279876709, 0.26070144772529602, 0.26853588223457336, 0.84929418563842773 } },
+        },
+    },
+    ["hd2n_e6dc84f05416_aux_089_j797554dea8d0_source_extra_89"] = {
+        controlBindQ = { -0.49999951287190042, 0.50000033016954348, -0.49999998970935389, 0.50000016724882779 },
+        driverBindQ = { 0.92167501520572892, -0.2861393661571523, -0.22231586013941651, -0.13861849736299198 },
+        rules = {
+            { invTolerance = 0.6366196870803833, trigger = { 1.1920928955078125e-07, 1.7881393432617188e-07, 1.1920928955078125e-07, 1 }, rotation = { 1.4901161193847656e-08, 1.4901161193847656e-08, -3.5390257835388184e-08, 1 } },
+            { invTolerance = 0.6366196870803833, trigger = { 0.70710712671279907, -7.4505805969238281e-07, -4.1723251342773438e-07, -0.70710647106170654 }, rotation = { -0.34201997518539429, -1.1920930376163597e-07, -1.7322601308933372e-07, 0.93969267606735229 } },
+            { invTolerance = 0.6366196870803833, trigger = { 0.66446304321289062, 0.24184432625770569, 0.24184504151344299, -0.66446304321289062 }, rotation = { -0.37232044339179993, -0.2607015073299408, -0.26853621006011963, 0.84929412603378296 } },
+        },
+    },
+    ["hd2n_e6dc84f05416_aux_091_j797554dea8d0_source_extra_91"] = {
+        controlBindQ = { -0.49999951287190042, 0.50000033016954348, -0.49999998970935389, 0.50000016724882779 },
+        driverBindQ = { 0.94504207199411538, -0.24438312619624755, -0.21573163714022278, 0.025144194725976468 },
+        rules = {
+            { invTolerance = 0.6366196870803833, trigger = { -8.9406967163085938e-08, 2.384185791015625e-07, 1.1920928955078125e-07, 1 }, rotation = { 0, 0, 6.9849197537052987e-09, 1 } },
+            { invTolerance = 0.6366196870803833, trigger = { 0.70710712671279907, -7.4505805969238281e-07, -4.1723251342773438e-07, -0.70710647106170654 }, rotation = { -0.6427878737449646, 1.8952415814510459e-07, 1.4979742957166309e-07, 0.76604419946670532 } },
+            { invTolerance = 0.6366196870803833, trigger = { 0.66446304321289062, 0.24184432625770569, 0.24184504151344299, -0.66446304321289062 }, rotation = { -0.6040228009223938, -0.26200228929519653, -0.21984624862670898, 0.71984636783599854 } },
+        },
+    },
+}
+
+-- Exact asset/role/rule contract. No suffix guesses, other namespaces or single v3.
+-- Return bind copies: no session can mutate the shared canonical reference.
+function M.test06_vrd_bind_reference(rig, bone)
+    if type(rig) ~= "table" or type(rig.drivers) ~= "table" or rig.drivers.version ~= 2
+        or type(rig.drivers.bones) ~= "table" or #rig.drivers.bones ~= 7
+        or type(bone) ~= "table" then return nil end
+    local reference = TEST06_VRD_BIND[bone.name]
+    if reference == nil then return nil end
+    local seen = {}
+    for _, candidate in ipairs(rig.drivers.bones) do
+        if type(candidate) ~= "table" then return nil end
+        local expected = TEST06_VRD_CONTRACT[candidate.name]
+        if expected == nil or seen[candidate.name] or candidate.parentName ~= expected.parentName
+            or candidate.controlName ~= expected.controlName then return nil end
+        seen[candidate.name] = true
+    end
+    if type(bone.rules) ~= "table" or #bone.rules ~= #reference.rules then return nil end
+    for i, expected in ipairs(reference.rules) do
+        local rule = bone.rules[i]
+        if type(rule) ~= "table" or type(rule.invTolerance) ~= "number"
+            or rule.invTolerance ~= rule.invTolerance
+            or math.abs(rule.invTolerance - expected.invTolerance) > 1e-6 then return nil end
+        for _, field in ipairs({ "trigger", "rotation" }) do
+            if type(rule[field]) ~= "table" or #rule[field] ~= 4 then return nil end
+            for k = 1, 4 do
+                local v = rule[field][k]
+                if type(v) ~= "number" or v ~= v or math.abs(v - expected[field][k]) > 1e-6 then return nil end
+            end
+        end
+    end
+    local c, b = reference.controlBindQ, reference.driverBindQ
+    return { controlBindQ = { c[1],c[2],c[3],c[4] }, driverBindQ = { b[1],b[2],b[3],b[4] } }
+end
+
+local function test06_q_close(a, b)
+    local dot, na, nb = 0, 0, 0
+    for k = 1, 4 do
+        local x, y = a[k], b[k]
+        if type(x) ~= "number" or x ~= x or x == math.huge or x == -math.huge then return false end
+        dot, na, nb = dot + x*y, na + x*x, nb + y*y
+    end
+    return na > 1e-9 and nb > 1e-9 and math.abs(dot) / math.sqrt(na*nb) > 0.999999
+end
+
+-- Live weighted test06 stores local deltas AFTER bind. Complete-local graphs
+-- have no pre-bind. Resolve this once; never retain borrowed engine handles.
+function M.test06_vrd_setter_frame(S, unit, parentNode, node, snap, reference)
+    local px,py,pz,pw = read_quat4(S, unit, parentNode)
+    local bx,by,bz,bw = read_quat4(S, unit, node)
+    if px == nil or bx == nil then return nil, "world_rotation_unavailable" end
+    local ax,ay,az,aw = qconj(px,py,pz,pw)
+    local x,y,z,w = qmul(ax,ay,az,aw, bx,by,bz,bw)
+    local q = snap.bindQ
+    x,y,z,w = qmul(x,y,z,w, qconj(q[1],q[2],q[3],q[4]))
+    local inferred = { x,y,z,w }
+    if test06_q_close(inferred, reference.driverBindQ) then
+        local b = reference.driverBindQ
+        return { b[1],b[2],b[3],b[4] }, "bind_local_delta"
+    end
+    if test06_q_close(inferred, { 0,0,0,1 }) then
+        return { 0,0,0,1 }, "complete_local"
+    end
+    return nil, "shipped_bind_frame_mismatch"
+end
+
 function M.native_front_skirt_anchor_policy(rig, chain)
     if type(rig) ~= "table" or type(rig.drivers) ~= "table"
         or (rig.drivers.version ~= 1 and rig.drivers.version ~= 2)
@@ -2598,68 +2723,80 @@ function M.attach(S, unit, rig, options)
 	-- VRD driver 骨（QuatInterp）：解析"自身/父级/控制骨"三个节点 + 缓存 bind 姿态。
 	-- 逐根降级：缺任何一环就跳过那一根并记账，绝不影响弹簧链（它们是独立的节点集合）。
 	-- 与链缓存同理：同款护甲的第二个实例直接复用三个下标。
-	local drivers, skippedDrivers, excludedWristDrivers = {}, 0, 0
-	if rig.drivers ~= nil and type(rig.drivers.bones) == "table" and #rig.drivers.bones > 0 then
-		local driverCacheKey = cacheKey and (cacheKey .. "|drv") or nil
-		local cachedDrivers = driverCacheKey and attachCache[driverCacheKey] or nil
-		for driverIndex = 1, #rig.drivers.bones do
-			local bone = rig.drivers.bones[driverIndex]
-			-- Exclude before cache lookup, pose snapshots and any engine call: no
-			-- update or release row can ever take ownership of these wrist helpers.
-			if M.is_wrist_driver(bone) then
-				excludedWristDrivers = excludedWristDrivers + 1
-			else
-				local node, parentNode, controlNode
-				local cachedRow = cachedDrivers ~= nil and cachedDrivers[driverIndex] or nil
-				if cachedRow ~= nil then
-					-- 抽查 driver 节点还在（同链缓存的抽查同款）：不在就整行重解析。
-					local okHas, has = pcall(function() return S.Unit.has_node(unit, id32(bone.name)) end)
-					if okHas and has == true then
-						node, parentNode, controlNode = cachedRow[1], cachedRow[2], cachedRow[3]
-					end
-				end
-				if node == nil then
-					node = resolveNode(bone.name)
-					if node ~= nil then
-						parentNode = resolveNode(bone.parentName)
-						controlNode = resolveNode(bone.controlName)
-					end
-				end
-				-- ⚠️ node 为 nil 时绝不能调 local_pose（对 nil 下标的引擎调用是原生 AV，pcall 拦不住）。
-				local okPose, pose = nil, nil
-				if node ~= nil then
-					okPose, pose = pcall(function() return S.Unit.local_pose(unit, node) end)
-				end
-				local snap = (okPose and pose ~= nil) and snapshot_pose(S, pose) or nil
-				local canonicalOk = rig.drivers.version ~= 3 or (type(bone.controlBindQ) == "table" and #bone.controlBindQ == 4)
-				if node == nil or parentNode == nil or controlNode == nil or snap == nil or not canonicalOk then
-					skippedDrivers = skippedDrivers + 1
-				else
-					snap.bindQ = { stored9_quaternion(snap.r) }
-					drivers[#drivers + 1] = {
-						name = bone.name,
-						node = node,
-						parentNode = parentNode,
-						controlNode = controlNode,
-						base = snap,
-						rules = bone.rules,
-						controlBindQ = bone.controlBindQ,
-						fadeOutside = rig.drivers.version == 3,
-						lastWritten = nil,
-					}
-					if driverCacheKey ~= nil then
-						if cachedDrivers == nil then
-							cachedDrivers = {}
-							attachCache[driverCacheKey] = cachedDrivers
-						end
-						cachedDrivers[driverIndex] = { node, parentNode, controlNode }
-					end
-				end
-			end
-		end
-		logger("[physbone] driver：可驱动 %d 根（主动排除手腕 %d、缺节点/控制骨/bind %d）",
-			#drivers, excludedWristDrivers, skippedDrivers)
-	end
+    local drivers, skippedDrivers, excludedWristDrivers = {}, 0, 0
+    local test06Repaired, test06Rejected, test06CompleteLocal = 0, 0, 0
+    if rig.drivers ~= nil and type(rig.drivers.bones) == "table" and #rig.drivers.bones > 0 then
+        local driverCacheKey = cacheKey and (cacheKey .. "|drv") or nil
+        local cachedDrivers = driverCacheKey and attachCache[driverCacheKey] or nil
+        for driverIndex = 1, #rig.drivers.bones do
+            local bone = rig.drivers.bones[driverIndex]
+            -- Accepted wrist exclusion stays before ALL cache/engine accesses.
+            if M.is_wrist_driver(bone) then
+                excludedWristDrivers = excludedWristDrivers + 1
+            else
+                local node, parentNode, controlNode
+                local cachedRow = cachedDrivers ~= nil and cachedDrivers[driverIndex] or nil
+                if cachedRow ~= nil then
+                    local okHas, has = pcall(function() return S.Unit.has_node(unit, id32(bone.name)) end)
+                    if okHas and has == true then
+                        node, parentNode, controlNode = cachedRow[1], cachedRow[2], cachedRow[3]
+                    end
+                end
+                if node == nil then
+                    node = resolveNode(bone.name)
+                    if node ~= nil then
+                        parentNode = resolveNode(bone.parentName)
+                        controlNode = resolveNode(bone.controlName)
+                    end
+                end
+                -- Never access an engine pose with a nil node.
+                local okPose, pose
+                if node ~= nil then okPose, pose = pcall(function() return S.Unit.local_pose(unit, node) end) end
+                local snap = (okPose and pose ~= nil) and snapshot_pose(S, pose) or nil
+                local canonicalOk = rig.drivers.version ~= 3 or (type(bone.controlBindQ) == "table" and #bone.controlBindQ == 4)
+                if node == nil or parentNode == nil or controlNode == nil or snap == nil or not canonicalOk then
+                    skippedDrivers = skippedDrivers + 1
+                else
+                    snap.bindQ = { stored9_quaternion(snap.r) }
+                    local reference = M.test06_vrd_bind_reference(rig, bone)
+                    local setterFrame, bindMode
+                    if reference ~= nil then
+                        setterFrame, bindMode = M.test06_vrd_setter_frame(S, unit, parentNode, node, snap, reference)
+                    end
+                    if reference ~= nil and setterFrame == nil then
+                        test06Rejected = test06Rejected + 1
+                        logger("[physbone][test06-vrd] rejected driver=%s reason=%s", bone.name, tostring(bindMode))
+                    else
+                        if reference ~= nil then
+                            test06Repaired = test06Repaired + 1
+                            if bindMode == "complete_local" then test06CompleteLocal = test06CompleteLocal + 1 end
+                        end
+                        drivers[#drivers + 1] = {
+                            name = bone.name, node = node, parentNode = parentNode, controlNode = controlNode,
+                            base = snap, rules = bone.rules, controlBindQ = bone.controlBindQ,
+                            test06ControlBindQ = reference and reference.controlBindQ or nil,
+                            test06DriverBindQ = reference and reference.driverBindQ or nil,
+                            test06SetterFrame = setterFrame, test06BindMode = bindMode,
+                            fadeOutside = rig.drivers.version == 3, lastWritten = nil,
+                        }
+                        if driverCacheKey ~= nil then
+                            if cachedDrivers == nil then
+                                cachedDrivers = {}
+                                attachCache[driverCacheKey] = cachedDrivers
+                            end
+                            cachedDrivers[driverIndex] = { node, parentNode, controlNode }
+                        end
+                    end
+                end
+            end
+        end
+        logger("[physbone] driver：可驱动 %d 根（主动排除手腕 %d、缺节点/控制骨/bind %d）",
+            #drivers, excludedWristDrivers, skippedDrivers)
+        if test06Repaired > 0 or test06Rejected > 0 then
+            logger("[physbone][test06-vrd] canonicalBind=%d boneLocalDelta=%d completeLocal=%d rejected=%d profile=test06-native-v2-bind-v1",
+                test06Repaired, test06Repaired-test06CompleteLocal, test06CompleteLocal, test06Rejected)
+        end
+    end
 
 	logger(string.format("[physbone] attach：可用链 %d 条（缺节点 %d、缺锚点 %d）",
 		#sessions, skippedNoNode, skippedNoAnchor))
@@ -2711,6 +2848,8 @@ function M.attach(S, unit, rig, options)
 		rig = rig,
 		sessions = sessions,
 		drivers = drivers,          -- VRD QuatInterp driver 行（不含手腕）；update/release 同链一起处理
+        test06RepairedDrivers = test06Repaired,
+        test06RejectedDrivers = test06Rejected,
 		excludedWristDrivers = excludedWristDrivers,
 		logger = logger,     -- update 也要能打日志（update 里没有 options）
 		nodeCount = nodeCount,          -- 生命周期闸：场景图节点数（仅用于漂移观测）
@@ -3219,7 +3358,7 @@ end
 ---   · v2（烘焙值）：先算物理增量 <c>D = controlQ(t) · controlQ(bind)⁻¹</c>（bind 姿态差
 ---     被 D 的定义吸收，两套骨架 rest 姿态不同也不影响），权重对 D 匹配烘焙触发区，
 ---     写入 = blend(δ′) · bindQ——bind 增量语义，合成节点（bindQ=I）与 Source 段节点
----     （bindQ=原始局部 bind）统一。无规则覆盖 → 跳过写入（节点保持 bind）。
+---     （bindQ=原始局部 bind）统一。无规则覆盖 → 保留既有不写入策略（可能保留上次输出；本轮不改回位策略）。
 ---   · v1（旧容器）：controlQ 直接对原始触发区匹配，写入 blend(绝对 rotation)，
 ---     无覆盖回写 bind——v11 既有行为，一个字节都不变。
 --- </para>
@@ -3246,9 +3385,9 @@ function M.update_drivers(session, dt)
 			local ax, ay, az, aw = qconj(px, py, pz, pw)
 			local cqx, cqy, cqz, cqw = qmul(ax, ay, az, aw, cx, cy, cz, cw)
 			if version >= 2 then
-				-- 物理增量 D（相对 attach 时快照的 bind 控制姿态；惰性建立）。
-				if row.controlQ0 == nil then row.controlQ0 = { cqx, cqy, cqz, cqw } end
-				local b = version >= 3 and row.controlBindQ or row.controlQ0
+				-- Only scoped test06 uses shipped canonical bind; legacy v2 still lazily captures its first control pose.
+				if row.test06ControlBindQ == nil and row.controlQ0 == nil then row.controlQ0 = { cqx, cqy, cqz, cqw } end
+                local b = row.test06ControlBindQ or (version >= 3 and row.controlBindQ or row.controlQ0)
 				local dx, dy, dz, dw = qmul(cqx, cqy, cqz, cqw, qconj(b[1], b[2], b[3], b[4]))
 				qx, qy, qz, qw = M.quatinterp({ dx, dy, dz, dw }, row)
 			else
@@ -3256,7 +3395,7 @@ function M.update_drivers(session, dt)
 			end
 		end
 		if qx == nil then
-			-- 控制骨读不到（瞬时失效）或无规则覆盖：v2 保持 bind（不写，节点在 bind 上）；
+			-- 控制骨读不到（瞬时失效）或无规则覆盖：v2 保留旧的不写入行为；
 			-- v1 写回 bind（旧行为）。都不做增量累积（铁律 1）。
 			if version >= 3 then
 				-- No match returns to zero delta, never leave the last driven rotation latched.
@@ -3268,10 +3407,18 @@ function M.update_drivers(session, dt)
 		end
 		if qx ~= nil then
 			-- v2：bind 相对增量 → 绝对 = δ′ · bindQ；v1：qx..qw 已是绝对值。
-			if version >= 2 then
-				local bind = row.base.bindQ
-				qx, qy, qz, qw = qmul(qx, qy, qz, qw, bind[1], bind[2], bind[3], bind[4])
-			end
+			if row.test06SetterFrame ~= nil then
+                -- L = Bpre^-1 * deltaParent * Bauthored. In a weighted graph
+                -- Bpre=Bauthored; a complete-local graph has Bpre=I. Release
+                -- still restores the untouched attach snapshot.
+                local bind, frame = row.test06DriverBindQ, row.test06SetterFrame
+                qx,qy,qz,qw = qmul(qx,qy,qz,qw, bind[1],bind[2],bind[3],bind[4])
+                local fx,fy,fz,fw = qconj(frame[1],frame[2],frame[3],frame[4])
+                qx,qy,qz,qw = qmul(fx,fy,fz,fw, qx,qy,qz,qw)
+            elseif version >= 2 then
+                local bind = row.base.bindQ
+                qx, qy, qz, qw = qmul(qx, qy, qz, qw, bind[1], bind[2], bind[3], bind[4])
+            end
 			-- 输入自检：四元数必须有限且接近单位长度，坏输入绝不写（同链的 rotation_sane 口径）。
 			local norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
 			if qx ~= qx or norm < 0.5 or norm > 1.5 then

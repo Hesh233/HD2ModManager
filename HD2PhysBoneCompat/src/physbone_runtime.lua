@@ -43,7 +43,8 @@ local M = {}
 -- 2.1.1：外置导出声明 Chef 的 render/shutdown/on_stop，日志走加载器允许的目录。
 -- 2.1.2：从独立 VPK 参考骨选择挂点姿态，保留原生瞄准控制节点。
 -- 2.1.3：按最终模型布局识别护甲；配置影子链先融合再映射挂点，记录 render 回读与双手诊断。
-M.VERSION = "2.3.0"
+-- 2.3.1: test06 native v2 shipped-bind / setter-frame repair; scheduling unchanged.
+M.VERSION = "2.3.1"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"

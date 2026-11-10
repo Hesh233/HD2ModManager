@@ -11,7 +11,7 @@
   "singleAnimationProgress": "stderr-v1",
   "runtimePolicy": "b23-1.0.8",
   "luaVersion": "1.0.17",
-  "physicsRuntimeVersion": "2.3.0",
+  "physicsRuntimeVersion": "2.3.1",
   "gripFixVersion": "test07-1.0.11",
   "gripFixRevision": "bounded-runtime-logs-20261107",
   "presetFiles": [
@@ -144,5 +144,7 @@
   ],
   "singleOutputEncodingProfile": "single-constant-float-boundary2-v1",
   "singleBoundaryFramesEachEnd": 2,
-  "physicsCompatVersion": "1.3.0"
+  "physicsCompatVersion": "1.3.1",
+  "physicsPackageLayout": "arsenal-flat-root-v1",
+  "physicsPackageExportRevision": "20261110-accepted"
 }

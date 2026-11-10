@@ -232,8 +232,8 @@ public sealed class LuaAddonPackageTests
 			var luaFile = Path.Combine(folder, "lua版", "hd2physbone.lua");
 			Assert.True(File.Exists(luaFile), luaFile);
 
-			// patch 版：manifest + 补丁三件套
-			var patchDir = Path.Combine(folder, "patch版");
+			// 物理补丁在根：manifest + 三件套，避免 Arsenal 只选外层后复制零文件。
+			var patchDir = folder;
 			Assert.True(File.Exists(Path.Combine(patchDir, "manifest.json")));
 			Assert.True(File.Exists(Path.Combine(patchDir, "9ba626afa44a3aa3.patch_0")));
 			Assert.True(File.Exists(Path.Combine(patchDir, "9ba626afa44a3aa3.patch_0.stream")));
@@ -273,7 +273,7 @@ public sealed class LuaAddonPackageTests
 		try
 		{
 			var folder = LuaAddonPackageExport.Export(root, LuaAddonCatalog.Physics());
-			var path = Path.Combine(folder, "patch版", "9ba626afa44a3aa3.patch_0");
+			var path = Path.Combine(folder, "9ba626afa44a3aa3.patch_0");
 			var bytes = File.ReadAllBytes(path);
 
 			// 头部：magic + typeCount=1 + fileCount=1
@@ -338,8 +338,8 @@ public sealed class LuaAddonPackageTests
 	public void PhysicsPackageCarriesSingleFrontSkirtPolicyAndTipLimitDiagnostic()
 	{
 		var source = LuaAddonCatalog.Physics().Source;
-		Assert.Contains("M.version = \"1.3.0\"", source, StringComparison.Ordinal);
-		Assert.Contains("M.VERSION = \"2.3.0\"", source, StringComparison.Ordinal);
+		Assert.Contains("M.version = \"1.3.1\"", source, StringComparison.Ordinal);
+		Assert.Contains("M.VERSION = \"2.3.1\"", source, StringComparison.Ordinal);
 		Assert.Contains("function M.is_wrist_driver(bone)", source, StringComparison.Ordinal);
 		Assert.Contains("if M.is_wrist_driver(bone) then", source, StringComparison.Ordinal);
 		Assert.Contains("excludedWristDrivers = excludedWristDrivers", source, StringComparison.Ordinal);
@@ -351,5 +351,19 @@ public sealed class LuaAddonPackageTests
 		Assert.Contains("root.parentName ~= expected.helper", source, StringComparison.Ordinal);
 		Assert.Contains("item.tip and item.tip.bones or item.bones", source, StringComparison.Ordinal);
 		Assert.DoesNotContain("local simBone = item.bones and item.bones[index]", source, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void PhysicsPackageCarriesScopedTest06CanonicalBindRepair()
+	{
+		var source = LuaAddonCatalog.Physics().Source;
+		Assert.Contains("function M.test06_vrd_bind_reference(rig, bone)", source, StringComparison.Ordinal);
+		Assert.Contains("rig.drivers.version ~= 2", source, StringComparison.Ordinal);
+		Assert.Contains("#rig.drivers.bones ~= 7", source, StringComparison.Ordinal);
+		Assert.Contains("test06-native-v2-bind-v1", source, StringComparison.Ordinal);
+		Assert.Contains("hd2n_e6dc84f05416_aux_073_j797554dea8d0_source_extra_73", source, StringComparison.Ordinal);
+		Assert.Contains("row.test06ControlBindQ or", source, StringComparison.Ordinal);
+		Assert.Contains("local bind, frame = row.test06DriverBindQ, row.test06SetterFrame", source, StringComparison.Ordinal);
+		Assert.Contains("shipped_bind_frame_mismatch", source, StringComparison.Ordinal);
 	}
 }

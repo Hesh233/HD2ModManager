@@ -1651,7 +1651,14 @@ namespace HD2ModManager.ViewModels
             {
                 var root = SettingsService.GetLuaPackagesDirectory();
                 var luaPath = Path.Combine(root, feature.Key, "lua版", feature.LuaFileName);
-                if (File.Exists(luaPath)
+                var folder = Path.Combine(root, feature.Key);
+                var layoutCurrent = feature.AddonId != LuaAddonCatalog.PhysicsAddonId
+                    || (File.Exists(Path.Combine(folder, "manifest.json"))
+                        && File.Exists(Path.Combine(folder, "9ba626afa44a3aa3.patch_0"))
+                        && File.Exists(Path.Combine(folder, "9ba626afa44a3aa3.patch_0.stream"))
+                        && File.Exists(Path.Combine(folder, "9ba626afa44a3aa3.patch_0.gpu_resources"))
+                        && !Directory.Exists(Path.Combine(folder, "patch版")));
+                if (layoutCurrent && File.Exists(luaPath)
                     && string.Equals(File.ReadAllText(luaPath), feature.Source, StringComparison.Ordinal))
                 {
                     return false;

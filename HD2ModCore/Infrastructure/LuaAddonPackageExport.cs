@@ -7,7 +7,8 @@ namespace HD2ModCore.Infrastructure;
 /// 把内置 Lua 功能导出成**外置补丁包**，供玩家手动加进 mod 库。
 ///
 /// <para>
-/// 每个功能导出**两种形态**（2026-11-01 核对过三家加载器的一手资料）：
+/// 物理功能的补丁位于功能目录根，兼容 Arsenal 的非递归 Include 扫描。
+/// 其它功能保留原有两种形态（2026-11-01 核对过三家加载器的一手资料）：
 /// <list type="bullet">
 /// <item><c>lua版/</c> —— 裸 <c>.lua</c> 文件。给"从文件夹读脚本"的加载器，也方便玩家自己看。</item>
 /// <item><c>patch版/</c> —— 一个完整的 mod 目录（<c>manifest.json</c> + 补丁三件套）。
@@ -60,7 +61,10 @@ public static class LuaAddonPackageExport
 		Directory.CreateDirectory(luaDir);
 		File.WriteAllText(Path.Combine(luaDir, feature.LuaFileName), feature.Source, utf8);
 
-		var patchDir = Path.Combine(folder, "patch版");
+		// Arsenal only copies direct patch children of the selected Include folder.
+		// Do not retain a second nested physical patch: recursive importers could load it twice.
+		var patchDir = feature.AddonId == LuaAddonCatalog.PhysicsAddonId
+			? folder : Path.Combine(folder, "patch版");
 		Directory.CreateDirectory(patchDir);
 		LuaAddonPatchBuilder.Write(patchDir, feature.AddonId, feature.Source);
 		File.WriteAllText(Path.Combine(patchDir, "manifest.json"), BuildManifest(feature), utf8);
@@ -99,14 +103,22 @@ public static class LuaAddonPackageExport
 			foreach (var note in feature.Notes ?? []) builder.AppendLine(note);
 			return builder.ToString();
 		}
-		builder.AppendLine("这里有两个版本，**按你装的加载器挑一个**，不要两个都装：");
+		var flatPhysics = feature.AddonId == LuaAddonCatalog.PhysicsAddonId;
+		builder.AppendLine(flatPhysics
+			? "本目录根已包含 manifest 与补丁三件套，可直接导入 Arsenal；lua版只供源码编辑，选择一种加载方式。"
+			: "这里有两个版本，**按你装的加载器挑一个**，不要两个都装：");
 		builder.AppendLine();
-		builder.AppendLine("【patch版】推荐。适用于会扫描 Lua 补丁的加载器：");
+		builder.AppendLine(flatPhysics
+			? "【根目录补丁版】推荐；整个功能目录或以它为根制作的 ZIP 可直接导入。"
+			: "【patch版】推荐。适用于会扫描 Lua 补丁的加载器：");
 		builder.AppendLine("  · Boot Mod Loader");
 		builder.AppendLine("  · Chef Shared Loader");
 		builder.AppendLine("  · MDL3 / HD2 Data Hub");
 		builder.AppendLine("  · Bingus Shared Loader");
-		builder.AppendLine("  用法：把整个 patch版 文件夹拖进管理器的 mod 库 → 启用 → 部署。");
+		builder.AppendLine(flatPhysics
+			? "  用法：导入本功能目录/ZIP → 启用 HD2 物理骨骼运行时 → 重新部署并完全重启游戏。"
+			: "  用法：把整个 patch版 文件夹拖进管理器的 mod 库 → 启用 → 部署。");
+		if (flatPhysics) builder.AppendLine("  旧分发 ZIP 的 patch版 在更深子目录，Arsenal 可能显示已部署但复制 0 文件；停用旧条目，不同时加载两份物理。");
 		builder.AppendLine();
 		builder.AppendLine("【lua版】适用于直接从文件夹读 .lua 的加载器，或者你想自己看/改脚本。");
 		builder.AppendLine($"  文件：{feature.LuaFileName}");
