@@ -17,13 +17,14 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
         ICommand enableDecorationsCommand,
         ICommand disableDecorationsCommand,
         ICommand setSelectedModsAsOptionsCommand,
-        ICommand attachSelectedDecorationsCommand,
+
         ICommand removeSelectedOptionsFromHostCommand,
         ICommand promoteArmorProvidersCommand,
         ICommand registerArmorTargetsCommand,
         ICommand releaseArmorProvidersCommand,
         ICommand releaseArmorTargetsCommand,
         ICommand clearArmorTargetsCommand,
+        ICommand rebuildSelectionCommand,
         ICommand cancelSelectionCommand)
     {
         _bottomBar = bottomBar;
@@ -33,13 +34,14 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
         EnableDecorationsCommand = enableDecorationsCommand;
         DisableDecorationsCommand = disableDecorationsCommand;
         SetSelectedModsAsOptionsCommand = setSelectedModsAsOptionsCommand;
-        AttachSelectedDecorationsCommand = attachSelectedDecorationsCommand;
+
         RemoveSelectedOptionsFromHostCommand = removeSelectedOptionsFromHostCommand;
         PromoteArmorProvidersCommand = promoteArmorProvidersCommand;
         RegisterArmorTargetsCommand = registerArmorTargetsCommand;
         ReleaseArmorProvidersCommand = releaseArmorProvidersCommand;
         ReleaseArmorTargetsCommand = releaseArmorTargetsCommand;
         ClearArmorTargetsCommand = clearArmorTargetsCommand;
+        RebuildSelectionCommand = rebuildSelectionCommand;
         CancelSelectionCommand = cancelSelectionCommand;
         BeginMoveCommand = bottomBar.BeginMoveCommand;
         BeginInsertCommand = bottomBar.BeginInsertCommand;
@@ -57,9 +59,12 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
     public bool ShowEnableDecorations => _bottomBar.ShowEnableDecorations;
     public bool ShowDisableDecorations => _bottomBar.ShowDisableDecorations;
     public bool ShowSetAsOption => _bottomBar.ShowSetAsOption;
+    public bool ShowSetCategory => _bottomBar.ShowSetCategory;
+    public bool ShowRebuild => _bottomBar.ShowRebuild;
+    // 由主窗口接上：返回当前选择对应页面的分类筛选和选中的 Mod；拿不到时为 null。
+    public Func<(ModCategoryFilter Filter, IReadOnlyList<string> Guids)?>? CategoryTargetProvider { get; set; }
     public string SetAsOptionText => _bottomBar.SetAsOptionText;
-    public bool ShowAttachDecorationsToHost => _bottomBar.ShowAttachDecorationsToHost;
-    public string AttachDecorationsToHostText => _bottomBar.AttachDecorationsToHostText;
+
     public bool ShowRemoveOptionsFromHost => _bottomBar.ShowRemoveOptionsFromHost;
     public bool ShowPromoteArmorProviders => _bottomBar.ShowPromoteArmorProviders;
     public bool ShowRegisterArmorTargets => _bottomBar.ShowRegisterArmorTargets;
@@ -74,12 +79,13 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
     public ICommand EnableDecorationsCommand { get; }
     public ICommand DisableDecorationsCommand { get; }
     public ICommand SetSelectedModsAsOptionsCommand { get; }
-    public ICommand AttachSelectedDecorationsCommand { get; }
+
     public ICommand RemoveSelectedOptionsFromHostCommand { get; }
     public ICommand PromoteArmorProvidersCommand { get; }
     public ICommand RegisterArmorTargetsCommand { get; }
     public ICommand ReleaseArmorProvidersCommand { get; }
     public ICommand ReleaseArmorTargetsCommand { get; }
     public ICommand ClearArmorTargetsCommand { get; }
+    public ICommand RebuildSelectionCommand { get; }
     public ICommand CancelSelectionCommand { get; }
 }

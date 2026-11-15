@@ -11,10 +11,22 @@
         <StackPanel>
             <TextBlock Text="{x:Static Member=res:Strings.Home_Settings}" Style="{StaticResource AppPageTitle}" Margin="0,0,0,12"/>
 
+            <local:AppUpdateCard DataContext="{Binding AppUpdate}"/>
+
             <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
                 <StackPanel>
                     <TextBlock Text="通用" Style="{StaticResource AppCardTitle}"/>
                     <CheckBox Style="{StaticResource AppToggleSwitch}" Content="导入 Mod 后自动加入活动配置并部署" IsChecked="{Binding AutoImportToActiveProfile, Mode=TwoWay}" Margin="0,12,0,0"/>
+                    <CheckBox x:Name="AskToInstallSkeletonAnimationToggle" Style="{StaticResource AppToggleSwitch}"
+                              Content="是否询问安装骨架动画"
+                              IsChecked="{Binding AskToInstallSkeletonAnimation, Mode=TwoWay}" Margin="0,12,0,0"/>
+                    <TextBlock Text="默认关闭：VPK 导入不弹窗，按默认倍率 1 安装非骨架原版。开启后询问格式、倍率、替换护甲和动画线程；双骨架由下方开关单独控制。"
+                               Style="{StaticResource AppSupportingText}" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                    <CheckBox x:Name="EnableDualSkeletonAnimationVersionToggle" Style="{StaticResource AppToggleSwitch}"
+                              IsChecked="{Binding EnableDualSkeletonAnimationVersion, Mode=TwoWay}" Margin="0,12,0,0"
+                              ToolTip="默认关闭：导入格式选择不显示双骨架；关闭询问骨架动画时，此开关不会改变非骨架导入。">
+                        <TextBlock Text="是否双骨架动画版本，当前挂点修正的性能未优化，用户别开" TextWrapping="Wrap"/>
+                    </CheckBox>
                     <Grid Margin="0,14,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="150"/>
@@ -30,6 +42,22 @@
                         </StackPanel>
                     </Grid>
                     <TextBlock Text="支持相对路径和绝对路径；相对路径将按管理器程序目录解析。" Style="{StaticResource AppSupportingText}" Margin="150,5,0,0" TextWrapping="Wrap"/>
+                    <Grid Margin="0,14,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="150"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="头部缩放比例" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <!-- LostFocus：边打边校验会在输入到一半时就把中间值写进去（"1.2" 打到 "1." 判非法）。 -->
+                        <TextBox Grid.Column="1" Style="{StaticResource AppTextBox}"
+                                 Text="{Binding HeadScaleText, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                 ToolTip="VPK 构建时角色头部的等比缩放比例。默认 8/7 ≈ 1.1429（现行比例）。"/>
+                        <Button Grid.Column="2" Style="{StaticResource AppSecondaryButton}" Content="重置"
+                                Command="{Binding ResetHeadScaleCommand}" Margin="8,0,0,0"/>
+                    </Grid>
+                    <TextBlock Text="{Binding HeadScaleHint}" Style="{StaticResource AppSupportingText}" Margin="150,5,0,0" TextWrapping="Wrap"/>
+                    <TextBlock Text="改完之后对受影响的 Mod 点一次「重构建」才会生效。" Style="{StaticResource AppSupportingText}" Margin="150,3,0,0" TextWrapping="Wrap"/>
                     <StackPanel Orientation="Horizontal" Margin="0,12,0,0" Visibility="Collapsed">
                         <TextBlock Text="Language" Width="150" VerticalAlignment="Center"/>
                         <ComboBox Style="{StaticResource AppComboBox}" Width="180" SelectedValue="{Binding Language, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" SelectedValuePath="Tag">

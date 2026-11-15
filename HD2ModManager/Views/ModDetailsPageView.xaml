@@ -56,7 +56,7 @@
                 只有 patch 级的那几行对 VPK 版 Mod 隐藏——VPK 的 patch 是转换产物，
                 在它上面做 patch 级编辑会被下一次转换覆盖。
             -->
-            <DataTemplate x:Key="CardTemplate.VpkActions">
+            <DataTemplate x:Key="CardTemplate.SectionalActions">
                 <StackPanel>
                     <Grid>
                         <Grid.ColumnDefinitions>
@@ -79,11 +79,23 @@
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="启用 L4N 支持的衣物装饰组件切换"
-                                   Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center" TextWrapping="Wrap"/>
-                        <CheckBox Grid.Column="1" Style="{StaticResource AppToggleSwitch}"
-                                  IsChecked="{Binding EnableVpkComponentTree, Mode=TwoWay}"
-                                  VerticalAlignment="Center" Margin="12,0,0,0"/>
+                        <!--
+                            单行：这一行只是"去哪儿调"，说明写在编辑页里。
+                            按钮与「目标护甲」行同一个 Padding + VerticalAlignment=Center，
+                            两行按钮高度才会一致（原来用 StackPanel 两行字把行撑高了，按钮跟着变高）。
+                        -->
+                        <TextBlock Grid.Column="0" Text="section 组件开关"
+                                   Foreground="{StaticResource TextPrimary}"
+                                   VerticalAlignment="Center" TextWrapping="Wrap"/>
+                        <!--
+                            ⚠ **不要用 Visibility 绑这里**：那会让这一行整行消失/出现，
+                            卡面高度跟着变——用户看到的就是"每点一次按钮，卡片抖一下"。
+                            置灰（IsEnabled）不改变布局，静态卡才真的是静态。
+                        -->
+                        <Button Grid.Column="1" Style="{StaticResource AppSecondaryButton}" Content="编辑 section 组"
+                                Command="{Binding OpenSectionalEditorCommand}" Margin="12,0,0,0" Padding="14,6"
+                                VerticalAlignment="Center"
+                                IsEnabled="{Binding CanOpenSectionalEditor}"/>
                     </Grid>
                     <!--
                         头身合并：头并进护甲套件的胸部槽位，于是游戏里那件头盔 item 不再有模型
@@ -95,43 +107,19 @@
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                            <TextBlock Text="头身合并到身体（头盔 item 不再有模型）"
-                                       Foreground="{StaticResource TextPrimary}" TextWrapping="Wrap"/>
-                            <TextBlock Text="关掉则头回到头盔套件，需要把配套头盔也穿上才有头"
-                                       Foreground="{StaticResource TextSecondary}" FontSize="11"
-                                       TextWrapping="Wrap"/>
-                        </StackPanel>
+                        <TextBlock Grid.Column="0" Text="将头盔合并到身体"
+                                   Foreground="{StaticResource TextPrimary}"
+                                   VerticalAlignment="Center" TextWrapping="Wrap"/>
                         <CheckBox Grid.Column="1" Style="{StaticResource AppToggleSwitch}"
                                   IsChecked="{Binding HeadMergeIntoBody, Mode=TwoWay}"
                                   VerticalAlignment="Center" Margin="12,0,0,0"
                                   AutomationProperties.Name="头身合并到身体"/>
                     </Grid>
-                    <!-- 当前目标下这一项不生效时当场说明（例如目标是自定义素体：头本来就在主体里）。 -->
-                    <TextBlock Text="{Binding HeadMergeHint}"
-                               Foreground="{StaticResource StatusWarning}"
-                               FontSize="11" TextWrapping="Wrap" Margin="0,4,0,0"
-                               Visibility="{Binding HasHeadMergeHint, Converter={StaticResource BoolToVis}}"/>
                     <!--
-                        重构建：用 Mod 文件夹里那份来源 VPK 重跑一次转换。
-                        它不是"再导入一次"——目标护甲、section 勾选、素体 unit id 全部保住，
-                        所以作者发新版包时不用从头配一遍。
+                        这张卡保持**静态**：只在上面三行给出入口与开关，不在这里显示任何过程/
+                        结果文字。翻转开关或点「切换」产生的话一律走消息中心（后台任务或通知），
+                        否则卡面会随每次操作冒出一行，且内容与消息中心重复。
                     -->
-                    <Grid Margin="0,12,0,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0"
-                                   Text="用来源 VPK 重新转换（保住目标护甲与勾选）"
-                                   Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center"
-                                   TextWrapping="Wrap" FontSize="12"/>
-                        <Button Grid.Column="1" Style="{StaticResource AppSecondaryButton}" Content="重构建"
-                                Command="{Binding RebuildVpkCommand}" Margin="12,0,0,0" Padding="14,6"/>
-                    </Grid>
-                    <TextBlock Text="{Binding VpkComponentStatus}" Foreground="{StaticResource TextSecondary}"
-                               TextWrapping="Wrap" Margin="0,8,0,0"
-                               Visibility="{Binding HasVpkComponentStatus, Converter={StaticResource BoolToVis}}"/>
                 </StackPanel>
             </DataTemplate>
 
@@ -332,6 +320,30 @@
                                     InternalReorderRequested="OnHostAttachmentInternalReorderRequested"
                                     TransitionStateChanged="OnHostAttachmentTransitionStateChanged"
                                     Visibility="{Binding HasHostDecorations, Converter={StaticResource BoolToVis}}"/>
+
+                <!--
+                    材质选项：就是库页那张 modlist 卡，直接摆在这里（和上面那张同样的做法），
+                    不做成 CardDescriptor —— 这张卡自带 header，再套进 CardStackHost 就成卡片套卡片了。
+
+                    行内动作只有改名 / 打开文件夹 / 上移 / 下移：
+                    材质选项是主 Mod 的一部分，没有"删除"也没有"移出列表"。
+                    拖动 = 部署顺序（越靠下越优先），松手后由 ViewModel 写回结构文件并重建生效层。
+                -->
+                <local:ModListPanel x:Name="MaterialOptionList"
+                                    ItemsSource="{Binding MaterialOptions}"
+                                    HeaderTitle="材质选项"
+                                    HeaderSummary="{Binding MaterialOptionSummary}"
+                                    MaxHeight="{Binding ActualHeight, ElementName=DetailsScrollViewer, Converter={StaticResource AttachmentListMaxHeight}}"
+                                    VerticalScrollBarVisibility="Auto"
+                                    UseInternalScroll="True"
+                                    SearchText="{Binding MaterialOptionQuery, UpdateSourceTrigger=PropertyChanged}"
+                                    EmptyState="{Binding MaterialOptionEmptyState}"
+                                    RowActions="{Binding MaterialOptionRowActions}"
+                                    RowActionInvoked="OnMaterialOptionRowActionInvoked"
+                                    AllowInternalReorder="{Binding ShowMaterialOptionReorder}"
+                                    InternalReorderRequested="OnMaterialOptionInternalReorderRequested"
+                                    SelectionPolicy="None"
+                                    Visibility="{Binding HasMaterialOptions, Converter={StaticResource BoolToVis}}"/>
             </StackPanel>
         </ScrollViewer>
 

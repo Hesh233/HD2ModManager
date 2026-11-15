@@ -1,3 +1,7 @@
+// 这几个用例**故意**用已废弃的装饰节点当夹具：它们覆盖的是"旧库里存在装饰节点时
+// 各服务怎么处理"这条遗留路径。装饰包已不再支持，但读取旧数据时仍可能遇到，
+// 所以这些守卫要留着、也就要继续测。
+#pragma warning disable CS0618 // ModNodeKind.Decoration 已废弃，这里正是要测它
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
@@ -86,34 +90,30 @@ public sealed class SafeModDeletionPlanningServiceTests
 	}
 
 	[Fact]
-	public void GeneratedContentAndEnabledDecorations_AreReportedAsBlockingRollbackRequirements()
+	public void GeneratedContent_IsReportedAsABlockingRollbackRequirement()
 	{
+		// 装饰包已不再支持：原来这个用例还覆盖"已启用装饰要求先停用"和两条装饰激活清理键。
+		// 那三项已从契约里删除，所以这里只剩头盔合并与托管 Overwrite 两条阻塞项。
 		var host = Node("Helmet merged host", "host", ModNodeKind.Standard, helmetToArmorMerged: true);
-		var decoration = Node("Decoration", "decoration", ModNodeKind.Decoration);
-		var snapshot = Snapshot(null, host, decoration);
+		var snapshot = Snapshot(null, host);
 		var safety = new SafeModDeletionSafetySnapshot(
-			IsDecorationActivationStateKnown: true,
-			EnabledDecorations: [new SafeModDeletionEnabledDecoration(decoration.Id, host.Id)],
 			IsManagedOverwriteStateKnown: true,
 			ManagedOverwrites:
 			[
 				new SafeModDeletionManagedOverwrite(
-					SafeModDeletionManagedOverwriteKind.Decoration,
-					decoration.Id,
+					SafeModDeletionManagedOverwriteKind.HelmetToArmor,
+					host.Id,
 					"host/Overwrite",
 					[host.Id],
 					CanSafelyRollback: false),
 			]);
 
-		var plan = Service.Plan(snapshot, [host.Id, decoration.Id], SafeModDeletionScope.Selected, safety);
+		var plan = Service.Plan(snapshot, [host.Id], SafeModDeletionScope.Selected, safety);
 
 		Assert.True(plan.IsBlocked);
 		Assert.Contains(plan.Blockers, item => item.Code == "HelmetToArmorRollbackRequired");
-		Assert.Contains(plan.Blockers, item => item.Code == "EnabledDecorationRollbackRequired");
 		Assert.Contains(plan.Blockers, item => item.Code == "ManagedOverwriteRollbackRequired");
-		Assert.Contains(plan.ActivationCleanupKeys, item => item.Kind == SafeModDeletionActivationCleanupKind.DecorationActivationForDecoration
-			&& item.PrimaryNodeId == decoration.Id);
-		Assert.Contains(plan.ActivationCleanupKeys, item => item.Kind == SafeModDeletionActivationCleanupKind.DecorationActivationForHost
+		Assert.Contains(plan.ActivationCleanupKeys, item => item.Kind == SafeModDeletionActivationCleanupKind.OptionActivationForHost
 			&& item.PrimaryNodeId == host.Id);
 	}
 

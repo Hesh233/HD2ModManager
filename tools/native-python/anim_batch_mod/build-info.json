@@ -4,14 +4,14 @@
   "archiveSha256": "009D6BF7E3B2DDCA3D784FA09F90FE54336D5B60F0E0F305C37F400BF83CFD3B",
   "signer": "CN=Python Software Foundation, O=Python Software Foundation, L=Beaverton, S=Oregon, C=US",
   "pipelineVersion": "1.0.15",
-  "singleSkeletonPipelineVersion": "1.0.21",
+  "singleSkeletonPipelineVersion": "1.0.22",
   "singleProcessingProfile": "standard-single-v3-normal-reference",
   "singlePlaybackRevision": "normal-reference-r2",
   "singlePlaybackReferenceSha256": "4030765f8066141df8ecd0440322d128a4827d2cf9f5064a3a918b34eaefbf18",
   "singleAnimationProgress": "stderr-v1",
   "runtimePolicy": "b23-1.0.8",
-  "luaVersion": "1.0.17",
-  "physicsRuntimeVersion": "2.3.1",
+  "luaVersion": "1.0.19",
+  "physicsRuntimeVersion": "2.3.4",
   "gripFixVersion": "test07-1.0.11",
   "gripFixRevision": "bounded-runtime-logs-20261107",
   "presetFiles": [
@@ -78,7 +78,7 @@
       "name": "native_arm_reference.py"
     },
     {
-      "sha256": "07185ED39A7429443333110ADACFA8A797146CF711286C34C8FEA9DBBDBECCBE",
+      "sha256": "AD397703E0BA987DAC6B285F975EC15C5BB601264A9255521037B0100D798677",
       "name": "attachment_skeleton.py"
     },
     {
@@ -86,7 +86,7 @@
       "name": "attachment-fix.json"
     },
     {
-      "sha256": "474856A50CAFB5D459987933D6D347F4F32F6B844A1E87470FC99C4CE7F43AEF",
+      "sha256": "240F7CBFD07E218F87B44CE2397BAF18B121C27EFEC251703843B193D248146A",
       "name": "single_skeleton.py"
     },
     {
@@ -126,7 +126,7 @@
       "name": "math3d.py"
     },
     {
-      "sha256": "7F65FFBCF544F5741D8F9A5A714769B3FCDEECFFF8AA81AE9CD3C6A7A0B6D307",
+      "sha256": "E483C5FA65BAC68E3520E738720979E33CA3FD7C09C357B749C189452B82E128",
       "name": "processor.py"
     },
     {
@@ -134,17 +134,70 @@
       "name": "weapon_grip_targets.json"
     },
     {
-      "sha256": "44C4014AF117597928E8E3849EA4B56B1AD6A8EA302E9D74A4FED15E9CB7AF66",
+      "sha256": "FF64A88D7A0C786F600A3382DB7CFEC66A71B0C30E62B755EB2ABD9CA413CED6",
       "name": "config.toml"
     },
     {
       "name": "single_animation_compaction.py",
       "sha256": "3AE0BD6EA54B9829F499A83710036C4739239E8FC5DD589E27F528DBD7DB4541"
+    },
+    {
+      "name": "attachment_repair_profile.py",
+      "sha256": "E44B76A166FF723F467B51E0E21A5C07A6B03E8679DE641964C4FF1CFBA69F5D"
+    },
+    {
+      "name": "attachment_repair_policy.json",
+      "sha256": "8FA40E713ABDEADF7BC08DD7FE657046E587C7939132F16B7209A9AD0B7F47F2"
+    },
+    {
+      "name": "runtime_companions.py",
+      "sha256": "89ADDA90E3E0BF46FBCA8F4CF2C3993113D6E72AE047B8A6BF0E288FBC037904"
     }
   ],
   "singleOutputEncodingProfile": "single-constant-float-boundary2-v1",
   "singleBoundaryFramesEachEnd": 2,
-  "physicsCompatVersion": "1.3.1",
+  "physicsCompatVersion": "1.3.4",
   "physicsPackageLayout": "arsenal-flat-root-v1",
-  "physicsPackageExportRevision": "20261110-accepted"
+  "physicsPackageExportRevision": "20261110-accepted",
+  "legacyLuaVersion": "1.0.17",
+  "runtimeCompanionVersion": "1.0.19",
+  "firstPersonSourceVersion": "1.0.1",
+  "optionSwitchSchema": "hd2-grip-switches-v1",
+  "runtimeCompanionLayout": "paired-standard-manifest-v1",
+  "runtimeCompanionIntegrationDate": "2026-11-10",
+  "singleFingerSegmentPolicy": "native-axis-source-length-finger-chain-v1",
+  "singleIkBendPlaneRevision": "relative-normal-reject-r1",
+  "acceptedJumpFixRevision": "normal-config-20261112",
+  "configurationPolicy": "manager-root-authoritative-synchronized-package-v1",
+  "managerVersion": "1.5.17",
+  "attachmentRepairPolicyVersion": "1.0.19",
+  "attachmentRepairPolicyRevision": "accepted-tp-profile-r1-20261112",
+  "attachmentRepairPolicySha256": "8fa40e713abdeadf7bc08dd7fe657046e587c7939132f16b7209a9ad0b7f47f2",
+  "attachmentFixConfigSha256": "0bf5c450906f20dfa9936ce81d8f329a531b5313b6cde0a1b0b50204f7034d53",
+  "directPhysicsRuntimeVersion": "2.1.45",
+  "directPhysicsCompatVersion": "1.0.0",
+  "physicsRouteVersion": "1.0.0",
+  "physicsRoutingPolicy": "explicit-route-legacy-local-v1",
+  "physicsSourceFiles": [
+    {
+      "name": "physbone_compat.lua",
+      "sha256": "087c2b9c255baa6dd6d4b2713b9772547da2bb5cc3f98e52e4921ae2df65a8b4"
+    },
+    {
+      "name": "physbone_runtime.lua",
+      "sha256": "d2c9c8a9f864b3e6c9829897fc0f2c7ef7a7499d673f2a7b83aea578247f740c"
+    },
+    {
+      "name": "direct/physbone_compat.lua",
+      "sha256": "49b0eeb77e4441cae33b35d352b209e54a2d2a731bb87ad33691065fcb2075d8"
+    },
+    {
+      "name": "direct/physbone_runtime.lua",
+      "sha256": "896dbee6fcb436988f9923134bc0c90aed9218fc9a7f617dee0b3eda6b5f350c"
+    },
+    {
+      "name": "physbone_routes.lua",
+      "sha256": "181178d92b05f16470b5d4aa722030eec9bde8c25acd25a856eff91231117a39"
+    }
+  ]
 }

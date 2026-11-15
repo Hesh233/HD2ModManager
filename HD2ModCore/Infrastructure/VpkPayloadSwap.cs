@@ -80,12 +80,26 @@ public static class VpkPayloadSwap
 			foreach (var path in existing) File.Delete(path);
 			foreach (var path in Directory.EnumerateFiles(producedDirectory, "*", SearchOption.TopDirectoryOnly))
 			{
-				var destination = Path.Combine(payloadDirectory, Path.GetFileName(path));
-				// 保留下来的文件（custom-model.json / components.json）没在上面的 existing 里，
-				// 但它们同样是只读的 —— 覆盖前也得清。
+				var name = Path.GetFileName(path);
+				var destination = Path.Combine(payloadDirectory, name);
+				// **保留下来的用户文件不被新产物覆盖**：`custom-model.json` 记的是"这具素体是谁"
+				// （key 与 unit id 基），`components.json` 记的是"哪些部件算开关"。
+				// 它们留着不删、还让新产物盖掉，等于这一步白做——用户改过的组件树会被转换器的
+				// 默认版本冲掉，而界面上看不出任何变化。
+				if (PreservedFileNames.Contains(name, StringComparer.OrdinalIgnoreCase) && File.Exists(destination))
+					continue;
+				// 保留下来的文件同样是只读的 —— 覆盖前也得清。
 				ClearReadOnly(destination);
 				File.Copy(path, destination, overwrite: true);
 			}
+
+			// ⚠️ **这里不写 patches.json。**
+			//
+			// 结构文件的内容是"哪个 patch 是谁"，唯一来源是**转换报告**；而调用方在这之后才把
+			// 新报告写进 Mod 根（`vpk2patch.json`）。在这里写，用的是**上一份**报告：
+			// 合并了几个材质变体之后，旧报告里根本没有那几个 patch → 清单里材质选项名全是空的，
+			// 界面退化成"材质 1 / 2 / 3"（2026-11-08 用户报的就是这个）。
+			// 现在统一由调用方在写完报告之后调 `SectionalPatchManifestFile.Rebuild`。
 
 			return new Result(true, backupDirectory, restoreReadOnly, null);
 		}

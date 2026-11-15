@@ -19,6 +19,18 @@ public sealed class SingleHd2SkeletonTests
         source = source with { Bones = bones };
         hd2 = new Hd2Rig(hd2.Bones.Select(b => b with
         { WorldBind = TestRig.TranslationAt(b.Index * .01, 0, b.Name == "head" ? 1.7 : .8) }).ToArray());
+        // Model the real HD2 phalanx hierarchy, rather than three self-parented
+        // roots. The new axis gate must reject that impossible old fixture.
+        var native = hd2.Bones.ToList();
+        foreach (var side in new[] { "l", "r" })
+        foreach (var stem in new[] { "thumb", "index", "middle", "ring", "pinky" })
+        for (var k = 1; k <= 3; k++)
+        {
+            var b = native.Single(x => x.Name == $"{side}_{stem}_finger{k}");
+            var parent = native.Single(x => x.Name == (k == 1 ? side + "_hand" : $"{side}_{stem}_finger{k - 1}"));
+            native[b.Index] = b with { ParentIndex = parent.Index };
+        }
+        hd2 = new Hd2Rig(native);
         var head = Array.FindIndex(bones, b => b.Name!.EndsWith("Head1"));
         var pelvis = Array.FindIndex(bones, b => b.Name!.EndsWith("Pelvis"));
         SourceVertex Vertex(Vec3 position, int bone) => new(position, new Vec3(0,0,1), 0, 0,
@@ -29,9 +41,9 @@ public sealed class SingleHd2SkeletonTests
             Vertex(Vec3.Zero, pelvis)], [], []);
         var avatar = new UnitTransformInfo(0,0,0,
             hd2.Bones.Select(b => new UnitLocalTransform([1,0,0,0,1,0,0,0,1],
-                [(float)b.WorldOrigin.X,0,(float)b.WorldOrigin.Z], [1,1,1],0)).ToArray(),
+                [(float)(b.WorldOrigin.X-(b.ParentIndex==b.Index ? 0 : hd2.Bones[b.ParentIndex].WorldOrigin.X)),0,(float)(b.WorldOrigin.Z-(b.ParentIndex==b.Index ? 0 : hd2.Bones[b.ParentIndex].WorldOrigin.Z))], [1,1,1],0)).ToArray(),
             hd2.Bones.Select(b => new UnitTransformMatrix(TestRig.RowVectorAt(b.WorldOrigin.X,0,b.WorldOrigin.Z))).ToArray(),
-            hd2.Bones.Select(b => new UnitTransformEntry(1,(ushort)b.Index)).ToArray(),
+            hd2.Bones.Select(b => new UnitTransformEntry(1,(ushort)b.ParentIndex)).ToArray(),
             hd2.Bones.Select(b => Hd2NameHash.Of(b.Name!)).ToArray());
         return (new RetargetInputs("test.vpk","test","test.mdl",source,geometry,hd2),hd2,avatar);
     }
@@ -217,6 +229,70 @@ public sealed class SingleHd2SkeletonTests
         Assert.True(Vec3.Cross(after.ShippedRest[f1].Origin-after.ShippedRest[ha].Origin,newAxis).Length<1e-9);
         Assert.Equal((worlds[f2].Origin-worlds[f1].Origin).Length,
             (after.ShippedRest[f2].Origin-after.ShippedRest[f1].Origin).Length,precision:10);
+    }
+
+    [Theory]
+    [InlineData("l", "thumb")][InlineData("r", "thumb")]
+    [InlineData("l", "index")][InlineData("r", "index")]
+    [InlineData("l", "middle")][InlineData("r", "middle")]
+    [InlineData("l", "ring")][InlineData("r", "ring")]
+    [InlineData("l", "pinky")][InlineData("r", "pinky")]
+    public void FingerNormalizationSharesJointAndMeshFramesPreservesRootsLengthsAndAxes(string side, string stem)
+    {
+        var (inputs, rig, _) = Fixture();
+        var baseline = SourceRetargetPipeline.Run(inputs, rig, options: SingleHd2Skeleton.Options());
+        var indices = Enumerable.Range(1,3).Select(k=>rig.Find($"{side}_{stem}_finger{k}")!.Index).ToArray();
+        var worlds = baseline.ShippedRest.ToDictionary(x=>x.Key,x=>x.Value);
+        var points = new[]{new Vec3(.6,.3,1.1),new Vec3(.62,.33,1.11),new Vec3(.61,.35,1.13)};
+        for(var k=0;k<3;k++) worlds[indices[k]]=TestRig.TranslationAt(points[k].X,points[k].Y,points[k].Z);
+        var leaf=points[2]+RetargetMath.SafeNormalize(points[2]-points[1])*.018;
+        var palm=rig.Find(side+"_hand")!.Index;
+        var geometry=new[]{points[0],points[1],points[2],leaf,new Vec3(.61,.32,1.12),worlds[palm].Origin};
+        int Source(int node)=>baseline.Resolved.First(x=>x.Value==node).Key;
+        var vertices=geometry.Select((v,k)=>new SourceVertex(v,new(0,0,1),0,0,
+            new(Source(k==5 ? palm : indices[Math.Min(k,2)]),k==4 ? .3f : 1),
+            k==4 ? new SourceVertexWeight(Source(indices[0]),.7f) : default,default)).ToArray();
+        inputs=inputs with {Geometry=inputs.Geometry with {Vertices=vertices}};
+        var helper=new RetargetExtraBone("finger_helper",Hd2NameHash.Of("finger_helper"),indices[1],points[1],indices[1]);
+        var before=baseline with {ShippedRest=worlds,Deform=worlds.ToDictionary(x=>x.Key,_=>Mat4.Identity),
+            Aligned=geometry,Output=geometry,ExtraBones=new[]{helper}};
+        var after=SingleHd2Skeleton.NormalizeFingerSegments(inputs,before,rig);
+        Assert.True((after.ShippedRest[indices[0]].Origin-points[0]).Length<1e-10);
+        for(var k=1;k<3;k++) {
+            var a=after.ShippedRest[indices[k]].Origin-after.ShippedRest[indices[k-1]].Origin;
+            var b=rig.Bones[indices[k]].WorldOrigin-rig.Bones[indices[k-1]].WorldOrigin;
+            Assert.True(Vec3.Cross(a,b).Length/(a.Length*b.Length)<1e-10);
+            Assert.True(Vec3.Dot(a,b)>0);
+            Assert.Equal((points[k]-points[k-1]).Length,a.Length,precision:10);
+        }
+        for(var k=0;k<3;k++) {
+            Assert.True((after.Output[k]-after.ShippedRest[indices[k]].Origin).Length<1e-10);
+            var matrix=after.ShippedRest[indices[k]];
+            Assert.Equal(worlds[indices[k]].M11,matrix.M11);
+            Assert.Equal(worlds[indices[k]].M22,matrix.M22);
+            Assert.Equal(worlds[indices[k]].M33,matrix.M33);
+        }
+        var leafDirection=after.Output[3]-after.ShippedRest[indices[2]].Origin;
+        var last=rig.Bones[indices[2]].WorldBind;
+        var target=new Vec3(last.M11,last.M21,last.M31);
+        Assert.True(Vec3.Cross(leafDirection,target).Length<1e-10);
+        Assert.Equal(.018,leafDirection.Length,precision:10);
+        var mixed=(after.Deform[indices[2]].TransformPoint(geometry[4])*.3f
+            +after.Deform[indices[0]].TransformPoint(geometry[4])*.7f)/(.3f+.7f);
+        Assert.True((after.Output[4]-mixed).Length<1e-10);
+        Assert.Equal(geometry[5],after.Output[5]);
+        Assert.Equal(worlds[palm],after.ShippedRest[palm]);
+        Assert.True((after.ExtraBones[0].WorldOrigin-after.ShippedRest[indices[1]].Origin).Length<1e-10);
+    }
+
+    [Fact]
+    public void FingerNormalizationRejectsDegenerateChainWithoutMeshOnlyFallback()
+    {
+        var (inputs,rig,_) = Fixture();
+        var baseline=SourceRetargetPipeline.Run(inputs,rig,options:SingleHd2Skeleton.Options());
+        var a=rig.Find("r_thumb_finger1")!.Index;var b=rig.Find("r_thumb_finger2")!.Index;
+        var worlds=baseline.ShippedRest.ToDictionary(x=>x.Key,x=>x.Value);worlds[b]=worlds[a];
+        Assert.Throws<InvalidDataException>(()=>SingleHd2Skeleton.NormalizeFingerSegments(inputs,baseline with {ShippedRest=worlds},rig));
     }
 
 }

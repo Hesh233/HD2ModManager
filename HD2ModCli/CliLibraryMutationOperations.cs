@@ -89,7 +89,7 @@ internal static class CliLibraryMutationOperations
 		var nodeIds = selectors
 			.Select(selector => CliProjections.ResolveMod(state.Snapshot.Nodes, selector).Id)
 			.ToArray();
-		return CreateDeletionPlan(state.Snapshot, nodeIds, scope, CreateDeletionSafetySnapshot(state.DecorationActivations));
+		return CreateDeletionPlan(state.Snapshot, nodeIds, scope, CreateDeletionSafetySnapshot());
 	}
 
 	public static async ValueTask<CliModDeletionExecutionResult> DeleteAsync(
@@ -105,11 +105,10 @@ internal static class CliLibraryMutationOperations
 			throw new CliUserException("ModDeletionSelectionRequired", "请至少提供一个要删除的 Mod GUID 或唯一 GUID 前缀。");
 
 		var optionActivations = await CreateValidatedOptionActivationStoreAsync(session, cancellationToken).ConfigureAwait(false);
-		var decorationActivations = await CreateValidatedDecorationActivationStoreAsync(session, cancellationToken).ConfigureAwait(false);
 		var requestedIds = selectors
 			.Select(selector => CliProjections.ResolveMod(snapshot.Nodes, selector).Id)
 			.ToArray();
-		var safety = CreateDeletionSafetySnapshot(decorationActivations.CreateSnapshot().EnabledHostsByDecoration);
+		var safety = CreateDeletionSafetySnapshot();
 		var plan = CreateDeletionPlan(snapshot, requestedIds, scope, safety);
 		if (plan.IsBlocked)
 		{
@@ -123,7 +122,6 @@ internal static class CliLibraryMutationOperations
 				Array.Empty<ModNodeId>(),
 				Array.Empty<ModStorageDeletionResult>(),
 				OptionActivationCleanup: null,
-				DecorationActivationCleanup: null,
 				PostCommitError: null);
 		}
 
@@ -140,7 +138,6 @@ internal static class CliLibraryMutationOperations
 				physical.SkippedNodeIds,
 				physical.StorageResults,
 				OptionActivationCleanup: null,
-				DecorationActivationCleanup: null,
 				PostCommitError: null);
 		}
 
@@ -157,7 +154,6 @@ internal static class CliLibraryMutationOperations
 				physical.SkippedNodeIds,
 				physical.StorageResults,
 				OptionActivationCleanup: null,
-				DecorationActivationCleanup: null,
 				PostCommitError: "物理目录已移除，但重新验证的逻辑删除计划被安全规则阻断；库快照未写入。请使用管理器检查并恢复。" );
 		}
 
@@ -177,7 +173,6 @@ internal static class CliLibraryMutationOperations
 		{
 			await session.VerifyReadyForMutationAsync(cancellationToken).ConfigureAwait(false);
 			var optionCleanup = await CleanupOptionActivationsAsync(optionActivations, appliedPlan, cancellationToken).ConfigureAwait(false);
-			var decorationCleanup = await CleanupDecorationActivationsAsync(decorationActivations, appliedPlan, cancellationToken).ConfigureAwait(false);
 			// CLI 删除没有信息中心，也就没有任何逐节点缓存失效；这里以"库里还剩哪些节点"为准回收一次，
 			// 否则被删节点的派生缓存会永久留在 data/indexes 下。
 			// A CLI deletion has no information center and therefore no per-node invalidation. Sweeping
@@ -194,7 +189,6 @@ internal static class CliLibraryMutationOperations
 				physical.SkippedNodeIds,
 				physical.StorageResults,
 				optionCleanup,
-				decorationCleanup,
 				PostCommitError: null);
 		}
 		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
@@ -209,7 +203,6 @@ internal static class CliLibraryMutationOperations
 				physical.SkippedNodeIds,
 				physical.StorageResults,
 				OptionActivationCleanup: null,
-				DecorationActivationCleanup: null,
 				PostCommitError: exception.Message);
 		}
 	}
@@ -511,26 +504,11 @@ internal static class CliLibraryMutationOperations
 		SafeModDeletionSafetySnapshot safety)
 		=> new SafeModDeletionPlanningService().Plan(snapshot, nodeIds, scope, safety);
 
-	private static SafeModDeletionSafetySnapshot CreateDeletionSafetySnapshot(
-		IReadOnlyDictionary<string, IReadOnlySet<string>> decorationActivations)
-	{
-		ArgumentNullException.ThrowIfNull(decorationActivations);
-		var enabled = new List<SafeModDeletionEnabledDecoration>();
-		foreach (var (rawDecorationId, rawHostIds) in decorationActivations)
-		{
-			if (!Guid.TryParse(rawDecorationId, out var decorationGuid)) continue;
-			foreach (var rawHostId in rawHostIds)
-			{
-				if (!Guid.TryParse(rawHostId, out var hostGuid)) continue;
-				enabled.Add(new SafeModDeletionEnabledDecoration(new ModNodeId(decorationGuid), new ModNodeId(hostGuid)));
-			}
-		}
-		return new SafeModDeletionSafetySnapshot(
-			IsDecorationActivationStateKnown: true,
-			EnabledDecorations: enabled,
+	private static SafeModDeletionSafetySnapshot CreateDeletionSafetySnapshot()
+		// 装饰包已不再支持：装饰激活状态那两项已从契约里删除，所以这里只剩 Overwrite 一项。
+		=> new SafeModDeletionSafetySnapshot(
 			IsManagedOverwriteStateKnown: true,
 			ManagedOverwrites: Array.Empty<SafeModDeletionManagedOverwrite>());
-	}
 
 	private static async ValueTask<CliPhysicalDeletionResult> DeletePlannedStorageAsync(
 		StoragePaths paths,
@@ -729,24 +707,6 @@ internal static class CliLibraryMutationOperations
 		return await store.CleanupAsync(optionIds, hostIds, cancellationToken).ConfigureAwait(false);
 	}
 
-	private static async ValueTask<DecorationActivationCleanupResult> CleanupDecorationActivationsAsync(
-		DecorationActivationStore store,
-		SafeModDeletionPlan plan,
-		CancellationToken cancellationToken)
-	{
-		var decorationIds = plan.ActivationCleanupKeys
-			.Where(item => item.Kind == SafeModDeletionActivationCleanupKind.DecorationActivationForDecoration)
-			.Select(item => item.PrimaryNodeId.Value.ToString("N"))
-			.Distinct(StringComparer.OrdinalIgnoreCase)
-			.ToArray();
-		var hostIds = plan.ActivationCleanupKeys
-			.Where(item => item.Kind == SafeModDeletionActivationCleanupKind.DecorationActivationForHost)
-			.Select(item => item.PrimaryNodeId.Value.ToString("N"))
-			.Distinct(StringComparer.OrdinalIgnoreCase)
-			.ToArray();
-		return await store.CleanupAsync(decorationIds, hostIds, cancellationToken).ConfigureAwait(false);
-	}
-
 	private static async ValueTask<CliProfileMutationExecutionResult> ApplyProfileMutationForSelectedProfileAsync(
 		CliLibraryWriteSession session,
 		string profileSelector,
@@ -812,9 +772,21 @@ internal static class CliLibraryMutationOperations
 		var persisted = await session.SaveSnapshotAsync(
 			snapshot with { Nodes = nodes, SavedUtc = DateTimeOffset.UtcNow },
 			cancellationToken).ConfigureAwait(false);
-		return persisted.Nodes.TryGetValue(updatedNode.Id, out var stored)
-			? stored
-			: throw new CliUserException("ModMutationPersistenceFailed", "保存后未能重新定位刚刚修改的 Mod。");
+		if (!persisted.Nodes.TryGetValue(updatedNode.Id, out var stored))
+			throw new CliUserException("ModMutationPersistenceFailed", "保存后未能重新定位刚刚修改的 Mod。");
+
+		// 名字/备注同时写进 Mod 自己的设置文件——它是**权威**，library.json 只是索引。
+		// 只写库不写文件夹的话，下次扫描会把用户的改名用文件夹里的旧名字覆盖回去。
+		var directory = Path.Combine(session.Paths.ModsDirectory, stored.RelativePath);
+		var existing = ModSettingsFile.TryRead(directory);
+		ModSettingsFile.TryWrite(directory, new ModSettingsFile.Document(
+			ModSettingsFile.CurrentSchema,
+			existing?.EnabledMaterialPatches,
+			stored.Id.Value.ToString("N"),
+			stored.Metadata.Name,
+			stored.Metadata.Notes));
+
+		return stored;
 	}
 
 	private static async ValueTask<OptionActivationStore> CreateValidatedOptionActivationStoreAsync(
@@ -831,24 +803,6 @@ internal static class CliLibraryMutationOperations
 		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
 		{
 			throw new CliUserException("OptionActivationsUnreadable", $"无法安全读取 option-activations.json：{exception.Message}");
-		}
-	}
-
-	private static async ValueTask<DecorationActivationStore> CreateValidatedDecorationActivationStoreAsync(
-		CliLibraryWriteSession session,
-		CancellationToken cancellationToken)
-	{
-		await session.VerifyReadyForMutationAsync(cancellationToken).ConfigureAwait(false);
-		try
-		{
-			_ = await DecorationActivationStore.TryLoadReadOnlySnapshotAsync(
-				session.Paths.DecorationActivationsPath,
-				cancellationToken).ConfigureAwait(false);
-			return CoreServices.CreateDecorationActivationStore(session.Paths);
-		}
-		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
-		{
-			throw new CliUserException("DecorationActivationsUnreadable", $"无法安全读取 decoration-activations.json：{exception.Message}");
 		}
 	}
 
@@ -904,7 +858,6 @@ internal sealed record CliModDeletionExecutionResult(
 	IReadOnlyList<ModNodeId> SkippedNodeIds,
 	IReadOnlyList<ModStorageDeletionResult> StorageResults,
 	OptionActivationCleanupResult? OptionActivationCleanup,
-	DecorationActivationCleanupResult? DecorationActivationCleanup,
 	string? PostCommitError);
 
 internal sealed record CliRelationshipSidecarBackup(

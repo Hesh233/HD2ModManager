@@ -190,23 +190,24 @@ public sealed class RuntimeArmorRegistryService
 	}
 
 	/// <summary>
-	/// 把真映射模式写进注册表的数据还原成原版。只在确实改过（存在状态文件）时动作。
+	/// 把真映射模式写进注册表的数据还原成原版（= 用空结构编译一次）。
 	///
 	/// 离开真映射模式时必须调用：数据层的改动没有任何运行时能撤销，留着它再叠加
 	/// 运行时覆盖，等于把外观映射了两次。
+	/// <para>
+	/// <b>不再看"有没有改过"。</b>受管 dl_bin 是派生事实：用空结构编译一次就是还原，
+	/// 不需要任何状态文件来证明它曾经被改过。已经等于原版时编译结果不变、也不会写盘。
+	/// </para>
 	/// </summary>
 	public async ValueTask<ArmorRegistryDataMappingResult> RestoreDataMappingAsync(
 		string gameDataDirectory,
 		CancellationToken cancellationToken = default)
 	{
 		if (string.IsNullOrWhiteSpace(gameDataDirectory)) return ArmorRegistryDataMappingResult.Nothing;
-		var backupDirectory = Path.Combine(registryRoot, "backup");
-		if (!File.Exists(Path.Combine(backupDirectory, ArmorRegistryDataMapper.StateFileName)))
-			return ArmorRegistryDataMappingResult.Nothing;
 		return await new ArmorRegistryDataMapper().ApplyAsync(
 			gameDataDirectory,
 			Array.Empty<ArmorRegistryDataMapping>(),
-			backupDirectory,
+			Path.Combine(registryRoot, "backup"),
 			cancellationToken).ConfigureAwait(false);
 	}
 
@@ -311,8 +312,12 @@ public sealed class RuntimeArmorRegistryService
 		CancellationToken cancellationToken = default)
 	{
 		var snapshot = await ReadSnapshotAsync(cancellationToken).ConfigureAwait(false);
-		ValidateModels(snapshot.Document.ModelDefinitions, snapshot.Document.Mappings);
-		return snapshot.Document.ModelDefinitions
+		// 先归一化再校验：旧产物会把头盔件写成 body=0/1（头盔没有身形变体，只能是 Any），
+		// 直接校验会让整份素体目录"读不出来"，界面上表现成"读取已注册的自定义素体失败"。
+		// 归一化只改内存里的这份投影，磁盘上的 custom-model.json 不动。
+		var models = NormalizeLegacyHelmetSlots(snapshot.Document.ModelDefinitions);
+		ValidateModels(models, snapshot.Document.Mappings);
+		return models
 			.Where(model => model.Pieces is { Count: > 0 })
 			.Select(model => new EquipmentUnitCatalogEntry(
 				CustomModelArchiveId(model.Key),
@@ -357,32 +362,45 @@ public sealed class RuntimeArmorRegistryService
 		var deploymentPath = DeploymentStatePath;
 		var protocolExists = File.Exists(protocolPath);
 		var deployment = await ReadKeyValueFileAsync(deploymentPath, cancellationToken).ConfigureAwait(false);
-		var workspaceBelongsToCurrentLibrary = !deployment.Exists
-			|| !deployment.Values.TryGetValue("workspace", out var deployedWorkspace)
-			|| string.Equals(
-				Path.GetFullPath(deployedWorkspace),
-				Path.GetFullPath(WorkspacePath),
-				StringComparison.OrdinalIgnoreCase);
 		var workspaceExists = File.Exists(WorkspacePath);
 		// 归属回退链：协议旁边的 owner（新，与协议同生命周期）→ 程序目录的部署状态（旧，换目录即丢）→ 无从判断。
-		// 注意这里**只用于展示**，不参与"要不要采用协议"的决定——采用与否仍然只看上面那条 workspaceBelongsToCurrentLibrary，
-		// 因为把回退收紧会让换过目录的老用户直接看不到自己的映射（用户已明确否决该方向）。
+		// **只用于展示**（"这份协议来自哪个库"），不参与任何采用/合并决定。
 		var owner = await ReadKeyValueFileAsync(Path.Combine(registryRoot, OwnerFileName), cancellationToken).ConfigureAwait(false);
 		string? protocolOwnerWorkspace = null;
 		if (owner.Values.TryGetValue("workspace", out var ownedWorkspace) && !string.IsNullOrWhiteSpace(ownedWorkspace))
 			protocolOwnerWorkspace = ownedWorkspace;
 		else if (deployment.Values.TryGetValue("workspace", out var deployedOwner) && !string.IsNullOrWhiteSpace(deployedOwner))
 			protocolOwnerWorkspace = deployedOwner;
+		// **映射结构的唯一来源是模组库里的那份 JSON。**
+		// 它不在 ⇒ 映射结构就是空的，**绝不回退去读 C 盘协议**：那是派生文件，
+		// 换库时它属于上一个库，读它等于把旧库的映射带进新库（用户明确要求：换库只信任库里的结构文件）。
 		var documentSource = workspaceExists
 			? RuntimeArmorRegistryDocumentSource.Workspace
-			: protocolExists && workspaceBelongsToCurrentLibrary
-				? RuntimeArmorRegistryDocumentSource.ProtocolFallback
-				: RuntimeArmorRegistryDocumentSource.Empty;
+			: RuntimeArmorRegistryDocumentSource.Empty;
 		var document = workspaceExists
 			? await ReadWorkspaceAsync(cancellationToken).ConfigureAwait(false)
-			: documentSource is RuntimeArmorRegistryDocumentSource.ProtocolFallback
-				? ParseProtocol(await ReadBoundedTextAsync(protocolPath, MaximumProtocolBytes, cancellationToken).ConfigureAwait(false))
-				: new RuntimeArmorRegistryDocument(0, false, Array.Empty<RuntimeArmorRegistryMapping>());
+			: new RuntimeArmorRegistryDocument(0, false, Array.Empty<RuntimeArmorRegistryMapping>());
+		// **素体的权威来源是 Mod 文件夹**（每个 Mod 目录里的 `custom-model.json`），
+		// 注册表里那份只是缓存。这里用磁盘收集的结果覆盖模型列表，于是：
+		//   · 名字永远来自持有它的那份文件（工作区被删/被回退成协议都不会丢名字）；
+		//   · 素体的出现与消失跟着 Mod 走，不需要"删除素体"这个动作。
+		// 工作区里存在、磁盘上没有的那些**暂时保留**（迁移期），由
+		// `CustomModelReconciler` 在"首次只标记、之后才解散"的两阶段规则下处理。
+		var customModels = CustomModelCatalog.Collect(paths.ModsDirectory);
+		if (customModels.LibraryUsable && customModels.Entries.Count != 0)
+		{
+			var merged = new Dictionary<string, RuntimeArmorRegistryModel>(StringComparer.OrdinalIgnoreCase);
+			foreach (var model in customModels.Models) merged[model.Key] = model;
+			foreach (var model in document.ModelDefinitions) merged.TryAdd(model.Key, model);
+			document = new RuntimeArmorRegistryDocument(
+				document.Revision,
+				document.Enabled,
+				document.Mappings,
+				merged.Values.OrderBy(model => model.Key, StringComparer.Ordinal).ToArray(),
+				document.PieceOverrideDefinitions,
+				document.TargetModeDefinitions,
+				document.CompositionMode);
+		}
 		var fingerprint = await FingerprintProtocolAsync(cancellationToken).ConfigureAwait(false);
 		var runtime = await ReadKeyValueFileAsync(runtimePath, cancellationToken).ConfigureAwait(false);
 		var cache = await ReadKeyValueFileAsync(cachePath, cancellationToken).ConfigureAwait(false);
@@ -513,6 +531,8 @@ public sealed class RuntimeArmorRegistryService
 		{
 			if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
 		}
+		// 真映射这一层的结果要一路带到返回值里（见 RuntimeArmorRegistryApplyResult.DataMapping）。
+		ArmorRegistryDataMappingResult? dataMapping = null;
 		// 运行时真正执行的是 unit 对列表（wardrobe.links）；协议本身只是管理器的意图记录。
 		// 没有游戏数据目录或编译失败时**不写文件**——留上一版映射，比写一份空映射安全。
 		if (gameDataDirectory is not null && Directory.Exists(gameDataDirectory))
@@ -526,7 +546,14 @@ public sealed class RuntimeArmorRegistryService
 				{
 					var links = WardrobeLinkCompiler.Compile(
 						authority, compiled.Mappings, compiled.Revision, compiled.Enabled, compiled.ModelDefinitions);
-					if (links.LinkCount > 0)
+					// 链接数为 0 有两种成因：① 映射被关掉 / 清空（意图就是"没有映射"）；
+					// ② 映射存在但目标/来源解析不出来（编译失败）。①必须覆盖掉上一版，
+					// 否则运行时继续执行旧映射（2026-11-13 实测：协议已关闭，旧 wardrobe.links
+					// 仍把 4 件护甲改指到不存在的 unit，游戏里缺身体）；②才保留上一版。
+					// 只覆盖已存在的文件，没有就不凭空创建。
+					var intentionallyEmpty = compiled.Mappings.Count == 0 || !compiled.Enabled;
+					if (links.LinkCount > 0
+						|| (intentionallyEmpty && File.Exists(Path.Combine(registryRoot, WardrobeLinkCompiler.FileName))))
 					{
 						await WriteAtomicTextAsync(
 							Path.Combine(registryRoot, WardrobeLinkCompiler.FileName),
@@ -535,57 +562,16 @@ public sealed class RuntimeArmorRegistryService
 					}
 				}
 				// authority 为 null 表示索引数据库里没有装备关系表：这时**不写** wardrobe.links
-				// （留上一版），但下面的真映射落地 / 还原照常进行——它不需要权威表。
+				// （留上一版）。
 
-				// 无论当前是哪个模式都要走一遍：离开真映射模式时必须把注册表还原，
-				// 否则数据层改动会一直留着，再叠加运行时覆盖就等于把外观映射了两次。
-				var inTrueMapping = LuaDeploymentService.MappingMode == ArmorMappingMode.TrueMapping;
-				{
-					var modelsByKey = compiled.ModelDefinitions
-						.Where(model => !string.IsNullOrWhiteSpace(model.Key))
-						.GroupBy(model => model.Key, StringComparer.Ordinal)
-						.ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
-					var dataMappings = new List<ArmorRegistryDataMapping>();
-					foreach (var mapping in inTrueMapping && enabled ? compiled.Mappings : Array.Empty<RuntimeArmorRegistryMapping>())
-					{
-						if (mapping.IsModelMapping)
-						{
-							if (!modelsByKey.TryGetValue(mapping.ModelKey!, out var model)) continue;
-							var pieces = new List<ArmorRegistryDataSourcePiece>();
-							foreach (var piece in model.Pieces ?? Array.Empty<RuntimeArmorRegistryModelPiece>())
-							{
-								if (!piece.Enabled) continue;
-								// IsReserved = 编辑器把分行合并成 Any 之后留下的旧副本，真正生效的是 Any 那条。
-								// 一起写出去会让同一 (槽位, 层) 在多个 body 行里各出现一次，正是"身形串件"的来源。
-								if (piece.IsReserved) continue;
-								if (!TryParseUnitHex(piece.Unit, out var unit)) continue;
-								pieces.Add(new ArmorRegistryDataSourcePiece(piece.Body, piece.Slot, piece.PieceType, unit));
-							}
-							if (pieces.Count > 0)
-								dataMappings.Add(new ArmorRegistryDataMapping(mapping.TargetItemId, null, pieces));
-							else if (model.SourceItemId is uint templateId)
-								// 素体没有显式件表时，它的件来自被当作模板的那套真实护甲。
-								dataMappings.Add(new ArmorRegistryDataMapping(mapping.TargetItemId, templateId));
-							continue;
-						}
-						if (mapping.SourceItemId is uint sourceId)
-							dataMappings.Add(new ArmorRegistryDataMapping(mapping.TargetItemId, sourceId));
-					}
-					// 真映射模式下按映射重建；其它模式（以及关闭映射时）用空列表调用，
-					// 走还原路径。只有确实改过（存在状态文件）才需要还原，避免无谓的
-					// 解密与备份播种。
-					var backupDirectory = Path.Combine(registryRoot, "backup");
-					var everModified = File.Exists(
-						Path.Combine(backupDirectory, ArmorRegistryDataMapper.StateFileName));
-					if (inTrueMapping || everModified)
-					{
-						await new ArmorRegistryDataMapper().ApplyAsync(
-							gameDataDirectory,
-							dataMappings,
-							backupDirectory,
-							cancellationToken).ConfigureAwait(false);
-					}
-				}
+				// **这里原本是"真映射落地 / 还原"那一大块。2026-11-11 起整块删除。**
+				// 它做的两件事都是写 `generated_customization_armor_sets.dl_bin`：
+				//   · 真映射模式 ⇒ 按映射编译后写盘；
+				//   · 其它模式   ⇒ 用空结构编译（= 还原）后写盘。
+				// 游戏这一版改了该文件的校验方式，写过的文件一进游戏就闪退，两条都不能走。
+				// 现在这条链路**完全不碰该文件**；外观映射只由运行时 Lua（软映射）承载。
+				// 守卫仍留在 ArmorRegistryDataMapper.ApplyAsync 里作为最后一道闸。
+				// dataMapping 因而恒为 null —— 页面上"真映射：…"那几行也就不会再出现。
 			}
 			catch (Exception exception) when (exception is IOException
 				or InvalidDataException
@@ -618,7 +604,11 @@ public sealed class RuntimeArmorRegistryService
 			snapshot.Document,
 			snapshot.Fingerprint,
 			snapshot.RuntimeProcessRunning,
-			snapshot.RuntimeAcknowledged);
+			snapshot.RuntimeAcknowledged)
+		{
+			// 真映射那一层的结论必须带回去（没写成功时 Message 说明原因）。
+			DataMapping = dataMapping,
+		};
 	}
 
 	private static readonly JsonSerializerOptions WorkspaceJsonOptions = new(JsonSerializerDefaults.Web)
@@ -1011,13 +1001,33 @@ public sealed class RuntimeArmorRegistryService
 			.ThenBy(item => item.Unit, StringComparer.Ordinal)
 			.ToArray();
 
+	/// <summary>
+	/// 修掉老数据里两种不合规的头盔条目。
+	/// <para>
+	/// <b>头盔没有身形变体。</b>注册表的规则是"<c>slot=0</c> 只能是 <c>body=3(Any)</c>"，
+	/// 但旧产物会按 unit 自带的身形写成 <c>body=0 / 1</c>（实测某次转换写出 11 条
+	/// 全是 slot=0、body 混着 0/1/3 的记录，读取时整份失败）。
+	/// </para>
+	/// <para>
+	/// 归一化之前先做 <c>body=3 &amp; slot=1 → slot=0</c>（更老的一种写法），
+	/// 再把 <c>slot=0</c> 的 body 一律按 Any 处理；归一之后坐标相同的条目会撞车，
+	/// 所以按 <c>(body, slot, pieceType)</c> 去重、保留第一条。
+	/// </para>
+	/// </summary>
 	private static IReadOnlyList<RuntimeArmorRegistryModel> NormalizeLegacyHelmetSlots(
 		IEnumerable<RuntimeArmorRegistryModel> models)
-		=> models.Select(model => model with
+		=> models.Select(model =>
 		{
-			Pieces = (model.Pieces ?? Array.Empty<RuntimeArmorRegistryModelPiece>())
-				.Select(piece => piece.Body == 3 && piece.Slot == 1 ? piece with { Slot = 0 } : piece)
-				.ToArray()
+			var seen = new HashSet<(uint Body, uint Slot, uint PieceType)>();
+			var pieces = new List<RuntimeArmorRegistryModelPiece>();
+			foreach (var raw in model.Pieces ?? Array.Empty<RuntimeArmorRegistryModelPiece>())
+			{
+				var piece = raw.Body == 3 && raw.Slot == 1 ? raw with { Slot = 0 } : raw;
+				if (piece.Slot == 0 && piece.Body != 3) piece = piece with { Body = 3 };
+				if (seen.Add((piece.Body, piece.Slot, piece.PieceType))) pieces.Add(piece);
+			}
+
+			return model with { Pieces = pieces.ToArray() };
 		}).ToArray();
 
 	private static uint ParseModelSlot(string value, int lineNumber, uint body)

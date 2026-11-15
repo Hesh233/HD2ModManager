@@ -1,0 +1,671 @@
+using System.Globalization;
+using System.IO;
+using System.Text.Json;
+using HD2ModCore.Infrastructure;
+
+namespace HD2ModCore.Infrastructure;
+
+/// <summary>一次「从来源 VPK 重构建这个 VPK 模组」的结果。</summary>
+/// <param name="Units">产物里有几个 Unit。</param>
+/// <param name="Materials">
+/// 被 section 实际引用的**不同**材质 id 个数。<b>不是</b>报告里的 material 条目数——
+/// 模型 patch 本来就不含材质定义（材质写在同批的材质包里），那个数恒为 0，照搬只会误导。
+/// </param>
+public sealed record VpkRebuildOutcome(
+	bool Ok,
+	string? Error,
+	int Units,
+	int Materials,
+	bool Rekeyed,
+	string? BackupDirectory,
+	IReadOnlyList<string> Notes)
+{
+	public static VpkRebuildOutcome Failed(string error, IReadOnlyList<string>? notes = null)
+		=> new(false, error, 0, 0, false, null, notes ?? []);
+
+	/// <summary>这次换到了哪件护甲（显示名）；<c>null</c> = 没做换甲。</summary>
+	public string? TargetName { get; init; }
+
+	/// <summary>
+	/// 该做却没做成的那一步的原因（目前只有"生效层没重建"）。
+	/// <para>
+	/// <b>为什么要有它。</b>来源产物已经换好了，所以整次重构建不能算失败；但生效层还停在旧状态，
+	/// 于是"用户以为修好了、游戏里还是旧样子"。只写在 Notes 里会被折叠进细节——实测有用户
+	/// 重构建了全部 vpk2patch Mod、每次其实都失败在换甲那一步，界面却只说"重构建完成"。
+	/// </para>
+	/// </summary>
+	public string? IncompleteReason { get; init; }
+}
+
+/// <summary>
+/// 用 Mod 根上那份**来源 VPK** 重跑一次转换，把 <c>vpk2patch/</c> 换掉，
+/// 然后**按当前配置**（目标护甲 + section 勾选）重新生成 <c>Overwrite/</c>。
+/// <para>
+/// <b>它解决的是"重来一次"的代价问题。</b>没有它，作者发新版模型、或者我们改了转换器，
+/// 用户唯一的路是"重新导入"——而重新导入会丢掉三样已经配好的东西：换到哪件护甲、
+/// 哪些 section 被关掉、素体登记的 unit id。三样都得手工重来一遍。
+/// </para>
+/// <para><b>必须保住的四样东西，以及各自的机制：</b></para>
+/// <list type="number">
+/// <item><b>命名空间</b>（材质/贴图 id 的一半输入）——从 <c>vpk2patch.json</c> 的
+/// <c>idNamespace</c> 原样接上，用 <c>--id-namespace-token</c> 传。</item>
+/// <item><b>unit id</b>——用 <c>--reuse-model</c> 把旧的 <c>custom-model.json</c> 指过去，
+/// 转换器沿用它记下的素体 key 与 id 基。少了这一条，id 全部重新随机，下面两条立刻失效。</item>
+/// <item><b>关掉的 section</b>——<c>wardrobe.json</c> 里按来源 Unit 键记着，换甲时原样烘进去。</item>
+/// <item><b>换到的目标护甲</b>——同样在 <c>wardrobe.json</c> 里，重构建据此重跑换甲。</item>
+/// </list>
+/// <para>
+/// <b>为什么先转到临时目录、校验通过才换。</b><c>vpk2patch/</c> 是唯一能让用户"再换一件护甲"
+/// 的输入。就地转换一旦中途失败（源包损坏、缺 texconv、模型读不出来），用户手上就只剩一份
+/// 半成品，而原来的产物已经没了。临时目录 + 通过后整批替换，失败时原样不动。
+/// </para>
+/// <para>
+/// <b>不碰游戏数据。</b>重构建只写 Mod 目录：不写 <c>generated_customization_armor_sets.dl_bin</c>，
+/// 不动护甲映射状态。真映射的件表按 unit id 记，而 id 在这一步被保住了，所以它继续有效；
+/// 需要重进游戏让引擎重新读 Mod。
+/// </para>
+/// </summary>
+public static class VpkRebuildService
+{
+	/// <summary>
+	/// 产物里**没有**记下转换参数时（旧版转换器产的）用的那套。
+	/// <para>
+	/// <b>为什么不是"什么都不传、让 CLI 用自己的默认值"。</b>CLI 的默认是
+	/// <c>--matcap bake</c>（matcap 直接烘进底色，Python 时代的行为），而管理器导入用的是
+	/// <c>--matcap metal</c>（把 matcap 的色相抬到金属 F0，实机选出来的那一档）。
+	/// 照 CLI 默认重跑，等于把每个旧 VPK Mod 的金属件退回"又黑又没反光"——用户会觉得
+	/// "重构建把东西弄坏了"，而原因是参数没记下来。
+	/// </para>
+	/// <para>
+	/// <b>为什么用"今天的默认"而不是猜当年那组。</b>重构建的常见动机就是"用现在的转换器重出一遍"，
+	/// 所以按今天的默认走最接近用户预期；代价是观感可能与原来不同，这一点会写进回报里，
+	/// 不静默。
+	/// </para>
+	/// </summary>
+	private static readonly VpkConversionSettings CurrentImportDefaults = new("merge", "metal", null, null, null);
+
+	/// <summary>
+	/// 全局几何参数：角色头部的等比缩放比例。<c>null</c> = 不给，转换器用自己的默认值
+	/// <c>8/7 ≈ 1.142857</c>（见 <c>RetargetOptions.HeadScale</c>）。
+	/// <para>
+	/// <b>为什么放在这里而不是 <see cref="VpkConversionSettings"/> 里。</b>那个 record 是
+	/// "重跑出逐字节一致产物"所需的那组参数，只收**会改变材质内容或 id** 的开关。
+	/// 头部缩放是纯几何：改它不会让任何材质包失配，但它也不该被冻在某个 Mod 的产物里 ——
+	/// 用户改设置、点重构建，就该看到新值。用 UpperScale / MeshShift 那几项的同一套口径。
+	/// </para>
+	/// <para>
+	/// 由管理器在启动与设置变更时写入（<c>SettingsService.ApplyToVpkBuild</c>）；
+	/// CLI 直接跑重构建时保持 <c>null</c>，行为与以前一致。
+	/// </para>
+	/// </summary>
+	public static double? HeadScale { get; set; }
+
+    /// <summary>Injected runtime adapter; native rebuilds refuse to proceed without it.</summary>
+    public static Func<NativeSkeletonStagingRequest, CancellationToken, Task>? PrepareNativeSkeletonAsync { get; set; }
+
+
+	/// <param name="modSelector">库里的 Mod 标识（GUID 或前缀）。换甲要用它定位工作区里的节点。</param>
+	/// <param name="targetArchiveIds">
+	/// 这次要烘到哪件护甲上。<b>给 <c>null</c> 就读 <c>wardrobe.json</c> 记着的那件</b>
+	/// （= "上次用的是哪件"）。管理器传的是下拉框里**当前选中**的那件：用户可能刚改了选择
+	/// 还没点「切换」，重构建该按他眼前看到的配置来，而不是按文件里上一次的。
+	/// </param>
+	/// <param name="disabledSections">
+	/// 这次要关掉哪些 section（来源 Unit 键空间）。<c>null</c> 时读 <c>wardrobe.json</c>。
+	/// 管理器传的是界面内存里的勾选——同样可能还没点「应用」。
+	/// </param>
+	public static async Task<VpkRebuildOutcome> RunAsync(
+		string modSelector,
+		string modDirectory,
+		VpkHostContext context,
+		IReadOnlyList<string>? targetArchiveIds,
+		IReadOnlyDictionary<string, IReadOnlyCollection<int>>? disabledSections,
+		Action<string>? onStage,
+		CancellationToken cancellationToken = default,
+		string? idNamespaceOverride = null)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(modSelector);
+		ArgumentException.ThrowIfNullOrWhiteSpace(modDirectory);
+
+		var notes = new List<string>();
+		if (!Directory.Exists(modDirectory))
+			return VpkRebuildOutcome.Failed($"Mod 目录不存在：{modDirectory}");
+
+		var gameData = context.GameDataFolder;
+		if (string.IsNullOrWhiteSpace(gameData) || !Directory.Exists(gameData))
+			return VpkRebuildOutcome.Failed("没有配置游戏 data 目录：转换要读外壳 Unit 与 avatar 骨架。");
+
+		var executable = Hd2ModCliLocator.TryResolve();
+		if (executable is null)
+		{
+			return VpkRebuildOutcome.Failed(
+				"找不到 hd2mod.exe：重构建依赖它（发布包自带）。"
+				+ $"已查找：{Hd2ModCliLocator.DescribeSearchedLocations()}");
+		}
+
+		// ① 来源 VPK 必须还在 Mod 根上。管理器导入时专门留了这一份，就是为了今天。
+		var sources = FindSourceVpks(modDirectory);
+		if (sources.Count == 0)
+		{
+			return VpkRebuildOutcome.Failed(
+				"这个 Mod 的根目录里没有来源 VPK，无法重构建。"
+				+ "把最初导入的那个 .vpk 放回 Mod 文件夹根上（和 vpk2patch 同级），再点一次。");
+		}
+
+		// 读侧两个名字都认：老库里基底目录还叫 vpk2patch/，只认新名会让
+		// reuseModel 与 hadSections 同时为假 —— 重构建会把这个 Mod 当纯材质包处理，
+		// unit id 重新随机，已登记的映射与件表全部失效。
+		var payloadDirectory = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(modDirectory)
+			?? ModNodePayloadLayout.GetVpkPatchDirectory(modDirectory);
+        NativeSkeletonRebuildPlan skeletonPlan;
+        try { skeletonPlan = NativeSkeletonRebuildPlan.FromPayload(payloadDirectory); }
+        catch (InvalidDataException exception) { return VpkRebuildOutcome.Failed(exception.Message); }
+        var prepareSkeleton = PrepareNativeSkeletonAsync;
+        if (skeletonPlan.RequiresPreparation && prepareSkeleton is null)
+            return VpkRebuildOutcome.Failed("该模型是骨架版，当前调用方没有骨架校准运行时；已保留原产物，不会按原版格式重构建。");
+
+		var previousModelPath = Path.Combine(payloadDirectory, "custom-model.json");
+		var reuseModel = File.Exists(previousModelPath) ? previousModelPath : null;
+
+		// 这个 Mod 是"带 Unit 的模型产物"还是"纯材质包"？两种情况的可选步骤完全不同：
+		// 材质包没有 sections.json、没有素体、没有换甲，硬按模型那条路走会一路报错。
+		var hadSections = File.Exists(Path.Combine(payloadDirectory, WardrobeSectionMapFile.FileName));
+		var isUnitMod = hadSections || reuseModel is not null;
+
+		// ② 上一份转换报告：命名空间与参数都从这里接上。
+		var report = VpkConversionReport.TryRead(modDirectory);
+		// 记了参数就照原样重跑；没记（旧产物）就按今天的导入默认（见 CurrentImportDefaults）。
+		var settings = report is { HasSettings: true } ? report.Settings : CurrentImportDefaults;
+
+		if (report is null)
+		{
+			notes.Add("这份 Mod 里没有可读的 vpk2patch.json（多半是旧版转换器产的）："
+				+ "本次按今天的导入默认重跑（配件合并、matcap 当金属 F0）。"
+				+ "如果它当初用别的参数转过，观感会变；材质 id 也可能与库里其它 Mod 共用。");
+		}
+		else if (!report.HasSettings)
+		{
+			notes.Add("转换报告里没有记下转换参数（旧版产物）：本次按今天的导入默认重跑"
+				+ "（配件合并、matcap 当金属 F0）。如果这份 Mod 当初用过特殊参数"
+				+ "（例如不同的镂空档），重构建后的观感会变——那种情况请手工重跑一次 "
+				+ "vpk2patch 再导入。");
+		}
+
+		if (reuseModel is null && isUnitMod)
+		{
+			notes.Add("没有找到上一份 custom-model.json：unit id 会重新生成。"
+				+ "已经登记过的素体映射、真映射件表、组件开关都会对不上——"
+				+ "这种情况下请改用「重新导入」。");
+		}
+
+		var paths = context.Paths;
+		// ③ 解析集合：自己 + 同批转换的兄弟 Mod（靠命名空间认亲）。
+		// 为什么必须带上兄弟：模型 VPK 往往不含材质，材质在另一份 VPK 里。
+		// 少了它们，重构建会以"材质解析不到"的方式把材质整体丢掉。
+		var materialSources = new List<string>(sources);
+		if (report?.IdNamespace is { Length: > 0 } idNamespace)
+			materialSources.AddRange(FindSiblingVpks(paths.ModsRootDirectory, modDirectory, idNamespace, notes));
+
+		var stagingRoot = Path.Combine(
+			Path.GetTempPath(),
+			"hd2modmanager-vpk-rebuild",
+			Guid.NewGuid().ToString("N"));
+		var convertRoot = Path.Combine(stagingRoot, "convert");
+		var backupRoot = Path.Combine(stagingRoot, "backup");
+		Directory.CreateDirectory(convertRoot);
+		// 失败时要把临时产物留下：那是唯一能看"CLI 到底写了什么"的东西，
+		// 而回报里已经承诺了"保留在 <路径>"。
+		var preserveStaging = false;
+
+		try
+		{
+			// ④ 转换。
+			onStage?.Invoke($"正在重新转换 {Path.GetFileName(sources[0])}…");
+			var arguments = new List<string> { "vpk2patch" };
+			arguments.AddRange(sources);
+			arguments.AddRange(["--output", convertRoot]);
+			arguments.AddRange(["--material-source", string.Join(';', materialSources)]);
+			arguments.AddRange(["--manager-root", paths.AppRootDirectory]);
+			arguments.AddRange(["--library", paths.ModsRootDirectory ?? paths.AppRootDirectory]);
+			arguments.AddRange(["--game-data", gameData]);
+			// 命名空间：默认接上原 token（材质 id 逐位一致，重构建就靠这个）。
+			// 给了覆盖就是**换一个新命名空间**——复制出来的变体必须与本体 id 不撞，
+			// 否则两套外观会互相覆盖，那正是复制要解决的问题。
+			if (!string.IsNullOrWhiteSpace(idNamespaceOverride))
+				arguments.AddRange(["--id-namespace", idNamespaceOverride]);
+			else if (report?.IdNamespace is { Length: > 0 } token)
+				arguments.AddRange(["--id-namespace-token", token]);
+			// 两条都不成立 = 还没转换过（刚导入就重构建）或旧产物没有命名空间。
+			// 这时不派一个，材质与贴图的 id 就只由名字决定（贴图只取 basename）：
+			// 不同作者的同名贴图（face / hair / body…）算成同一个 id，两个角色同时装就互相覆盖。
+			else if (SourceNameForNamespace(modDirectory) is { Length: > 0 } namespaceSource)
+				arguments.AddRange(["--id-namespace", namespaceSource]);
+			arguments.AddRange(settings.ToArguments());
+            if (skeletonPlan.ConversionArgument is { } skeletonArgument)
+                arguments.Add(skeletonArgument);
+			// 头部缩放：**不进产物记录，按当前设置即时生效。**
+			//
+			// 为什么不记进 vpk2patch.json：它是纯几何参数，和 UpperScale / MeshShift / 手臂姿态
+			// 同一类 —— 那几项从来没记过，一直是"转换器常量"。记它会让每个已存在的 Mod 在
+			// 第一次重构建时把当时的值冻住，用户之后改设置就会发现"改了没用"。
+			// 代价是重构建不保证与上次逐字节一致（改了设置就会变），这一点是明确的、
+			// 用户自己按的按钮。
+			if (!skeletonPlan.RequiresPreparation && HeadScale is { } headScale)
+				arguments.AddRange(["--head-scale", headScale.ToString("R", CultureInfo.InvariantCulture)]);
+			if (reuseModel is not null)
+				arguments.AddRange(["--reuse-model", reuseModel]);
+			arguments.Add("--json");
+
+			// 进度：CLI 的 `#progress` 行已经带人话文案（"材质 3/12"），直接当状态行用。
+			// 不接的话，重构建这几分钟里卡片上只有一句"正在重新转换…"，看不出它是不是卡住了。
+			var conversion = await Hd2ModProcess.RunAsync(
+				executable, arguments, cancellationToken,
+				onProgress: (_, _, _, text) => onStage?.Invoke(text)).ConfigureAwait(false);
+
+			// ⚠️ **一次转换的产出是「每个输入 VPK 一个子目录」**（模型一个、每个材质包各一个）。
+			// 而存储约定要求 `sectional/` 里全部 patch 组平铺按序号，所以这里必须先收成
+			// 一份平铺载荷：模型 → `patch_0`，材质 → `patch_1..patch_N`。
+			//
+			// 以前这一步是"找第一个含 patch 的子目录"，于是**模型 patch 进来了、材质全丢** ——
+			// 表现是"重构完成、游戏里材质没了"，重转多少次都一样（2026-11-07 用户实测）。
+			var fresh = VpkConversionReport.TryParse(conversion.Output);
+			var collectedPayload = Path.Combine(stagingRoot, "payload");
+			var collected = VpkPayloadCollector.Collect(
+				convertRoot, collectedPayload, fresh, rawReportJson: conversion.Output, sourceVpkPaths: sources);
+			if (!collected.Succeeded)
+			{
+				preserveStaging = true;
+				return VpkRebuildOutcome.Failed(
+					(conversion.ExitCode == 0 ? string.Empty : ExplainConversionFailure(conversion))
+					+ "收集转换产物失败：" + collected.Error
+					+ $"（临时产物保留在：{stagingRoot}）", notes);
+			}
+
+			notes.AddRange(collected.Notes);
+			var produced = collectedPayload;
+			if (isUnitMod && !File.Exists(Path.Combine(produced, WardrobeSectionMapFile.FileName)))
+			{
+				preserveStaging = true;
+				return VpkRebuildOutcome.Failed(
+					"新产物里没有 sections.json：组件树与 section 开关都靠它，"
+					+ $"继续替换只会得到一个关不掉任何东西的 Mod。临时产物保留在：{stagingRoot}", notes);
+			}
+
+            // Calibration and manifest validation must complete before the protected payload swap.
+            if (skeletonPlan.RequiresPreparation)
+                await prepareSkeleton!(new NativeSkeletonStagingRequest(produced, modDirectory, skeletonPlan.Kind),
+                    cancellationToken).ConfigureAwait(false);
+
+			var units = fresh?.UnitCount ?? 0;
+			var previousMaterials = await CountDistinctMaterialsAsync(payloadDirectory, cancellationToken).ConfigureAwait(false);
+			var freshMaterials = await CountDistinctMaterialsAsync(produced, cancellationToken).ConfigureAwait(false);
+
+			// 材质塌陷守门。
+			//
+			// 重构建最容易踩的坑是"这次没找到同批的材质包"：模型 VPK 通常是**零材质**，
+			// 材质写在同批的材料包里；那些包不在解析集合时，每个 section 引用的材质会
+			// 全部塌成同一个兜底 id。而 Unit 数、section 数、patch 大小全都正常——
+			// 文件层面完全看不出来，进游戏才发现一身衣服共用一张图。
+			// 所以只要"被引用的不同材质个数"比上一次少，就不替换（临时产物留着给人看）。
+			if (previousMaterials > 0 && freshMaterials < previousMaterials)
+			{
+				preserveStaging = true;
+				return VpkRebuildOutcome.Failed(
+					$"新产物只引用了 {freshMaterials} 种材质，而原来有 {previousMaterials} 种。"
+					+ "这几乎一定是同批的材质包 VPK 没进解析集合（模型 VPK 本身不带材质），"
+					+ "继续替换会让整个模型共用极少几张图。已保留原产物，没有改动任何文件。"
+					+ "请把同一批的材质 VPK 放回 Mod 库里，或者手工重跑 vpk2patch 再导入。"
+					+ $"（本次临时产物：{stagingRoot}）", notes);
+			}
+
+			// 材质包没有 sections.json，上一条守门对它不适用：改用报告里的材质条目数。
+			// 意义一样——"这次少写了一堆材质"绝不能当成成功。
+			//
+			// ⚠️ **必须按 VPK 对 VPK 比，不能拿"本 VPK 的数"去比"整批的合计"。**
+			//
+			// 实测事故（2026-11-03）：MourningVeil 的 `B3服装色白紫` 那份旧报告是
+			// **A1主体 + B3 两个 VPK 一次转出来的**（合计 101 个材质），而重构建只重转
+			// 本 Mod 那一个 VPK（98 个）。`98 < 101` 于是被判成"材质塌陷"，**永久拒绝替换**——
+			// 用户点了重构建、产物时间戳却一直不变（还是 11-02），连续三轮测试都在看旧产物，
+			// 还在怀疑代码没生效。这条守门本身是对的，错的是比较的范围。
+			var previousPackMaterials = report?.FindPatch(Path.GetFileName(sources[0]))?.MaterialCount
+				?? (report?.Patches.Count > 1 ? 0 : report?.MaterialCount ?? 0);
+			if (!isUnitMod && previousPackMaterials > 0
+				&& fresh is { MaterialCount: >= 0 } currentPack
+				&& currentPack.MaterialCount < previousPackMaterials)
+			{
+				preserveStaging = true;
+				return VpkRebuildOutcome.Failed(
+					$"新产物只写出 {currentPack.MaterialCount} 个材质，而这个 VPK 原来有 {previousPackMaterials} 个。"
+					+ "多半是解析集合不完整（贴图或 VMT 没找到）。已保留原产物，没有改动任何文件。"
+					+ $"（本次临时产物：{stagingRoot}）", notes);
+			}
+
+			// **换载荷之前**把旧的 `patches.json` 读下来：里面除了派生信息，还装着用户输入的
+			// 选项名/备注/配图/顺序。换载荷会把它删掉，事后再读就什么都没有了。
+			var previousManifest = SectionalPatchManifestFile
+				.TryReadAsync(payloadDirectory).AsTask().GetAwaiter().GetResult();
+
+			// **section 组：两份都先读下来。**
+			//
+			// 旧的那份是"这个 Mod 有哪些开关"的唯一记录（换载荷时它被保留、不被新产物覆盖），
+			// 新的那份在转换产物里（这次识别到开关包时才有）。两者都要，才能在换完之后
+			// 按**刚转出来的** sections.json 把成员重算一遍 —— 详见 SectionGroupConsolidator。
+			var previousGroups = isUnitMod
+				? await SectionGroupFile.TryReadAsync(payloadDirectory, cancellationToken).ConfigureAwait(false)
+				: null;
+			var freshGroups = isUnitMod
+				? await SectionGroupFile.TryReadAsync(produced, cancellationToken).ConfigureAwait(false)
+				: null;
+
+			// ⑤ 换进 vpk2patch/：先把旧载荷备份到临时目录，再整批替换。
+			// 规则与"同一来源再次导入"共用一份（见 VpkPayloadSwap），否则两条路会各自漂移。
+			onStage?.Invoke("正在替换 vpk2patch/…");
+			var swap = VpkPayloadSwap.Swap(payloadDirectory, produced, backupRoot);
+			if (!swap.Succeeded) return VpkRebuildOutcome.Failed(swap.Error!, notes);
+			var backupDirectory = swap.BackupDirectory;
+			var restoreReadOnly = swap.RestoreReadOnly;
+
+			// ⑤a **把 section 组对齐到刚转出来的几何。**
+			//
+			// 组记的是 `(unit, section 下标)`，而 sections.json 每次重建都变（材质 id、边界、
+			// 三角形数）。所以「组」只要不是**这一次**跟着算出来的，就一定在慢慢指向错的节：
+			// 实测 2026-11-09 Lilium 12 组里 7 组已经指错（「手套」记 0006:2，实际在 0006:10）。
+			//
+			// 两种情形都在这一步收口：
+			//   · 这次带上了开关包（导入时随 Mod 入库）→ fresh 有内容，它就是权威，只沿用旧组的 id；
+			//   · 这次没带（存量 Mod）→ 用旧文件自己记的材质裸名对新 sections 重算成员，
+			//     索引因此自动归位，不需要把开关包找回来。
+			//
+			// 为什么放在换载荷之后：sections.json 只有换进来之后才是"这次的"；而旧的
+			// components.json 被 VpkPayloadSwap 保留着，正好是要重算的那一份。
+			if (isUnitMod)
+			{
+				var sectionsPath = Path.Combine(payloadDirectory, WardrobeSectionMapFile.FileName);
+				if (File.Exists(sectionsPath))
+				{
+					var sections = await WardrobeSectionMapFile.ReadAsync(sectionsPath, cancellationToken).ConfigureAwait(false);
+					var consolidation = SectionGroupConsolidator.Consolidate(freshGroups, previousGroups, sections);
+					var groupsPath = Path.Combine(payloadDirectory, SectionGroupFile.FileName);
+					var hasAnything = consolidation.Document.Groups.Count != 0 || consolidation.Document.Unmatched.Count != 0;
+					if (hasAnything || File.Exists(groupsPath))
+					{
+						var restoreGroupsReadOnly = VpkPayloadSwap.ClearReadOnlyForWrite(groupsPath);
+						try
+						{
+							await SectionGroupFile.WriteAsync(payloadDirectory, consolidation.Document, cancellationToken).ConfigureAwait(false);
+						}
+						finally
+						{
+							if (restoreGroupsReadOnly) VpkPayloadSwap.MarkReadOnly(groupsPath);
+						}
+
+						if (consolidation.Document.Groups.Count == 0)
+						{
+							notes.Add("这个 Mod 现在没有任何 section 开关（没有开关包，旧文件里也没有可救的组）。");
+						}
+						else
+						{
+							notes.Add($"section 开关表已按新几何重算：{consolidation.Document.Groups.Count} 组"
+								+ (consolidation.Refreshed != 0 ? $"，其中 {consolidation.Refreshed} 组的成员位置发生了变化" : string.Empty)
+								+ (consolidation.KeptManual != 0 ? $"，保留了 {consolidation.KeptManual} 个手建组" : string.Empty)
+								+ (consolidation.Dropped != 0 ? $"，{consolidation.Dropped} 组因为材质找不到被丢弃" : string.Empty)
+								+ "。");
+						}
+					}
+				}
+			}
+
+			// ⑤b **刷新 `vpk2patch.json`。**
+			//
+			// ⚠️ 不刷新是个隐蔽的坑：报告是管理器展示材质/贴图/警告的**唯一来源**，
+			// 也是"这次到底改了没有"的判断依据。只换 `vpk2patch/` 不换报告，界面会一直
+			// 显示上一次的数字——实测因此误判过一次：补丁已经是新的、报告还是旧的，
+			// 看上去像"改动没生效"。（`fresh` 就是从这次进程输出解析出来的，非 null
+			// 说明输出是合法 JSON，可以原样落盘。）
+			if (fresh is not null && !string.IsNullOrWhiteSpace(conversion.Output))
+			{
+				// ⚠️ **`vpk2patch.json` 在 Mod 根上，而且是只读的。**
+				//
+				// 库里的 Mod 根文件（`.vpk` 与 `vpk2patch.json`）被管理器标成只读
+				// （换包时 `SetDirectoryReadOnly(true)`），而 `VpkPayloadSwap` 只清 `vpk2patch/`
+				// 里那些文件的属性。于是写报告这一步会拿到
+				// 「Access to the path '…\vpk2patch.json' is denied.」——那句话一个字都没提"只读"，
+				// 第一眼必然怀疑权限或占用（实测就是这样报了"重构建失败"）。
+				// 这里先清属性、写完再补回去，保持这个 Mod 目录原来的保护状态。
+				var reportPath = VpkConversionReport.GetPath(modDirectory);
+				var restoreReportReadOnly = VpkPayloadSwap.ClearReadOnlyForWrite(reportPath);
+				try
+				{
+					// 写**改写过 patch 文件名**的那份：平铺之后编号变了，
+					// 报告不跟着改的话 `patches.json` 里材质选项就没有名字。
+					await File.WriteAllTextAsync(reportPath, collected.ReportJson ?? conversion.Output, cancellationToken)
+						.ConfigureAwait(false);
+				}
+				catch (UnauthorizedAccessException exception)
+				{
+					// 报告写不进去**不该被判成重构建失败**：产物已经换好了，报告只是"界面上显示的数字"。
+					notes.Add($"`vpk2patch.json` 写不进去（{exception.Message}）：产物已换成新的，"
+						+ "但界面上的材质/贴图计数与警告仍是上一次的。多半是别的程序占着这个文件。");
+				}
+				finally
+				{
+					if (restoreReportReadOnly) VpkPayloadSwap.MarkReadOnly(reportPath);
+				}
+			}
+			else
+			{
+				notes.Add("这次没能解析出转换报告，`vpk2patch.json` 保持旧内容——"
+					+ "界面上的材质/贴图计数与警告可能已经过时。");
+			}
+
+			// ⑤c **结构文件跟着新报告重写**。
+			//
+			// 不重写会怎样：`patches.json` 里"哪个 patch 是谁"还是上一批产物的说法。
+			// 归拢/合并之后基底多了几个材质 patch，旧清单里根本没有它们——于是材质选项
+			// 一行名字都没有，界面显示成「材质 1 / 2 / 3」（2026-11-08 用户报的就是这个）。
+			if (SectionalPatchManifestFile.Rebuild(modDirectory, DateTimeOffset.UtcNow, previousManifest) is null)
+				notes.Add("没能重写 `patches.json`：材质选项的名字/顺序可能显示不出来。");
+
+			// ⑥ 物理参数容器：转换阶段刻意不嵌（会让受管步骤记账错位），这里才是它该来的地方。
+			onStage?.Invoke("正在写入物理参数…");
+			notes.Add(await VpkPhysBoneEmbedder.RunAsync(executable, modDirectory, cancellationToken).ConfigureAwait(false));
+
+			// ⑥b 生效层**不在这里动**。
+			//
+			// 以前（2026-11-08 上午）这里会先物化一遍"基底 unit + 启用材质"，然后才做 ⑦ 换甲。
+			// 后果分两种，都很糟：
+			//   · ⑦ 成功：白做一次，还把用户现有的换甲产物临时换成基底 unit；
+			//   · ⑦ 失败/被跳过：那份**基底 unit 留在原地** —— 用户看到的是"重构之后这个 Mod
+			//     不再替换任何护甲，变成了它自己的素体"，而他什么都没改过。
+			// 正确的做法是：只有"确定不会重做换甲"时，才在最后补一份生效层（见 ⑦b）。
+
+			// ⑦ **编译**：把 `sectional/` 的标准产物按当前条件（目标护甲 / section 开关 / 材质开关）
+			// 重新算成 `Overwrite/`。
+			//
+			// 重构建不再自己写生效层：那是编译基座（`ModCompileService`）的唯一职责。
+			// 于是"重建"就是干净的两段——**转换**（来源 → sectional）、**编译**（sectional → Overwrite）。
+			var rekeyed = false;
+			string? targetName = null;
+			string? incompleteReason = null;
+			if (!isUnitMod)
+			{
+				// 材质包没有 Unit，也没有"换甲 / 组件开关"这些概念：只更新转换产物就结束。
+				notes.Add("这是材质包（没有 Unit）：只更新了转换产物，没有编译这一步。");
+			}
+			else
+			{
+				onStage?.Invoke("正在按当前条件编译生效层…");
+				var compile = await ModCompileService.CompileAsync(
+					modSelector, modDirectory, context, targetArchiveIds, disabledSections,
+					stage => onStage?.Invoke(stage), cancellationToken).ConfigureAwait(false);
+				foreach (var warning in compile.Notes) notes.Add(warning);
+				if (!compile.Ok)
+				{
+					// 来源产物已经换好了，编译失败不该被说成"什么都没做"；
+					// 但也不能报成"做完了"——生效层还停在旧状态，用户会以为已经修好。
+					incompleteReason = compile.Error ?? "原因未知";
+					notes.Add("来源产物已更新，但编译生效层失败：" + incompleteReason
+						+ "。可以在详情页点「应用」重试。");
+				}
+				else
+				{
+					rekeyed = compile.Rekeyed;
+					targetName = compile.TargetName;
+					notes.Add(rekeyed
+						? $"换甲产物已重新生成（目标 {targetName ?? "未知"}）。"
+						: $"生效层已按自定义素体形态编译（{targetName ?? "自身素体"}）。");
+				}
+			}
+
+			notes.Add("重启游戏后才会生效（引擎启动时读 Mod）。");
+			// 库里的 Mod 文件本来是被标成只读的（管理器换包时会 SetDirectoryReadOnly(true)），
+			// 我们在替换时临时清掉了它——这里补回去，别让 Mod 目录从此变成可随意改写。
+			// **必须放在最后**：中间那两步（嵌物理参数、重建 Overwrite）都要往产物里写字。
+			if (restoreReadOnly) VpkPayloadSwap.SetPayloadReadOnly(payloadDirectory);
+			return new VpkRebuildOutcome(true, null, units, isUnitMod ? freshMaterials : (fresh?.MaterialCount ?? 0),
+				rekeyed, backupDirectory, notes)
+			{
+				TargetName = targetName,
+				IncompleteReason = incompleteReason,
+			};
+		}
+		catch (OperationCanceledException)
+		{
+			throw;
+		}
+		catch (Exception exception) when (exception is IOException or InvalidDataException
+			or InvalidOperationException or UnauthorizedAccessException or JsonException)
+		{
+			return VpkRebuildOutcome.Failed("重构建失败：" + exception.Message, notes);
+		}
+		finally
+		{
+			// 成功时暂存目录里只剩备份（单独回报给用户），转换目录就没用了；
+			// 失败时整份留着，回报里已经说明了路径。
+			if (!preserveStaging) DeleteQuietly(convertRoot);
+		}
+	}
+
+	/// <summary>
+	/// Mod 根上的来源 VPK（只取顶层、跳过纯数字分卷）。
+	/// 分卷由 <c>_dir.vpk</c> 引用，单列出来会被当成另一个包重复转换。
+	/// </summary>
+	/// <summary>
+	/// 这个 Mod 根上有几份来源 VPK。<b>0 表示无法重构建</b> ——
+	/// 汉堡菜单据此决定要不要显示「用来源重构建」（转出来的分件模组没有来源包）。
+	/// </summary>
+	public static int FindSourceVpkCount(string modDirectory)
+		=> string.IsNullOrWhiteSpace(modDirectory) || !Directory.Exists(modDirectory)
+			? 0
+			: FindSourceVpks(modDirectory).Count;
+
+	public static List<string> FindSourceVpks(string modDirectory)
+		=> Directory.EnumerateFiles(modDirectory, "*.vpk", SearchOption.TopDirectoryOnly)
+			.Where(path => !IsVolume(path))
+			.OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+			.ToList();
+
+	/// <summary>
+	/// 派生命名空间的**来源标识**：条目名（目录名）。
+	/// <para>
+	/// 目录名就是导入时按主体名起的那个名字（<c>VpkImportService</c> 的
+	/// <c>SafeDirectoryName(group.DisplayName)</c>），与 <c>VpkImportPlanner</c> 用来派生命名空间的
+	/// 来源标识是同一个口径 ⇒ 不必重开 VPK 猜。同名条目再导入会带 <c>(2)</c> 之类的去重后缀，
+	/// 于是副本拿到自己的命名空间 —— 那正是副本需要的隔离。
+	/// </para>
+	/// <para>取不到名字就返回 <c>null</c>，调用方退回老行为（不带命名空间），不打断重构建。</para>
+	/// </summary>
+	private static string? SourceNameForNamespace(string modDirectory)
+	{
+		if (string.IsNullOrWhiteSpace(modDirectory))
+			return null;
+
+		var trimmed = modDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+		var name = Path.GetFileName(trimmed);
+		return string.IsNullOrWhiteSpace(name) ? null : name;
+	}
+
+	/// <summary>
+	/// 同一个命名空间下别的 Mod 根上的 VPK：它们与这个 Mod 是**同一批**转换出来的，
+	/// 模型 patch 引用的材质很可能就写在那几份里。
+	/// </summary>
+	public static IEnumerable<string> FindSiblingVpks(
+		string? modsRoot,
+		string ownDirectory,
+		string idNamespace,
+		List<string> notes)
+	{
+		if (string.IsNullOrWhiteSpace(modsRoot) || !Directory.Exists(modsRoot))
+		{
+			notes.Add("找不到 Mod 库目录：只把本 Mod 自己的 VPK 当作解析集合，"
+				+ "同批的材质包若在别的 Mod 里，相关材质会解析不到。");
+			return [];
+		}
+
+		var result = new List<string>();
+		foreach (var directory in Directory.EnumerateDirectories(modsRoot))
+		{
+			if (string.Equals(Path.GetFullPath(directory), Path.GetFullPath(ownDirectory), StringComparison.OrdinalIgnoreCase))
+				continue;
+			var sibling = VpkConversionReport.TryRead(directory);
+			if (sibling is null || !string.Equals(sibling.IdNamespace, idNamespace, StringComparison.Ordinal))
+				continue;
+			result.AddRange(FindSourceVpks(directory));
+		}
+
+		return result;
+	}
+
+	private static string ExplainConversionFailure(Hd2ModProcess.Result result)
+		// 单个 VPK 失败时 CLI 报的是 `failures[]` + 退出码 2，顶层没有 `error` 对象。
+		// 以前这里只认 `error.message`，于是退回"把整份 JSON 粘进消息"（实测 1 046 字）。
+		// 现在交给 Hd2ModProcess.DescribeFailure：它先从 JSON 里取真正的原因，取不到才退回原文。
+		=> Hd2ModProcess.DescribeFailure(result, "重新转换");
+
+	/// <summary>
+	/// 一个 <c>sections.json</c> 里被 section 实际引用的**不同**材质 id 个数；读不到就是 0。
+	/// <para>
+	/// <b>为什么用这张表而不是转换报告。</b>模型 patch 里不含材质定义（材质写在同批的材质包里），
+	/// 报告上的 <c>materials</c> 恒为 0；而"每个 section 绑了哪个材质 id"这件事，
+	/// <c>sections.json</c> 逐节都记着。两个产物比这个数字，才问得出一句实话：
+	/// 材质是不是塌成一张了。
+	/// </para>
+	/// </summary>
+	private static async Task<int> CountDistinctMaterialsAsync(string directory, CancellationToken cancellationToken)
+	{
+		var path = Path.Combine(directory, WardrobeSectionMapFile.FileName);
+		if (!File.Exists(path)) return 0;
+		try
+		{
+			var document = await WardrobeSectionMapFile.ReadAsync(path, cancellationToken).ConfigureAwait(false);
+			return document.Units
+				.SelectMany(unit => unit.Sections)
+				.Select(section => section.MaterialId)
+				.Where(id => !string.IsNullOrWhiteSpace(id))
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.Count();
+		}
+		catch (Exception exception) when (exception is IOException or InvalidDataException
+			or JsonException or UnauthorizedAccessException)
+		{
+			// 读不懂就当"没有可比数字"：守门不会因为旧表损坏而误拦。
+			return 0;
+		}
+	}
+
+	private static bool IsVolume(string path)
+	{
+		var stem = Path.GetFileNameWithoutExtension(path);
+		return stem.Length > 4
+			&& stem[^4] == '_'
+			&& stem[^3..].All(char.IsAsciiDigit);
+	}
+
+	private static void DeleteQuietly(string directory)
+	{
+		try { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+		catch (IOException) { }
+		catch (UnauthorizedAccessException) { }
+	}
+}

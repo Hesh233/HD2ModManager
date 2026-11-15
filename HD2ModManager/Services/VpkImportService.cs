@@ -47,7 +47,7 @@ public sealed record VpkProducedPackage(
 	string? GroupName,
 	bool IsModel,
 	// 非 null = 这是「原比例模型」的转换产物，值就是它自己的产出目录：
-	// 导入提交后按它询问换甲，再按需构建 [原比例动画] 包。
+	// 换甲目标已在倍率后询问；导入提交后只应用选择，再按需构建动画。
 	string? NativeModelDirectory = null,
 	// 用户在决策弹窗里选了"需要生成骨架动画"。
 	bool WantsNativeAnimation = false,
@@ -58,6 +58,7 @@ public sealed record VpkProducedPackage(
     bool SingleHd2Skeleton = false,
     int AnimationThreads = AnimationThreadCount.Default)
 {
+    public HD2ModManager.ViewModels.VpkTargetArmorOption? TargetArmor { get; init; }
 	public bool IsUpdate => UpdateTargetDirectory is not null;
 }
 
@@ -397,7 +398,7 @@ public sealed class VpkImportService
 				if (existing is not null && job.IsModel && decisions.TryGetValue(job.VpkPath, out var requestedMode)
                     && requestedMode.BuildsSkeletonPackage)
                 {
-                    var existingPayload = Path.Combine(existing.Directory, ModNodePayloadLayout.VpkPatchDirectoryName);
+                    var existingPayload = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(existing.Directory) ?? ModNodePayloadLayout.GetVpkPatchDirectory(existing.Directory);
                     var existingDual = File.Exists(Path.Combine(existingPayload, "source-skeleton.json"));
                     var existingSingle = File.Exists(Path.Combine(existingPayload, "single-skeleton.json"));
                     if ((requestedMode.UseNativeSkeleton && !existingDual) || (requestedMode.SingleHd2Skeleton && !existingSingle))
@@ -411,8 +412,8 @@ public sealed class VpkImportService
 					// 复用旧素体定义：unit id 与 key 都必须逐位相同，否则护甲映射、
 					// idea 里的开关掩码、真映射写进 dl_bin 的件表全部失效。
 					// 这条与"重构建"用的是同一个机制（见 VpkRebuildService）。
-					reuseModelPath = Path.Combine(
-						existing.Directory, ModNodePayloadLayout.VpkPatchDirectoryName, VpkCustomModelFile.FileName);
+					reuseModelPath = Path.Combine(ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(existing.Directory)
+                        ?? ModNodePayloadLayout.GetVpkPatchDirectory(existing.Directory), VpkCustomModelFile.FileName);
 					if (!File.Exists(reuseModelPath)) reuseModelPath = null;
 				}
 
@@ -460,7 +461,8 @@ public sealed class VpkImportService
 						ReportJson: result.ReportJson,
 						UpdateCandidateCount: existing.CandidateCount,
                         SingleHd2Skeleton: decisions.TryGetValue(job.VpkPath, out var updatedMode) && updatedMode.SingleHd2Skeleton,
-                        AnimationThreads: updatedMode?.AnimationThreads ?? AnimationThreadCount.Default));
+                        AnimationThreads: updatedMode?.AnimationThreads ?? AnimationThreadCount.Default)
+                    { TargetArmor = updatedMode?.TargetArmor });
 					items.Add(new VpkImportItem(job.VpkPath, VpkImportOutcome.Converted, existing.Name, null,
 						result.Units, result.Materials, result.Textures,
 						extraNote is null
@@ -495,7 +497,8 @@ public sealed class VpkImportService
 					WantsNativeAnimation: job.DirectoryPrefix is not null
 						&& decisions.TryGetValue(job.VpkPath, out var wantAnimation) && wantAnimation.GenerateAnimation,
                     SingleHd2Skeleton: decisions.TryGetValue(job.VpkPath, out var newMode) && newMode.SingleHd2Skeleton,
-                    AnimationThreads: newMode?.AnimationThreads ?? AnimationThreadCount.Default));
+                    AnimationThreads: newMode?.AnimationThreads ?? AnimationThreadCount.Default)
+                { TargetArmor = newMode?.TargetArmor });
 				items.Add(new VpkImportItem(job.VpkPath, VpkImportOutcome.Converted, directoryName, null,
 					result.Units, result.Materials, result.Textures, result.Notes));
 			}
@@ -1213,7 +1216,7 @@ public sealed class VpkImportService
 	/// </summary>
 	private static bool IsConvertedPackage(string directory)
 		=> File.Exists(Path.Combine(directory, PackageReportFileName))
-			|| Directory.Exists(ModNodePayloadLayout.GetVpkPatchDirectory(directory));
+			|| ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(directory) is not null;
 
 	private string CreateStaging()
 	{

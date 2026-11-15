@@ -98,7 +98,9 @@ end
 -- Log-only projection: retain full exceptional matrices, summarize routine poses.
 function M.compactDiagnostic(row)
     local e=row.event
+    if row.meleeCaptureEnabled and ((e=='right_applied' and row.heldItemType=='melee') or (e=='left_applied' and row.gripKind=='melee_native_left_contact')) then return row end
     if e=='loaded' or e=='complete' or e=='mount_skipped' or e=='disabled' or e=='restore_failed' then return row end
+    if e=='test_source_fk_refresh' then return {event=e,frame=row.frame,avatar=row.avatar,stage=row.stage,settled=row.settled,touchCount=#(row.touches or {}),nativeLocalsWritten=false,localValuesChanged=false} end
     local out={event=e,frame=row.frame,time=row.time,avatar=row.avatar}
     local function pos(v) return v and {v[10],v[11],v[12]} or nil end
     if e=='sidearm_probe' then
@@ -121,7 +123,7 @@ function M.compactDiagnostic(row)
         out.format='positions-v1';out.resource=row.resource;out.weaponResource=row.weaponResource
         out.beforeDistance=row.beforeDistance;out.afterDistance=row.afterDistance;out.reachResidual=row.reachResidual
         out.target=pos(row.target);out.sourceAfter=pos(row.sourceAfter);out.gripResource=row.gripResource
-        out.reachCorrection=row.reachCorrection;return out
+        out.reachCorrection=row.reachCorrection;out.gripKind=row.gripKind;out.linkPolicy=row.linkPolicy;return out
     elseif e=='sidearm_aligned' then
         out.resource=row.resource;out.policy=row.policy;out.reachCorrection=row.reachCorrection;return out
     elseif e=='fp_presentation' then
@@ -222,7 +224,7 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                 'left_target_identity:'..tostring(id))
             for _,key in ipairs({'rootToIKLeft','rootToIKRight'}) do
                 local m=row[key]
-                if key=='rootToIKLeft' or m~=nil then
+                if (key=='rootToIKLeft' and row.leftPolicy~='none') or m~=nil then
                     assert(type(m)=='table' and #m==12,'left_target_matrix:'..key..':'..tostring(id))
                     for j=1,12 do assert(finite(m[j]),'left_target_finite:'..key..':'..tostring(id)) end
                     rigid(m)
@@ -297,7 +299,7 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         monitored={},syncFrame=nil,lastSync=nil,fpHidden={},proximityEvidence={},lastAimProbe={},lastTrackingProbe={},lastBodyProbe={},lastLifecycleState={},observedAnimator={},
         lastScan=nil, lastLog=nil, lastStatus=nil, disabled=false, stopped=false, records=0,
         stats={writes=0, readbacks=0, restores=0, freshPreserved=0, skipped=0,mountSkipped=0,mountRollbacks=0,
-            modelRefreshes=0, consumerRefreshes=0, refreshErrors=0,lifecycleBypasses=0,
+            modelRefreshes=0, consumerRefreshes=0, refreshErrors=0,lifecycleBypasses=0,sourceFkTouches=0,sourceFkFailures=0,sourceFkSkips=0,
             leftWrites=0,leftNodeWrites=0,leftRestores=0,leftFreshPreserved=0,leftSkipped=0,
             syncSamples=0,syncErrors=0,bodyNodeWrites=0,bodyRestores=0,bodyFreshPreserved=0,
             attachmentWrites=0,attachmentRestores=0,attachmentFreshPreserved=0,
@@ -394,6 +396,60 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
     local function present(item, membership)
         return membership[item.world] and membership[item.world].set[item.unit] == true and U.alive(item.unit)==true
     end
+    -- Refresh only verified Source branch roots, by re-applying the SAME
+    -- current local pose. Native bones and animation values are never changed.
+    local function refresh_source_fk(actor,stage,frame,now,diagnostic)
+        local policy=test and test.sourceFkRefresh
+        if not (policy and policy.enabled) then return true end
+        if policy.stages then
+            local enabled=false;for _,name in ipairs(policy.stages) do if name==stage then enabled=true end end
+            if not enabled then return true end
+        end
+        identity(actor)
+        local rows={};local allGood=false
+        for pass=1,(policy.maxPasses or 2) do
+            for _,group in ipairs(policy.levels) do
+                local touched={}
+                for _,node in ipairs(group) do
+                    assert(node.index>=107 and node.index<cfg.avatar.count,'source_fk_native_writer_forbidden')
+                    verify_node(actor.unit,node,true)
+                    local before=matrix(actor.unit,node.index,false)
+                    local parent=matrix(actor.unit,node.parent,true)
+                    local world=matrix(actor.unit,node.index,true);local expected=compose(parent,before)
+                    local error=distance(world,expected);local basisError=0
+                    for j=1,9 do basisError=math.max(basisError,math.abs(world[j]-expected[j])) end
+                    if error>policy.positionTolerance or basisError>policy.basisTolerance then
+                        U.set_local_pose(actor.unit,node.index+1,X.from_elements(unpack(before)))
+                        assert(difference(matrix(actor.unit,node.index,false),before)<=cfg.localTolerance,'source_fk_local_value_changed')
+                        self.stats.sourceFkTouches=self.stats.sourceFkTouches+1
+                        touched[#touched+1]={node=node.name,index=node.index,pass=pass,beforeError=error,beforeBasisError=basisError}
+                    end
+                end
+                if #touched>0 then
+                    W.update_unit(actor.world,actor.unit)
+                    for _,row in ipairs(touched) do rows[#rows+1]=row end
+                end
+            end
+            allGood=true
+            for _,group in ipairs(policy.levels) do
+                for _,node in ipairs(group) do
+                    local expected=compose(matrix(actor.unit,node.parent,true),matrix(actor.unit,node.index,false))
+                    local world=matrix(actor.unit,node.index,true)
+                    local error=distance(world,expected);local basisError=0
+                    for j=1,9 do basisError=math.max(basisError,math.abs(world[j]-expected[j])) end
+                    if error>policy.positionTolerance or basisError>policy.basisTolerance then allGood=false end
+                end
+            end
+            if allGood then break end
+        end
+        if not allGood then self.stats.sourceFkFailures=self.stats.sourceFkFailures+1 end
+        if (diagnostic and #rows>0) or not allGood then
+            emit({event='test_source_fk_refresh',frame=frame,time=now,avatar=actor.id,stage=stage,
+                touches=rows,settled=allGood,nativeLocalsWritten=false,localValuesChanged=false,
+                policy='same_current_local_source_roots_parent_order',skinMatricesObserved=false})
+        end
+        return allGood
+    end
     local function refresh_models(world, membership, actor)
         for _, item in ipairs(self.models) do
             if item.world==world and present(item,membership) and (not performance.scopedRefresh
@@ -415,9 +471,16 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         end
     end
     local function refresh_consumers(world, membership, actor)
-        local right,left
+        local right,left;local carryAnchors={}
         if performance.scopedRefresh and actor then
             right=matrix(actor.unit,cfg.target.index,true);left=matrix(actor.unit,cfg.sourceLeft.index,true)
+            if test and test.equipmentV10 and test.equipmentV10.enabled then
+                for _,row in ipairs(cfg.attachments or {}) do
+                    if test.equipmentV10.carryMounts[row.node.name] then
+                        carryAnchors[#carryAnchors+1]=matrix(actor.unit,row.node.index,true)
+                    end
+                end
+            end
         end
         for _, item in ipairs(self.consumers) do
             if item.world==world and present(item,membership) then
@@ -429,7 +492,28 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                         if performance.scopedRefresh and actor then
                             local root=matrix(item.unit,item.spec.root,true)
                             local radius=performance.refreshRadius or 1.5
-                            local nearest=math.min(distance(root,right),distance(root,left))
+                            local function nearest_pose(pose)
+                                local value=math.min(distance(pose,right),distance(pose,left))
+                                for _,mount in ipairs(carryAnchors) do value=math.min(value,distance(pose,mount)) end
+                                return value
+                            end
+                            local nearest=nearest_pose(root)
+                            if test and test.equipmentV10 and test.equipmentV10.enabled and item.spec.repairFamily=='EQUIPMENT_V10' then
+                                for _,node in ipairs(item.spec.nodes) do
+                                    if node.name=='game_mesh' or node.name=='skeleton' or node.name=='root' or node.name=='boss' then
+                                        nearest=math.min(nearest,nearest_pose(matrix(item.unit,node.index,true)))
+                                    end
+                                end
+                            end
+                            if test and test.equipmentV10 and test.equipmentV10.enabled
+                                and item.spec.repairFamily=='EQUIPMENT_V10' and item.spec.verifiedComponent then
+                                if test.equipmentV10.alternateLinkedRoots then
+                                    -- Indices were checked against exact resource/count and named child parents at build time.
+                                    for _,index in ipairs(item.spec.heldRoots or {}) do
+                                        nearest=math.min(nearest,nearest_pose(matrix(item.unit,index,true)))
+                                    end
+                                end
+                            end
                             if (test and test.sg225Parts and test.sg225Parts.enabled and item.spec.repairFamily=='SG225') or (test and test.reloadParts and test.reloadParts.enabled and item.spec.repairFamily=='HMG_LAS') then
                                 -- A component skeleton root can retain an old cache while
                                 -- its mesh is still next to the verified held equipment.
@@ -459,6 +543,23 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                             end
                             if not near then return end
                         end
+                        if item.spec.heldAmmo then
+                            local held=false
+                            for _,gun in ipairs(self.consumers) do
+                                local family=item.spec.heldAmmo[gun.spec.resource]
+                                if family and gun.world==world and present(gun,membership) then
+                                    for _,anchorName in ipairs(family) do
+                                        local id=name_id(anchorName)
+                                        if U.has_node(gun.unit,id)==true then
+                                            local anchor=matrix(gun.unit,U.node(gun.unit,id)-1,true)
+                                            if distance(matrix(item.unit,item.spec.root,true),anchor)<.025 then held=true end
+                                            if actor and distance(matrix(item.unit,item.spec.root,true),compose(matrix(actor.unit,cfg.originalMount.index,true),relative(matrix(actor.unit,cfg.target.index,true),anchor)))<.025 then held=true end
+                                        end
+                                    end
+                                end
+                            end
+                            if not held then return end
+                        end
                         W.update_unit(world,item.unit)
                         self.stats.consumerRefreshes=self.stats.consumerRefreshes+1
                     end
@@ -471,6 +572,80 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                 end
             end
         end
+    end
+    local function test_equipment_graph(actor,membership,stage,frame,now,diagnostic)
+        local policy=test and test.equipmentV10
+        if not (diagnostic and policy and policy.probeLinks) then return end
+        local parts={}
+        for _,item in ipairs(self.consumers) do
+            local link=policy.probeLinks[item.spec.resource]
+            if link and item.world==actor.world and present(item,membership) and #parts<4 then
+                local ok,row=pcall(function()
+                    identity(item);local poses={}
+                    for _,index in ipairs(item.spec.heldRoots or {item.spec.root}) do
+                        poses[#poses+1]={index=index,worldPose=matrix(item.unit,index,true),localPose=matrix(item.unit,index,false),
+                            parentReturned=U.scene_graph_parent(item.unit,index+1)}
+                    end
+                    local parents={}
+                    for _,gun in ipairs(self.consumers) do
+                        if gun.spec.resource==link.parentResource and gun.world==actor.world and present(gun,membership) and #parents<4 then
+                            identity(gun);local id=name_id(link.mount)
+                            if U.has_node(gun.unit,id) then
+                                parents[#parents+1]={instance=gun.id,resource=gun.spec.resource,mount=link.mount,
+                                    worldPose=matrix(gun.unit,U.node(gun.unit,id)-1,true)}
+                            end
+                        end
+                    end
+                    return {resource=item.spec.resource,instance=item.id,poses=poses,parentCandidates=parents,visible=visible(item.unit)}
+                end)
+                parts[#parts+1]=ok and row or {resource=item.spec.resource,available=false,reason=tostring(row)}
+            end
+        end
+        emit({event='test_equipment_graph',stage=stage,frame=frame,time=now,avatar=actor.id,parts=parts,
+            graphParentUnitDirectlyObserved=false,itemLocalsWritten=false})
+    end
+    -- Opt-in melee evidence, not a new grip solver. Capture native and Source
+    -- poses in ONE verified Avatar World, after the exact item's cache flush.
+    local function test_melee_capture(actor,membership,stage,frame,now,diagnostic)
+        local policy=test and test.meleeCapture
+        if not (diagnostic and policy and policy.enabled and test.heldEquipment) then return end
+        local ok,why=pcall(function()
+            identity(actor)
+            local mounts={{name=cfg.target.name,index=cfg.target.index,world=matrix(actor.unit,cfg.target.index,true),localPose=matrix(actor.unit,cfg.target.index,false)}}
+            for _,row in ipairs(cfg.attachments or {}) do
+                if row.node.name=='attach_weapon' then mounts[#mounts+1]={name=row.node.name,index=row.node.index,world=matrix(actor.unit,row.node.index,true),localPose=matrix(actor.unit,row.node.index,false)} end
+            end
+            local items={}
+            for _,item in ipairs(self.consumers) do
+                local spec=test.heldEquipment.rigidRight[item.spec.resource]
+                if spec and spec.itemType=='melee' and item.world==actor.world and present(item,membership) and #items<(policy.maxItems or 4) then
+                    identity(item)
+                    local before={};for _,i in ipairs(spec.rootIndices) do before[i]=matrix(item.unit,i,true) end
+                    W.update_unit(item.world,item.unit)
+                    local roots={};local anyMatch=false
+                    for _,i in ipairs(spec.rootIndices) do
+                        local world=matrix(item.unit,i,true);local localPose=matrix(item.unit,i,false);local parent=U.scene_graph_parent(item.unit,i+1)
+                        local external=parent==nil or parent==0;local links={}
+                        for _,mount in ipairs(mounts) do
+                            local expected=compose(mount.world,localPose)
+                            local raw=not spec.unitRootComposeOnly and distance(world,mount.world)<=spec.linkMetres and angle(world,mount.world)<=spec.linkDegrees
+                            local composed=spec.recoverLocalOffset and distance(world,expected)<=spec.linkMetres and angle(world,expected)<=spec.linkDegrees
+                            local matched=(not spec.requireExternalParent or external) and (raw or composed) or false
+                            anyMatch=anyMatch or matched
+                            links[#links+1]={mount=mount.name,matched=matched,composedDistance=distance(world,expected),composedDegrees=angle(world,expected),expectedFromCurrentLocal=expected}
+                        end
+                        roots[#roots+1]={index=i,parentReturned=parent,externalParent=external,worldBeforeRefresh=before[i],world=world,localPose=localPose,linkCandidates=links}
+                    end
+                    local leftMarker
+                    if spec.leftMarker then verify_node(item.unit,spec.leftMarker,false);leftMarker={name=spec.leftMarker.name,index=spec.leftMarker.index,world=matrix(item.unit,spec.leftMarker.index,true),localPose=matrix(item.unit,spec.leftMarker.index,false)} end
+                    items[#items+1]={instance=item.id,resource=item.spec.resource,visible=visible(item.unit),count=item.spec.count,roots=roots,leftMarker=leftMarker,nativeLinkHypothesisMatched=anyMatch,ownershipProven=false,cacheRefreshed=true}
+                end
+            end
+            if #items>0 then emit({event='test_melee_native_capture',frame=frame,time=now,avatar=actor.id,avatarResource=actor.spec.resource,stage=stage,world=tostring(actor.world),sameAvatarWorld=true,
+                nativeHands={right=matrix(actor.unit,cfg.nativeRight.index,true),left=matrix(actor.unit,cfg.nativeLeft.index,true)},sourceHands={right=matrix(actor.unit,cfg.sourceRight.index,true),left=matrix(actor.unit,cfg.sourceLeft.index,true)},nativeMounts=mounts,items=items,
+                poseWrites=false,itemLocalsWritten=false,linksWritten=false,readOnlyPoses=true,skinSurfaceObserved=false,linkEvidence='exact_resource_count_current_local_composition_not_direct_external_parent_unit_proof'}) end
+        end)
+        if not ok then emit({event='test_melee_capture_unavailable',frame=frame,time=now,stage=stage,reason=tostring(why),poseWrites=false}) end
     end
     local function restore(record, membership, force, requireRefresh)
         local item = record.actor
@@ -506,8 +681,11 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         if changed then
             local refreshErrors=self.stats.refreshErrors
             W.update_unit(item.world,item.unit)
+            refresh_source_fk(item,'after_restore',record.frame,record.now,record.diagnostic)
             refresh_models(item.world,membership,item)
             refresh_consumers(item.world,membership,item)
+            test_equipment_graph(item,membership,'after_restore',record.frame,record.now,record.diagnostic)
+            test_melee_capture(item,membership,'after_restore',record.frame,record.now,record.diagnostic)
             if requireRefresh then
                 assert(self.stats.refreshErrors==refreshErrors,'restore_refresh_failed')
             end
@@ -890,6 +1068,7 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         end
         if #weapons~=1 then self.leftIntent[actor.unit]=nil;return nil,'no_unique_supported_held_weapon' end
         local weapon=weapons[1].item
+        if c.weaponTargets[weapon.spec.resource].leftPolicy=='none' then return nil,'right_only_handheld' end
         -- test07: the attached foregrip/underbarrel weapon wins over the gun marker.
         -- Proximity of IK_left is NOT ownership. Require its existing link root to
         -- coincide in position AND rotation with this gun's animated mount.
@@ -916,6 +1095,21 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                                     local n=U.node(item.unit,id)-1
                                     if not seen[n] then roots[#roots+1]=n;seen[n]=true end
                                 end
+                            end
+                            if item.spec.linkRootIndex then
+                                -- The export has no resolved name for this ancestor.
+                                -- Numeric hash is offline evidence, NOT an engine IdString32.
+                                -- Exact resource/count and its named children's verified
+                                -- parent indices establish this root without a raw-ID call.
+                                local rootIndex=item.spec.linkRootIndex
+                                assert(item.spec.verifiedComponent and rootIndex>=0 and rootIndex<item.spec.count
+                                    and rootIndex==math.floor(rootIndex),'foregrip_link_root_index')
+                                local children=0
+                                for _,node in ipairs(item.spec.nodes) do
+                                    if node.parent==rootIndex then children=children+1 end
+                                end
+                                assert(children>=2,'foregrip_link_root_children')
+                                roots[#roots+1]=rootIndex
                             end
                             for _,n in ipairs(roots) do
                                 local root=matrix(item.unit,n,true)
@@ -976,6 +1170,59 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         result.weaponResource=weapon.spec.resource;result.link=weapons[1].link
         result.gripResource=gripItem.spec.resource;result.gripKind=gripKind
         return result
+    end
+    local function held_left_target(actor,membership,attachmentRows,frame,now,diagnostic)
+        local policy=test and test.leftHeldItems
+        if not (policy and policy.enabled and leftEnabled) then return nil end
+        local mountRow
+        for _,row in ipairs(attachmentRows or {}) do if row.spec.node.name=='attach_hand_l' then mountRow=row;break end end
+        if not mountRow then return nil end
+        local matches={};local candidates={}
+        for _,item in ipairs(self.consumers) do
+            if (item.spec.leftHeldEligible or (policy.magazines and item.spec.verifiedComponent and item.spec.kind=='weapon_magazine'))
+                and item.world==actor.world and present(item,membership) then
+                local ok,held=pcall(function()
+                    identity(item);if visible(item.unit)==false then return end
+                    local recover=policy.recoverLocalOffset and (not policy.reloadComponentsOnly or item.spec.kind=='weapon_magazine')
+                    local requireExternal=recover and policy.requireExternalParent
+                    for _,index in ipairs(item.spec.heldRoots or {item.spec.root}) do
+                        local pose=matrix(item.unit,index,true)
+                        local parent=requireExternal and U.scene_graph_parent(item.unit,index+1) or nil
+                        local external=parent==nil or parent==0
+                        local matched=(not requireExternal or external)
+                            and distance(pose,mountRow.basis)<=policy.linkMetres and angle(pose,mountRow.basis)<=policy.linkDegrees
+                        if recover and policy.unitRootComposeOnly and index==0 then matched=false end
+                        local localPose,expected,metres,degrees
+                        if recover and external and distance(pose,mountRow.basis)<=(policy.candidateRadius or 1.5) then
+                            localPose=matrix(item.unit,index,false)
+                            -- A linked child may retain an animated non-identity local.
+                            -- Test world = native mount * current local, not world = mount.
+                            expected=compose(mountRow.basis,localPose)
+                            metres=distance(pose,expected);degrees=angle(pose,expected)
+                            matched=matched or (metres<=policy.linkMetres and degrees<=policy.linkDegrees)
+                        end
+                        if diagnostic and policy.probeResources and policy.probeResources[item.spec.resource]
+                            and distance(pose,mountRow.basis)<=(policy.candidateRadius or 1.5) and #candidates<48 then
+                            candidates[#candidates+1]={resource=item.spec.resource,instance=item.id,index=index,parentReturned=parent,
+                                externalParent=external,worldPose=pose,localPose=localPose,expectedFromNativeMount=expected,
+                                rootDistance=distance(pose,mountRow.basis),composedDistance=metres,composedDegrees=degrees,matched=matched}
+                        end
+                        if matched then return true end
+                    end
+                end)
+                if ok and held then matches[#matches+1]=item end
+            end
+        end
+        if diagnostic and policy.recoverLocalOffset then
+            emit({event='test_left_item_link_candidates',frame=frame,time=now,avatar=actor.id,
+                candidates=candidates,matches=#matches,mountWorld=mountRow.basis,nativeHand=matrix(actor.unit,cfg.nativeLeft.index,true),
+                evidence='unique_link_hypothesis_composed_for_reload_components_not_direct_parent_unit_proof',itemLocalsWritten=false})
+        end
+        if #matches==0 then return nil end
+        mountRow.preserveNative=true
+        if #matches>1 then return {ambiguous=true,policy='ambiguous_native_left_item_no_ik'} end
+        return {item=matches[1],hand=matrix(actor.unit,cfg.nativeLeft.index,true),mount=mountRow.basis,
+            policy=policy.recoverLocalOffset and (not policy.reloadComponentsOnly or matches[1].spec.kind=='weapon_magazine') and 'verified_native_left_composed_link_source_hand_only' or 'verified_native_left_link_source_hand_only'}
     end
     local function plan_attachments(actor)
         local rows={};local poses={}
@@ -1174,10 +1421,55 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         end
         return nil
     end
+    local function held_rigid_target(actor,native,membership)
+        local policy=test and test.heldEquipment
+        if not (policy and policy.enabled and rightEnabled) then return nil end
+        local candidates={}
+        for _,item in ipairs(self.consumers) do
+            local spec=policy.rigidRight[item.spec.resource]
+            if spec and item.world==actor.world and present(item,membership) then
+                local ok,value=pcall(function()
+                    identity(item);if visible(item.unit)==false then return end
+                    local linked=false
+                    local mounts={native}
+                    if spec.allowWeaponMount then
+                        for _,row in ipairs(cfg.attachments or {}) do
+                            if row.node.name=='attach_weapon' then mounts[#mounts+1]=matrix(actor.unit,row.node.index,true) end
+                        end
+                    end
+                    for _,index in ipairs(spec.rootIndices or {spec.root.index}) do
+                        local root=matrix(item.unit,index,true)
+                        for _,mount in ipairs(mounts) do
+                            local parent=spec.requireExternalParent and U.scene_graph_parent(item.unit,index+1) or nil
+                            local external=parent==nil or parent==0
+                            local expected=root
+                            if spec.recoverLocalOffset then expected=compose(mount,matrix(item.unit,index,false)) end
+                            local raw=not spec.unitRootComposeOnly and distance(root,mount)<=spec.linkMetres and angle(root,mount)<=spec.linkDegrees
+                            local composed=spec.recoverLocalOffset and distance(root,expected)<=spec.linkMetres and angle(root,expected)<=spec.linkDegrees
+                            if (not spec.requireExternalParent or external) and (raw or composed) then linked=true;break end
+                        end
+                        if linked then break end
+                    end
+                    if not linked then return end
+                    local hand=matrix(actor.unit,cfg.nativeRight.index,true)
+                    return {desired=copy(native),resource=item.spec.resource,hand=hand,nativeHandReference=hand,
+                        nativeFollow=true,nativeAim=false,preserveNativeMount=true,heldItemType=spec.itemType or 'rigid_explosive',
+                        leftFollow=spec.itemType=='melee' and spec.leftMarker and distance(matrix(actor.unit,cfg.nativeLeft.index,true),matrix(item.unit,spec.leftMarker.index,true))<=(spec.leftContactMetres or .14),
+                        policy='verified_held_rigid_native_path_source_hand_follow'}
+                end)
+                if ok and value then candidates[#candidates+1]=value end
+            end
+        end
+        if #candidates==1 then return candidates[1] end
+        if #candidates>1 then return {desired=copy(native),nativeFollow=false,preserveNativeMount=true,
+            heldItemType='ambiguous_rigid_item',policy='ambiguous_held_rigid_preserve_native'} end
+    end
     local function sidearm_target(actor,native,equivalent,membership)
         if cfg.rightAttachmentEnabled==false or not fixes.sidearmRightIK then return nil end
         local beacon=held_beacon_target(actor,native,membership)
         if beacon then return beacon end
+        local rigidItem=held_rigid_target(actor,native,membership)
+        if rigidItem then return rigidItem end
         local candidates={}
         for _,item in ipairs(self.consumers) do
             local isSidearm=fixes.sidearms and fixes.sidearms[item.spec.resource]
@@ -1195,9 +1487,14 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                                 -- sidearm follower; never disturb proven primary grips.
                                 if not isSidearm then return {blocker=true} end
                                 local marker=name_id('IK_right')
-                                if U.has_node(item.unit,marker)~=true then return end
-                                local ik=matrix(item.unit,U.node(item.unit,marker)-1,true)
-                                local projected=compose(native,relative(link,ik))
+                                local fallback=test and test.heldEquipment and test.heldEquipment.nativeRightFallback[item.spec.resource]
+                                local projected
+                                if U.has_node(item.unit,marker)==true then
+                                    local ik=matrix(item.unit,U.node(item.unit,marker)-1,true)
+                                    projected=compose(native,relative(link,ik))
+                                elseif fallback and fallback.count==item.spec.count then
+                                    projected=matrix(actor.unit,cfg.nativeRight.index,true)
+                                else return end
                                 local desired=copy(native);local aim=false;local separation
                                 local follow=fixes.nativeSidearmAim and rightEnabled
                                 if fixes.nativeSidearmAim and rightEnabled then
@@ -1523,7 +1820,8 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                 candidate=sidearm and 'live_sidearm_target' or cfg.sourceRightMount and 'source_mount' or 'registered_original_mount'}
         end
         local function skip_range(row)
-            self.stats.mountSkipped=self.stats.mountSkipped+1
+            if row.event=='test_source_fk_skipped' then self.stats.sourceFkSkips=self.stats.sourceFkSkips+1
+            else self.stats.mountSkipped=self.stats.mountSkipped+1 end
             self.leftIntent[actor.unit]=nil;self.rightIntent[actor.unit]=nil
             row.retry='next_render'
             -- Exceptional-frame evidence must survive periodic/maxRecords limits.
@@ -1531,6 +1829,8 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
         end
         local ok, why=pcall(function()
             identity(actor);identity(model)
+            test_equipment_graph(actor,membership,'before_write',frame,now,diagnostic)
+            test_melee_capture(actor,membership,'before_write',frame,now,diagnostic)
             probe_sidearm(actor,membership,'before_write',frame,now,'lua')
             test_trace(actor,membership,'before_write',frame,now,diagnostic)
             body_lifecycle_probe(actor,membership,'before_write',frame,now)
@@ -1551,8 +1851,16 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                 skip_range(row)
                 return
             end
-            record={actor=actor,diagnostic=diagnostic,protected={},body={},attachments=plan_attachments(actor)}
+            record={actor=actor,frame=frame,now=now,diagnostic=diagnostic,protected={},body={},attachments=plan_attachments(actor)}
             self.pending[#self.pending+1]=record
+            local function require_source_fk(stage)
+                if not refresh_source_fk(actor,stage,frame,now,diagnostic) then
+                    rangeFailure={event='test_source_fk_skipped',frame=frame,time=now,avatar=actor.id,stage=stage,
+                        reason='source_branch_fk_did_not_settle',retry='next_render',nativeLocalsWritten=false}
+                    error(rangeFailure,0)
+                end
+            end
+            require_source_fk('before_body_sync')
             if cfg.bodySync and cfg.bodySync.enabled then
                 for _,item in ipairs(cfg.bodySync.outputs) do
                     verify_node(u,item.node,true);verify_node(u,item.native,true)
@@ -1578,6 +1886,7 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                     mode=cfg.bodySync.mode,outputs=#record.body,nativeLocalsWritten=false,
                     positionPolicy='source_chain_animated_offsets'}) end
             end
+            require_source_fk('after_body_sync')
             body_lifecycle_probe(actor,membership,'after_body_sync',frame,now)
             local native=matrix(u,cfg.target.index,true)
             local nativeLeftBefore=leftEnabled and matrix(u,cfg.nativeLeft.index,true) or nil
@@ -1585,6 +1894,7 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
             local sourceLeft=compose(rigid(matrix(u,cfg.sourceLeft.index,true)),cfg.leftAxes)
             local equivalent=compose(rigid(source),cfg.rightAxes)
             -- Capture the live right-IK offset before modifying any hand mount.
+            local leftHeld=held_left_target(actor,membership,record.attachments,frame,now,diagnostic)
             local sidearm=sidearm_target(actor,native,equivalent,membership)
             if sidearm and sidearm.preserveNativeMount then
                 for _,row in ipairs(record.attachments) do
@@ -1629,7 +1939,7 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                     target=sidearm.hand,sourceBefore=solved.before,sourceAfter=source,
                     reachResidual=solved.reachResidual,nativeLocalsWritten=false,
                     outputMode='unanimated_reference_children',nativeAimMountPreserved=not sidearm.reachCorrection,
-                    reachCorrection=sidearm.reachCorrection,contact=solved.contact,reachDetails=solved.reachDetails,preserveNativeMount=sidearm.preserveNativeMount,heldItemType=sidearm.heldItemType}) end
+                    reachCorrection=sidearm.reachCorrection,contact=solved.contact,reachDetails=solved.reachDetails,preserveNativeMount=sidearm.preserveNativeMount,heldItemType=sidearm.heldItemType,meleeCaptureEnabled=test and test.meleeCapture and test.meleeCapture.enabled==true}) end
             end
             local reference=compose(equivalent,original)
             if cfg.sourceRightMount then
@@ -1673,8 +1983,21 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
             local leftResult,leftReason
             if leftEnabled then
                 local planned,result,reason
-                if sidearm and sidearm.preserveNativeMount then
-                    planned=true;reason='held_beacon_no_weapon_left_ik'
+                if leftHeld then
+                    if leftHeld.ambiguous then planned=true;reason=leftHeld.policy
+                    else
+                        planned,result=pcall(solve_source_arm,actor,cfg.leftGrip,cfg.leftAxes,leftHeld.hand,leftHeld.hand,'left')
+                        if planned then
+                            result.gripResource=leftHeld.item.spec.resource;result.gripKind='held_item_native_path'
+                            result.link={mount='attach_hand_l'};result.weaponResource=leftHeld.item.spec.resource;result.linkPolicy=leftHeld.policy
+                            result.nativeContactDistance=0;result.nativeInContact=true
+                        end
+                    end
+                elseif sidearm and sidearm.preserveNativeMount and sidearm.heldItemType=='melee' and sidearm.leftFollow then
+                    planned,result=pcall(solve_source_arm,actor,cfg.leftGrip,cfg.leftAxes,nativeLeftBefore,nativeLeftBefore,'left')
+                    if planned then result.gripResource=sidearm.resource;result.gripKind='melee_native_left_contact';result.weaponResource=sidearm.resource end
+                elseif sidearm and sidearm.preserveNativeMount then
+                    planned=true;reason=sidearm.heldItemType=='stratagem_beacon' and 'held_beacon_no_weapon_left_ik' or 'held_item_no_weapon_left_ik'
                 else
                     planned,result,reason=pcall(plan_left,actor,desired,native,nativeLeftBefore,membership,record.attachments)
                 end
@@ -1700,9 +2023,9 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                     sourceLeft=compose(rigid(actualLeft),cfg.leftAxes)
                     if diagnostic then emit({event='left_applied',frame=frame,time=now,avatar=actor.id,
                         weapon=leftResult.weapon,weaponResource=leftResult.weaponResource,owner='unverified',
-                        link=leftResult.link,
+                        link=leftResult.link,linkPolicy=leftResult.linkPolicy,
                         mode='existing_two_bone_solver',nativeContactDistance=leftResult.nativeContactDistance,contact=leftResult.contact,reachDetails=leftResult.reachDetails,
-                        intent=self.leftIntent[actor.unit],gripResource=leftResult.gripResource,gripKind=leftResult.gripKind,
+                        intent=self.leftIntent[actor.unit],gripResource=leftResult.gripResource,gripKind=leftResult.gripKind,meleeCaptureEnabled=test and test.meleeCapture and test.meleeCapture.enabled==true,
                         outputMode=cfg.leftGrip.outputs and 'unanimated_reference_children' or 'animated_source_nodes',
                         nativeInContact=leftResult.nativeInContact,requireNativeContact=false,
                         reachPolicy=cfg.leftGrip.reachPolicy,softDistance=leftResult.contact and 0 or cfg.leftGrip.softDistance,
@@ -1725,6 +2048,8 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                     count=#record.attachments,headDescendants=false,policy='position_preserve_native_basis',
                     singleHand='right_and_left_mounts_independent'}) end
             end
+            test_equipment_graph(actor,membership,'final_output',frame,now,diagnostic)
+            test_melee_capture(actor,membership,'final_output',frame,now,diagnostic)
             local actual=matrix(u,cfg.target.index,true)
             assert(difference(matrix(u,cfg.target.index,false),written)<=cfg.localTolerance,'local_readback')
             assert(difference(actual,desired)<=cfg.worldTolerance,'world_readback')
@@ -1963,7 +2288,8 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
             assert(a and membership[a.world] and U.alive(a.unit)==true,'fp_actor_unavailable')
             local found=false;for _,u in ipairs(membership[a.world].units) do if u==a.unit then found=true;break end end
             assert(found,'fp_actor_not_in_world')
-            assert(resource(a.unit)=='d0cf4d493ca08bed' and U.num_scene_graph_items(a.unit)==63,'fp_actor_identity')
+            local count=U.num_scene_graph_items(a.unit);local expanded=cfg.firstPersonSource and cfg.firstPersonSource.avatar
+            assert(resource(a.unit)=='d0cf4d493ca08bed' and (count==63 or (expanded and count==expanded.count and a.layoutVerified==true)),'fp_actor_identity')
             return a
         end)
         if not ok then return end
@@ -2014,15 +2340,23 @@ function M.new(S, cfg, logger, ArmMath, sceneContext)
                         record={item=item,count=count,meshes=meshes};self.fpHidden[item.unit]=record
                     end
                     assert(record.count==count,'fp_mesh_layout_changed')
+                    local permitted=sceneContext and type(sceneContext.fpSourcePermit)=='function' and sceneContext.fpSourcePermit(item.unit,actor.world,frame)==true
+                    local savedVisible,requestedVisible,actualVisible=0,0,0
                     for _,mesh in ipairs(record.meshes) do
-                        if S.Mesh.visibility(U.mesh(item.unit,mesh.index))~=false then
+                        if mesh.visible then savedVisible=savedVisible+1 end
+                        if permitted then
+                            if mesh.visible then requestedVisible=requestedVisible+1 end
+                            if S.Mesh.visibility(U.mesh(item.unit,mesh.index))~=mesh.visible then U.set_mesh_visibility(item.unit,mesh.index,mesh.visible,'default')end
+                        elseif S.Mesh.visibility(U.mesh(item.unit,mesh.index))~=false then
                             U.set_mesh_visibility(item.unit,mesh.index,false,'default')
                             self.stats.fpMeshHides=self.stats.fpMeshHides+1
                         end
+                        local value=S.Mesh.visibility(U.mesh(item.unit,mesh.index));assert(type(value)=='boolean','fp_visibility_readback_unknown')
+                        if value then actualVisible=actualVisible+1 end
                     end
-                    if diagnostic then emit({event='fp_arm_hidden',frame=frame,instance=item.id,
-                        resource=item.spec.resource,role=role,meshes=count,context='default',
-                        ownership='selected_fp_avatar_three_native_bones',attachmentsWritten=false,bonesWritten=false}) end
+                    if diagnostic then emit({event=permitted and (actualVisible>0 and 'fp_arm_source_receiver_visible' or 'fp_arm_source_receiver_not_visible') or 'fp_arm_hidden',frame=frame,instance=item.id,
+                        resource=item.spec.resource,role=role,meshes=count,context='default',savedVisibleMeshes=savedVisible,requestedVisibleMeshes=requestedVisible,actualVisibleMeshes=actualVisible,sourcePermit=permitted,
+                        visibilityPolicy='source_permit_restores_saved_mask_not_blind_show',ownership='selected_fp_avatar_three_native_bones',attachmentsWritten=false,bonesWritten=false}) end
                     return true
                 end)
                 if not matched and self.fpHidden[item.unit] then self.stats.fpVisibilityErrors=self.stats.fpVisibilityErrors+1 end

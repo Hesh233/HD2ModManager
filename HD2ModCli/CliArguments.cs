@@ -105,6 +105,10 @@ public sealed record CliGlobalOptions(
 	// 层号不是写死的：按目标护甲胸部槽位实际有几层算（最外层放头、次外层放身体），
 	// 只有一层时自动退回老做法。见 CliVpkRekey.ResolveHeadBodyMerge。
 	string? HeadMerge = null,
+	// **头身合并的用户同意标记**：`--head-merge on` 必须同时带 `--head-merge-consent`，
+	// 否则 CLI 直接拒绝。理由：这个功能改的是"头画在哪"，出问题要用户自己承担——
+	// 调用它的 agent 必须先把这个风险讲清楚、拿到用户明确同意，再带上这个标记。
+	bool HeadMergeConsent = false,
 	// 从**清单文件**读要转换的 VPK（每行一个绝对路径，空行与 `#` 开头的行忽略）。
 	//
 	// 为什么需要它：Windows 命令行上限是 32767 字符，而一个中文整合包里 140 个 VPK 的绝对路径
@@ -123,6 +127,13 @@ public sealed record CliGlobalOptions(
 	// 当角色去转换，然后死在模型解析上（实测报 `MDL 骨骼数量异常：0`），而它其实是整只角色的主材质。
 	// 规划阶段靠材质目录已经能认出来，这里把那个结论显式交给转换器，不在转换阶段再猜一次。
 	string? TreatAs = null,
+	// 逐 VPK 的类型清单（`<绝对路径>\t model|material`，每行一个）。
+	//
+	// 为什么需要第二个开关：`--treat-as` 的效果作用于**整次调用的每一个输入**，而一次"整批转换"
+	// 里模型和材质包是**混着**的（模型出 unit patch、材质包出材质 patch）。混着传 `--treat-as model`
+	// 会把材质包当角色去转（死在 `MDL 骨骼数量异常：0`），不传又会把"塞了展示模型的材质包"当角色。
+	// 规划阶段本来就知道每个 VPK 是什么，这个清单就是把那份结论原样交给转换器。
+	string? TreatAsList = null,
 	// 半透明落地方式的实验开关（none / translucent / advanced-opacity）。不传 = 现有行为。
 	//
 	// 三个变体必须**同命名空间**才有意义：实验开关不改材质 id，模型 patch 才能只换一次，
@@ -138,10 +149,24 @@ public sealed record CliGlobalOptions(
 	// 不传 = 不翻（照源侧原样）。猜错的表现是"凸的看起来是凹的"，只能在实机上看出来。
 	bool? NormalFlipY = null,
 	// 源侧 `$no_draw`（"这一块不画"）怎么落地：show（默认，照常显示）/ hide（几何保留+不显示）/ drop。
+	// L4D2 里它只是材质层开关，网格仍在文件里，作者常拿它做变体（猫耳/无猫耳）；
+	// 直接丢几何会把数据一起删掉，导入之后只能改包重导。
 	string? NoDraw = null,
-	bool SourceSkeleton = false,
-	double ModelScale = 1,
-	bool SingleHd2Skeleton = false,
+	// --cutout-geometry <材质,材质>：把这些材质的「镂空」裁成几何（见 CutoutMesh），
+	// 于是它们能走 advanced 拿到金属度。空 = 不做，行为与以前逐字节一致。
+	string? CutoutGeometry = null,
+	// 角色头部的缩放比例（只动网格，围绕颈/头接缝两个关节的中点等比缩放）。
+	// 不传 = 转换器默认 8/7 ≈ 1.142857（见 RetargetOptions.HeadScale）。
+	//
+	// 为什么需要它：8/7 是当年对着一批模型实机调出来的经验值，但"头多大合适"因人而异，
+	// 不同来源模型自己的头身比也不一样。它只影响几何，不碰材质与任何 id，
+	// 所以改它不会让材质包失配 —— 但**会改变产物字节**，重构建必须带上同一个值
+	// 才是同一份产物（管理器把它当全局几何参数，每次重构建按当前设置传入）。
+	double? HeadScale = null,
+    // Independently preserved native/single workflow and current conversion configuration.
+    bool SourceSkeleton = false,
+    bool SingleHd2Skeleton = false,
+    double ModelScale = 1,
     bool MergeWristWeights = false,
     string? ConversionConfig = null);
 
@@ -172,6 +197,8 @@ public static class CliArgumentParser
 		string? name = null;
 		string? materialSource = null;
 		double? albedoFactor = null;
+		// 头部缩放比例。null = 不给，转换器用自己的默认值（8/7）。
+		double? headScale = null;
 		string? matcap = null;
 		string? donor = null;
 		string? file = null;
@@ -191,16 +218,19 @@ public static class CliArgumentParser
         string? conversionConfig = null;
 		double modelScale = 1;
 		string? headMerge = null;
+		var headMergeConsent = false;
 		string? vpkList = null;
 		string? materialSourceList = null;
 		string? componentSourceList = null;
 		string? treatAs = null;
+		string? treatAsList = null;
 		string? alphaExperiment = null;
 		int? ditherScale = null;
 		double? ditherDensity = null;
 		string? ditherPattern = null;
 		bool? normalFlipY = null;
 		string? noDraw = null;
+		string? cutoutGeometry = null;
 		var picks = new List<string>();
 		int? position = null;
 		int? limit = null;
@@ -289,6 +319,18 @@ public static class CliArgumentParser
 
 					albedoFactor = parsedAlbedoFactor;
 					break;
+				case "--head-scale":
+					var rawHeadScale = ReadValue(args, ref index, argument);
+					if (!double.TryParse(rawHeadScale, System.Globalization.NumberStyles.Float,
+							System.Globalization.CultureInfo.InvariantCulture, out var parsedHeadScale)
+						|| parsedHeadScale < 0.5 || parsedHeadScale > 2)
+					{
+						throw new CliUserException("InvalidOption",
+							$"--head-scale 需要一个 [0.5, 2] 的数（头部等比缩放比例，默认 8/7≈1.1429），实际是 '{rawHeadScale}'。");
+					}
+
+					headScale = parsedHeadScale;
+					break;
 				case "--donor":
 					donor = ReadValue(args, ref index, argument);
 					break;
@@ -299,7 +341,28 @@ public static class CliArgumentParser
 					sections = ReadValue(args, ref index, argument);
 					break;
 				case "--id-namespace":
-					idNamespace = ReadValue(args, ref index, argument);
+					var rawNamespace = ReadValue(args, ref index, argument).Trim();
+					// **形状守卫：长得像 token 就是传错了参数。**
+					//
+					// `--id-namespace` 的值是"来源标识"（来源压缩包/目录名），token 由
+					// Hd2AssetId.NamespaceFor 统一派生。把已经派生好的 token 传进来会被**再哈希一遍**，
+					// 于是所有材质/贴图 id 全变 —— 表面完全正常（退出码 0、日志正常），
+					// 只是产物与上一轮零重叠。实测代价：一位使用者白跑了两遍全量转换（各约 7 分钟），
+					// 还差点把它当成"管理器在改 id"的证据。
+					//
+					// 不做自动识别：自动识别会把"我传错了"悄悄变成另一种含义，照样静默。
+					if (rawNamespace.StartsWith("vpk-", StringComparison.OrdinalIgnoreCase)
+						&& rawNamespace.Length == 20
+						&& rawNamespace[4..].All(Uri.IsHexDigit))
+					{
+						throw new CliUserException("IdNamespaceLooksLikeToken",
+							$"--id-namespace 的值 '{rawNamespace}' 已经是一个 token（形如 vpk-<16 位十六进制>）。"
+							+ "再传进来会被**重新哈希一次**，所有材质与贴图 id 都会变。"
+							+ $"要原样使用这个 token 请改成 --id-namespace-token {rawNamespace.ToLowerInvariant()}；"
+							+ "--id-namespace 要的是**来源标识**（来源压缩包/目录名）。");
+					}
+
+					idNamespace = rawNamespace;
 					break;
 				case "--id-namespace-token":
 					var rawToken = ReadValue(args, ref index, argument).Trim();
@@ -356,6 +419,9 @@ public static class CliArgumentParser
 
 					treatAs = rawTreatAs;
 					break;
+				case "--treat-as-list":
+					treatAsList = ReadValue(args, ref index, argument);
+					break;
 				case "--dither-scale":
 					var rawDitherScale = ReadValue(args, ref index, argument);
 					if (!int.TryParse(rawDitherScale, out var parsedDitherScale) || parsedDitherScale is < 1 or > 8)
@@ -377,29 +443,32 @@ public static class CliArgumentParser
 								ditherPattern = rawPattern;
 						break;
 					case "--normal-flip-y":
-						var rawFlip = ReadValue(args, ref index, argument).Trim().ToLowerInvariant();
-						normalFlipY = rawFlip switch
-						{
-							"1" or "on" or "true" or "yes" => true,
-							"0" or "off" or "false" or "no" => false,
-							_ => throw new CliUserException("InvalidOption",
-								$"--normal-flip-y 只接受 on / off，实际是 '{rawFlip}'。"
-								+ "它翻的是源法线图绿通道的方向（DirectX ↔ OpenGL）：猜错时凸面看起来像凹面，"
-								+ "只能在实机上对比，所以做成开关。"),
-						};
-						break;
-					case "--no-draw":
-						var rawNoDraw = ReadValue(args, ref index, argument).Trim().ToLowerInvariant();
-						if (rawNoDraw is not ("hide" or "show" or "drop"))
-						{
-							throw new CliUserException("InvalidOption",
-								$"--no-draw 只接受 hide / show / drop，实际是 '{rawNoDraw}'。"
-								+ "源侧的 $no_draw 是「这一块不画」，L4D2 里它只是材质层开关（网格还在文件里），"
-								+ "作者常拿它做变体；show = 照常显示（默认，想隐藏用 section 组件编辑器关掉），"
-								+ "hide = 保留几何但做成不显示，drop = 连几何一起丢（不可恢复）。");
-						}
-						noDraw = rawNoDraw;
-						break;
+					var rawFlip = ReadValue(args, ref index, argument).Trim().ToLowerInvariant();
+					normalFlipY = rawFlip switch
+					{
+						"1" or "on" or "true" or "yes" => true,
+						"0" or "off" or "false" or "no" => false,
+						_ => throw new CliUserException("InvalidOption",
+							$"--normal-flip-y 只接受 on / off，实际是 '{rawFlip}'。"
+							+ "它翻的是源法线图绿通道的方向（DirectX ↔ OpenGL）：猜错时凸面看起来像凹面，"
+							+ "只能在实机上对比，所以做成开关。"),
+					};
+					break;
+				case "--cutout-geometry":
+					cutoutGeometry = ReadValue(args, ref index, argument);
+					break;
+				case "--no-draw":
+					var rawNoDraw = ReadValue(args, ref index, argument).Trim().ToLowerInvariant();
+					if (rawNoDraw is not ("hide" or "show" or "drop"))
+					{
+						throw new CliUserException("InvalidOption",
+							$"--no-draw 只接受 hide / show / drop，实际是 '{rawNoDraw}'。"
+							+ "源侧的 $no_draw 是「这一块不画」，L4D2 里它只是材质层开关（网格还在文件里），"
+							+ "作者常拿它做变体；show = 照常显示（默认，想隐藏用 section 组件编辑器关掉），"
+							+ "hide = 保留几何但做成不显示，drop = 连几何一起丢（不可恢复）。");
+					}
+					noDraw = rawNoDraw;
+					break;
 					case "--dither-density":
 					var rawDitherDensity = ReadValue(args, ref index, argument);
 					if (!double.TryParse(rawDitherDensity, System.Globalization.NumberStyles.Float,
@@ -421,6 +490,9 @@ public static class CliArgumentParser
 					}
 
 					alphaExperiment = rawAlphaExperiment;
+					break;
+				case "--head-merge-consent":
+					headMergeConsent = true;
 					break;
 				case "--head-merge":
 					var rawHeadMerge = ReadValue(args, ref index, argument).Trim().ToLowerInvariant();
@@ -505,7 +577,7 @@ public static class CliArgumentParser
 					{
 						throw new CliUserException("InvalidOption",
 							$"--cutout-template 只接受 alphaclip / original，实际是 '{rawCutoutTemplate}'。"
-							+ "alphaclip 是唯一支持逐像素镂空的模板；original 已实机证伪（没有镂空），仅留档。");
+							+ "alphaclip 支持逐像素镂空但没有金属度；original 已实机证伪（没有镂空），仅留档。");
 					}
 
 					cutoutTemplate = rawCutoutTemplate.ToLowerInvariant();
@@ -585,9 +657,9 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		if (sourceSkeleton && singleHd2Skeleton)
-			throw new CliUserException("SkeletonRouteConflict", "--single-hd2-skeleton 与 --source-skeleton 不能混用。");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, metalCutout, cutoutTemplate, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs, alphaExperiment, ditherScale, ditherDensity, ditherPattern, normalFlipY, noDraw, sourceSkeleton, modelScale, singleHd2Skeleton, ConversionConfig: conversionConfig));
+        if (sourceSkeleton && singleHd2Skeleton)
+            throw new CliUserException("ModelModeConflict", "--source-skeleton 与 --single-hd2-skeleton 不能同时使用。");
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, metalCutout, cutoutTemplate, unitIds, reuseModel, headMerge, headMergeConsent, vpkList, materialSourceList, componentSourceList, treatAs, treatAsList, alphaExperiment, ditherScale, ditherDensity, ditherPattern, normalFlipY, noDraw, cutoutGeometry, headScale, SourceSkeleton: sourceSkeleton, SingleHd2Skeleton: singleHd2Skeleton, ModelScale: modelScale, ConversionConfig: conversionConfig));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

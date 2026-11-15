@@ -144,6 +144,47 @@ public sealed class RuntimeArmorRegistryServiceTests
 	}
 
 	[Fact]
+	public async Task Apply_DisablingMappings_OverwritesStaleWardrobeLinks_ButNeverCreatesOne()
+	{
+		// 回归（2026-11-13）：协议关闭后链接数为 0，旧实现不写文件，上一版 wardrobe.links
+		// 继续被运行时执行，把护甲件改指到不存在的 unit，游戏里缺身体。
+		await using var fixture = await Fixture.CreateAsync(withCatalog: true);
+		var paths = new StoragePaths(Path.Combine(fixture.Root, "app"));
+		await using (var connection = new SqliteConnection($"Data Source={paths.DbPath};Pooling=False"))
+		{
+			await connection.OpenAsync();
+			await using var command = connection.CreateCommand();
+			command.CommandText = """
+				CREATE TABLE game_data_authority_pieces (
+					item_id INTEGER, raw_body_type INTEGER, body_variant INTEGER, slot INTEGER,
+					part_kind INTEGER, piece_type INTEGER, weight INTEGER, tone_variations INTEGER,
+					unit_type_id INTEGER, unit_file_id INTEGER);
+				INSERT INTO game_data_authority_pieces VALUES
+					(10, 3, 3, 3, 0, 0, 0, 0, -2259526030728936129, 101),
+					(20, 3, 3, 3, 0, 0, 0, 0, -2259526030728936129, 201);
+				""";
+			await command.ExecuteNonQueryAsync();
+		}
+		SqliteConnection.ClearAllPools();
+		var data = Path.Combine(fixture.Root, "data");
+		Directory.CreateDirectory(data);
+		var linksPath = Path.Combine(fixture.RegistryRoot, WardrobeLinkCompiler.FileName);
+
+		// 从未写过链接文件：关闭状态下不凭空创建。
+		var first = await fixture.Service.ReadSnapshotAsync();
+		var off = await fixture.Service.ApplyAsync(first.Fingerprint, false, [], [], [], [], gameDataDirectory: data);
+		Assert.False(File.Exists(linksPath));
+
+		var on = await fixture.Service.ApplyAsync(off.Fingerprint, true, [new RuntimeArmorRegistryMapping(10, 20)], [], [], [], gameDataDirectory: data);
+		Assert.Contains("link=", await File.ReadAllTextAsync(linksPath));
+
+		await fixture.Service.ApplyAsync(on.Fingerprint, false, [], [], [], [], gameDataDirectory: data);
+		var text = await File.ReadAllTextAsync(linksPath);
+		Assert.DoesNotContain("link=", text);
+		Assert.Contains("enabled=false", text);
+	}
+
+	[Fact]
 	public async Task ApplyFilter_KeepsAllWorkspacePiecesAndOnlyCompilesPresentUnits()
 	{
 		await using var fixture = await Fixture.CreateAsync();
@@ -448,13 +489,15 @@ public sealed class RuntimeArmorRegistryServiceTests
 	[Fact]
 	public async Task LuaDeployment_PhysicsExclusiveBoot_IsBuiltEvenWhenMappingDoesNotUseRuntimeLua()
 	{
-		// 物理与护甲映射是**两件独立的事**：真映射只表示"外观写进注册表数据、不投放映射运行时"，
-		// 它并不禁止投放别的 Lua 功能。所以「真映射 + 物理独占 boot」必须能产出一个 boot patch。
+		// 物理与护甲映射是**两件独立的事**：映射「关闭」只表示"不投放映射运行时"，
+		// 它并不禁止投放别的 Lua 功能。所以「映射关闭 + 物理独占 boot」必须能产出一个 boot patch。
 		//
 		// 这条同时钉住 2026-11-01 那次"整轮完全没有物理"的反面教训：那次**不是**这两者互斥，
 		// 而是启动时没人把设置里的物理模式同步到静态字段，它停在默认的「关闭」——
 		// 见 SettingsService.ApplyToLuaDeployment 的注释。别把这两件事混成一条判据。
-		LuaDeploymentService.MappingMode = ArmorMappingMode.TrueMapping;
+		//
+		// 注：这里原本写的是真映射档（2026-11-11 停用），换成「关闭」后语义等价且仍可测。
+		LuaDeploymentService.MappingMode = ArmorMappingMode.Off;
 		LuaDeploymentService.PhysicsMode = PhysicsMode.ExclusiveLuaEntry;
 
 		await using var fixture = await Fixture.CreateAsync();
@@ -484,10 +527,10 @@ public sealed class RuntimeArmorRegistryServiceTests
 	[Fact]
 	public async Task LuaDeployment_PhysicsOffAndMappingWithoutRuntimeLua_ProducesNoLuaPatch()
 	{
-		// 这正是 2026-11-01 实机的产物形态：真映射 + 物理静态字段停在默认的「关闭」⇒
+		// 这正是 2026-11-01 实机的产物形态：映射不投放运行时 + 物理静态字段停在默认的「关闭」⇒
 		// 管理器一个 patch 都不产、游戏里既没有物理也没有日志。把"什么都没产出"固定成
 		// 一条**预期**行为，将来再出现同样的空部署时能一眼看出是哪一侧关掉了。
-		LuaDeploymentService.MappingMode = ArmorMappingMode.TrueMapping;
+		LuaDeploymentService.MappingMode = ArmorMappingMode.Off;
 		LuaDeploymentService.PhysicsMode = PhysicsMode.Off;
 
 		await using var fixture = await Fixture.CreateAsync();
@@ -538,7 +581,28 @@ public sealed class RuntimeArmorRegistryServiceTests
 			LuaDeploymentValidationMode.CompileOnly);
 
 		Assert.False(result.HasErrors, string.Join(Environment.NewLine, result.Issues.Select(issue => $"{issue.Code}: {issue.Message}")));
-		var group = Assert.Single(result.GeneratedPatchGroups);
+		// 独占 boot 模式：**两个**补丁。
+		//   ① boot 补丁：游戏原始 boot 字节码 + loadstring 跑运行时源码；
+		//   ② 隐藏 unit 补丁：只含那个"什么都不画"的 unit。
+		// 为什么 ② 不能省：`wardrobe.links` 里"来源缺槽位"的条目指向它，而指向不存在的 unit
+		// 会让引擎记住加载失败 ⇒ 军械库整页空白并崩溃（2026-11-12 实测本机 948/2007 条悬空）。
+		Assert.Equal(2, result.GeneratedPatchGroups.Count);
+		var group = Assert.Single(result.GeneratedPatchGroups, candidate => candidate.Description.Contains("LuaMergeV1", StringComparison.Ordinal));
+		var addon = Assert.Single(result.GeneratedPatchGroups, candidate => candidate.Description.Contains("managed addon", StringComparison.Ordinal));
+		// 落位顺序：unit 补丁恒在 boot 补丁**之前**一个 ⇒ 最终序号里 unit 是倒数第二、lua 是最大。
+		// 用户口径（2026-11-12）："这个 patch 文件如果是独占，则总是出现在倒数第二个序号，
+		// 而 lua patch 总是出现在最后一个最大的序号。"
+		Assert.Equal(int.MaxValue, group.PlacementOrder!.Value);
+		Assert.Equal(int.MaxValue - 1, addon.PlacementOrder!.Value);
+		var hiddenPatch = Assert.Single(addon.Files, file => file.SidecarKind == PatchSidecarKind.Base);
+		var hiddenEntries = await new AdaptationPatchTocScanner().ScanEntriesAsync(hiddenPatch.FilePath);
+		// 只投放 unit：不能再带一份运行时 Lua（引擎只跑一个 boot，多带的那份白占序号）。
+		var hidden = Assert.Single(hiddenEntries);
+		Assert.Equal(0xE0A48D0BE9A7453FUL, hidden.AssetKey.TypeId);
+		Assert.Equal(0xDEF7DC54E86D6054UL, hidden.AssetKey.FileId);
+		var hiddenPayload = await new AdaptationPatchEntryPayloadReader().ReadPayloadAsync(hidden);
+		Assert.Equal(4240, hiddenPayload.TocData.Length);
+		Assert.Equal(418, hiddenPayload.GpuResourceData.Length);
 		var patch = Assert.Single(group.Files, file => file.SidecarKind == PatchSidecarKind.Base);
 		var bytes = await File.ReadAllBytesAsync(patch.FilePath);
 		// The deployed resource has to look like the game's own boot resource: the
@@ -619,6 +683,71 @@ public sealed class RuntimeArmorRegistryServiceTests
 		Assert.Empty(result.GeneratedPatchGroups);
 	}
 
+	// 用户口径（2026-11-12）：独占模式下隐藏 unit 补丁恒定出现在**倒数第二个序号**，
+	// 而 lua（boot）补丁恒定是**最后一个最大序号**。
+	// 这条验的是**最终 patch 序号**，不只是相对顺序：ApplyPlanner 按 PlacementOrder 递增分配序号，
+	// 顺序配错就会变成"unit 排在 boot 后面"，而现象在游戏里是查不出来的（两个 key 不冲突）。
+	[Fact]
+	public async Task LuaDeployment_ExclusiveBoot_PlacesHiddenUnitPatchJustBeforeTheBootPatch()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		var initial = await fixture.Service.ReadSnapshotAsync();
+		await fixture.Service.ApplyAsync(initial.Fingerprint, true, [new RuntimeArmorRegistryMapping(10, 20)]);
+		var gameData = Path.Combine(fixture.Root, "game", "data");
+		Directory.CreateDirectory(gameData);
+		await File.WriteAllBytesAsync(
+			Path.Combine(gameData, $"{AdaptationLuaAssetKeys.BootArchiveId:x16}"),
+			CreateGameBootArchive([0x1B, 0x4C, 0x4A, 0x02]));
+		// 先占住序号 0：真实环境里 data 本来就有别的补丁，新序号要用"现有最大 + 1"算。
+		await File.WriteAllBytesAsync(
+			Path.Combine(gameData, $"{AdaptationLuaAssetKeys.BootArchiveId:x16}.patch_0"), [0]);
+		var profile = new Profile(ProfileId.New(), "test", DateTimeOffset.UtcNow, null, []);
+		var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode>(), [profile], profile.Id);
+		var modsRoot = Path.Combine(fixture.Root, "mods");
+		Directory.CreateDirectory(modsRoot);
+		var emptyIndex = new PatchFileIndex(DateTimeOffset.UtcNow, new Dictionary<ModNodeId, IReadOnlyList<IndexedPatchFile>>(), []);
+
+		var result = await new LuaDeploymentService(armorRegistry: fixture.Service).MaterializeAsync(
+			profile,
+			snapshot,
+			emptyIndex,
+			modsRoot,
+			gameData,
+			new Dictionary<ModNodeId, ModContentFacts>(),
+			LuaDeploymentValidationMode.CompileOnly);
+		Assert.False(result.HasErrors, string.Join(Environment.NewLine, result.Issues.Select(issue => $"{issue.Code}: {issue.Message}")));
+
+		// 一个"别人家的"补丁组，落位顺序最靠前（模拟普通 mod 的补丁）：它先占 0 号，
+		// 于是"倒数第二 / 最后"才有意义（不是从 0 数起）。
+		var decoyPath = Path.Combine(fixture.Root, "decoy", $"{AdaptationLuaAssetKeys.BootArchiveId:x16}.patch_0");
+		var decoy = new GeneratedPatchGroup(
+			$"{AdaptationLuaAssetKeys.BootArchiveId:x16}",
+			0,
+			[new GeneratedPatchFile(PatchSidecarKind.Base, decoyPath, Path.GetFileName(decoyPath), 16, DateTimeOffset.UtcNow)],
+			"decoy",
+			PlacementOrder: 0);
+
+		var plan = await new ApplyPlanner(new PatchFileNameParser()).BuildPlanAsync(
+			profile,
+			snapshot,
+			emptyIndex,
+			gameData,
+			new ApplyPlanAugmentation([.. result.GeneratedPatchGroups, decoy]));
+		var unit = Assert.Single(plan.PatchMappings, mapping =>
+			mapping.SidecarKind == PatchSidecarKind.Base
+			&& mapping.SourcePath.Contains("armor-registry-addon", StringComparison.OrdinalIgnoreCase));
+		var boot = Assert.Single(plan.PatchMappings, mapping =>
+			mapping.SidecarKind == PatchSidecarKind.Base
+			&& mapping.SourcePath.Contains(Path.Combine(".runtime", "lua"), StringComparison.OrdinalIgnoreCase));
+		// decoy 占 0 ⇒ unit 占 1、boot 占 2：unit 是**倒数第二个**，boot 是**最大的那个**。
+		Assert.Equal(1, unit.TargetPatchIndex);
+		Assert.Equal(2, boot.TargetPatchIndex);
+		Assert.Equal(
+			$"{AdaptationLuaAssetKeys.BootArchiveId:x16}.patch_{boot.TargetPatchIndex}",
+			Path.GetFileName(boot.TargetPath));
+		Assert.Equal(boot.TargetPatchIndex, plan.PatchMappings.Max(mapping => mapping.TargetPatchIndex));
+	}
+
 	private static byte[] CreateBootLuaPatch()
 	{
 		const int headerLength = 0x48;
@@ -669,14 +798,15 @@ public sealed class RuntimeArmorRegistryServiceTests
 		return archive;
 	}
 
-	// 作用：把"本库没有工作区时，退回协议副本"这件事**标记出来**，而不是悄悄发生。
+	// 作用：**本库没有工作区时，绝不回退去读 C 盘协议副本。**
 	//
-	// 为什么这是正确性要求而不是诊断：工作区在模组库里（跟库走），协议在用户目录里（跟用户走），
-	// 两者生命周期不同。用户把新版解压到另一个目录后，本库没有工作区，页面只能显示协议副本——
-	// 那是他映射的最后一份存留。**显示它是对的**（看不见比看见得不全更糟），
-	// 但必须能说出"这不是本库的工作区"，否则用户会以为映射本来就这么少。
+	// 2026-11-05 用户口径：映射结构的唯一来源是模组库里的那份 JSON；协议（以及受管 dl_bin）
+	// 都是**派生文件**，换库之后它属于上一个库。读它等于把旧库的映射带进新库，
+	// 于是"换库"看起来像"映射还在"，而实际生效的是别人的结构。
+	//
+	// 唯一会出现的"映射消失"场景就是这一条：结构文件不在 ⇒ 映射为空 ⇒ 用户重配一份即可。
 	[Fact]
-	public async Task MissingWorkspace_FallsBackToTheProtocolAndRecordsThatItDid()
+	public async Task MissingWorkspace_YieldsEmptyStructureAndIgnoresTheProtocolCopy()
 	{
 		await using var fixture = await Fixture.CreateAsync();
 		await File.WriteAllTextAsync(
@@ -685,11 +815,11 @@ public sealed class RuntimeArmorRegistryServiceTests
 
 		var snapshot = await fixture.Service.ReadSnapshotAsync();
 
-		Assert.Equal(RuntimeArmorRegistryDocumentSource.ProtocolFallback, snapshot.DocumentSource);
-		// 回退必须真的发生——映射不能被"藏起来"。
-		Assert.Single(snapshot.Document.Mappings);
-		// 旧版本写的协议没有归属记录，要如实说"无从判断"，而不是假装它是本库的。
-		Assert.Null(snapshot.ProtocolOwnerWorkspace);
+		Assert.Equal(RuntimeArmorRegistryDocumentSource.Empty, snapshot.DocumentSource);
+		// 派生文件里的映射**不许**被当成这个库的结构。
+		Assert.Empty(snapshot.Document.Mappings);
+		// 协议文件本身仍然存在（我们没删它），只是不参与读取。
+		Assert.True(File.Exists(Path.Combine(fixture.RegistryRoot, RuntimeArmorRegistryService.ProtocolFileName)));
 	}
 
 	// 作用：钉住"归属凭据与被守护的文件同生共死"。
@@ -718,8 +848,10 @@ public sealed class RuntimeArmorRegistryServiceTests
 
 		var snapshot = await fresh.ReadSnapshotAsync();
 
-		// 仍然是回退（不隐藏映射），但现在**能说清楚这份协议属于谁**——页面据此提示用户确认库地址。
-		Assert.Equal(RuntimeArmorRegistryDocumentSource.ProtocolFallback, snapshot.DocumentSource);
+		// **换库之后不继承旧协议**：新库没有结构文件 ⇒ 结构为空。
+		Assert.Equal(RuntimeArmorRegistryDocumentSource.Empty, snapshot.DocumentSource);
+		Assert.Empty(snapshot.Document.Mappings);
+		// 但归属记录仍然能告诉用户"这份旧协议属于哪个库"（纯展示用）。
 		Assert.Equal(fixture.Service.WorkspacePath, snapshot.ProtocolOwnerWorkspace);
 	}
 

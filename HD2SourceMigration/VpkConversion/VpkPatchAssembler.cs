@@ -70,7 +70,18 @@ public sealed record VpkUnitPlan(
 /// 配件才用 <c>body=3</c>（Any），层号从 1 起，那是真正新增的位点。
 /// </para>
 /// </summary>
-public sealed record VpkRegistryPiece(uint Body, uint Slot, uint PieceType, bool IsDefaultBase);
+public sealed record VpkRegistryPiece(uint Body, uint Slot, uint PieceType, bool IsDefaultBase)
+{
+	/// <summary>
+	/// 这一件是**被挪过来的**时，写下它原来的格子（形如 <c>slot0/layer0</c>）。
+	/// <para>
+	/// 只给"头身合并"用：素体的头原本是「头盔槽 / 层 0」，合并后被挪到胸部的某个空层。
+	/// 没有这个字段，事后没人能证明"胸甲层 1 的那件就是头盔层 0 挪过去的"——看到的只是
+	/// 两条互不相干的记录。空 = 原生件。
+	/// </para>
+	/// </summary>
+	public string? MovedFrom { get; init; }
+}
 
 /// <summary>
 /// 一个 section 在源侧是谁：材质裸名 + 它算出来的材质 id。
@@ -109,6 +120,17 @@ public sealed record VpkUnitOutcome(
 	/// <para>用途是给 <c>sections.json</c> 起名，从而让组件开关能精确到"猫耳"而不是"共用这张底色的所有东西"。</para>
 	/// </summary>
 	public IReadOnlyList<VpkSectionSource> SectionSources { get; init; } = [];
+
+	/// <summary>
+	/// 这一件**真正带进产物**的物理（jiggle）骨根数；<see langword="null"/> = 本套模型没有物理骨。
+	/// <para>
+	/// <b>为什么值得单独报一列。</b>它是"每件只带自己用得到的骨"这条改法的唯一直接证据：
+	/// 总和应该显著小于 <c>件数 × 容器骨数</c>（实测 Lunalice：7 件、容器 57 骨，
+	/// 改前每件 57，改后每件只有自己那块布料的几根~十几根）。运行时日志里的
+	/// <c>已挂载 N 个 unit / T 条链</c> 就是按这份骨表算出来的，两边对得上才说明链路是通的。
+	/// </para>
+	/// </summary>
+	public int? ExtraBoneCount { get; init; }
 }
 
 /// <summary>
@@ -302,6 +324,103 @@ public sealed class VpkPatchAssembler
 	/// </para>
 	/// <para>回调会在<b>工作线程</b>上被调用，实现方自己负责封送。</para>
 	/// </param>
+	/// <summary>
+	/// 头身合并：把"头"那一件从「头盔槽 / 层 0」挪到胸部槽位的**第一个空层**，并记下原格子。
+	/// <para>
+	/// <b>为什么扫空位而不是写死层 1。</b>素体的胸部默认只有本体件（层 0），所以第一个空位通常
+	/// 就是 1；但有的素体还带胸部护甲件（层 1 已被占），写死就会把那件盖掉。这里扫 0→1→2，
+	/// 全被占用就**明确报错**——静默合并等于悄悄丢一件，用户只会看到"有块东西不见了"。
+	/// </para>
+	/// <para>
+	/// <b>为什么要写 <see cref="VpkRegistryPiece.MovedFrom"/>。</b>合并后注册表里只剩一条
+	/// "胸部的某层有件"，没有这个字段就没人能证明它是头盔层 0 挪过来的，也没法据此还原。
+	/// </para>
+	/// </summary>
+	internal static IReadOnlyList<VpkRegistryPiece> MoveHeadToFirstFreeTorsoLayer(
+		IReadOnlyList<VpkRegistryPiece> pieces,
+		int headIndex,
+		uint torsoSlot,
+		int maxLayer = 2)
+	{
+		ArgumentNullException.ThrowIfNull(pieces);
+		if (headIndex < 0 || headIndex >= pieces.Count)
+			throw new ArgumentOutOfRangeException(nameof(headIndex));
+
+		var used = new HashSet<uint>();
+		for (var i = 0; i < pieces.Count; i++)
+		{
+			if (i == headIndex) continue;
+			if (pieces[i].Slot == torsoSlot) used.Add(pieces[i].PieceType);
+		}
+
+		var head = pieces[headIndex];
+		for (uint layer = 0; layer <= maxLayer; layer++)
+		{
+			if (used.Contains(layer)) continue;
+			var moved = new VpkRegistryPiece[pieces.Count];
+			for (var i = 0; i < pieces.Count; i++)
+			{
+				moved[i] = i == headIndex
+					? pieces[i] with
+					{
+						Slot = torsoSlot,
+						PieceType = layer,
+						MovedFrom = $"slot{head.Slot}/layer{head.PieceType}",
+					}
+					: pieces[i];
+			}
+
+			return moved;
+		}
+
+		throw new InvalidOperationException(
+			$"头身合并失败：胸部槽位（slot {torsoSlot}）的 0..{maxLayer} 层都已占用，没有空位放头。"
+			+ "请先去掉一件胸部护甲件，或关闭「将头盔合并到身体」。");
+	}
+
+	/// <summary>
+	/// 头身合并的落点：头件所在的 plan 与胸部槽位都从**计划本身**算，不写死槽位号。
+	/// </summary>
+	private static void MergeHeadIntoTorso(
+		IReadOnlyList<VpkUnitPlan> plans,
+		IReadOnlyList<VpkRegistryPiece>[] registryPiecesByPlan)
+	{
+		var headIndex = -1;
+		uint? torsoSlot = null;
+		for (var i = 0; i < plans.Count; i++)
+		{
+			if (plans[i].Group.Kind != MeshGroupKind.BodyPart) continue;
+			if (plans[i].Group.Region == BodyRegion.Head && headIndex < 0) headIndex = i;
+			if (plans[i].Group.Region == BodyRegion.Chest && registryPiecesByPlan[i] is { Count: > 0 })
+				torsoSlot ??= registryPiecesByPlan[i][0].Slot;
+		}
+
+		if (headIndex < 0 || registryPiecesByPlan[headIndex] is not { Count: > 0 }) return;
+		if (torsoSlot is null)
+		{
+			throw new InvalidOperationException(
+				"头身合并失败：这个模型没有胸部部件，没有可以放头的地方。");
+		}
+
+		// 占用情况要按**整具模型**算：胸部层可能被任何一个 plan 的件占着。
+		var flat = new List<VpkRegistryPiece>();
+		var offsets = new int[registryPiecesByPlan.Length];
+		for (var i = 0; i < registryPiecesByPlan.Length; i++)
+		{
+			offsets[i] = flat.Count;
+			if (registryPiecesByPlan[i] is { } pieces) flat.AddRange(pieces);
+		}
+
+		var merged = MoveHeadToFirstFreeTorsoLayer(flat, offsets[headIndex], torsoSlot.Value);
+		var cursor = 0;
+		for (var i = 0; i < registryPiecesByPlan.Length; i++)
+		{
+			var count = registryPiecesByPlan[i]?.Count ?? 0;
+			registryPiecesByPlan[i] = merged.Skip(cursor).Take(count).ToArray();
+			cursor += count;
+		}
+	}
+
 	public async ValueTask<VpkPackageResult> AssembleAsync(
 		IReadOnlyList<VpkUnitPlan> plans,
 		RetargetResult? retarget,
@@ -322,6 +441,11 @@ public sealed class VpkPatchAssembler
 		NoDrawPolicy noDrawPolicy = NoDrawPolicy.Show,
 		// 眼球 UV 投影用的"右/上"方向（见 EyeFrame）。缺省时由 EyeUv 从眼球形状推。
 		EyeFrame? eyeFrame = null,
+		// 要把「镂空」变成几何的材质（见 CutoutMesh）。空 = 不做，行为与以前完全一致。
+		IReadOnlyCollection<string>? cutoutGeometryMaterials = null,
+		// 头身合并：把头的注册件从「头盔槽 / 层 0」挪到胸部的第一个空层（见 MergeHeadIntoTorso）。
+		// **不改 patch 字节**，只改注册表条目，于是头盔 item 没有模型、头跟着护甲走。
+		bool mergeHeadIntoTorso = false,
 		Action<string, int, int>? onProgress = null)
 	{
 		ArgumentNullException.ThrowIfNull(plans);
@@ -388,6 +512,14 @@ public sealed class VpkPatchAssembler
 			warnings.AddRange(eyeNotes);
 		}
 
+		// 镂空 → 几何（`--cutout-geometry`）**不在这里做**。
+		//
+		// `plans` 与分段是 CLI 侧基于**原始几何**算好的，按下标引用三角形；在装配器里裁会让
+		// 那些下标失效（实测 KeyNotFoundException: 116519 / 142752 …）。裁剪点在
+		// `CliApplication` 里、`SourceSegmentation.Split` 之前，见那边的注释。
+		//
+		// 这个参数先留空：等真有第二个调用方需要"局部分段后裁剪"时再接线。
+		_ = cutoutGeometryMaterials;
 		// 源侧写着 `$no_draw` 的部件：**连几何一起不写**。
 		//
 		// 源侧语义就是"这块不画"，最常用的场合是**网格变体选择**：P1/P2/P3 三套衣服全部烘在
@@ -439,15 +571,20 @@ public sealed class VpkPatchAssembler
 
 			var slot = plan.Group.Region.Slot();
 			slots[planIndex] = slot;
-			if (plan.Group.Kind == MeshGroupKind.BodyPart)
+			// 判据是**槽位**不是区域：头盔槽（slot 0）没有身形变体，注册表只接受 body=Any。
+			// 以前按 `Region == Head` 判断，别的区域一旦也落到 slot 0 就会写成 body 0/1 两条，
+			// 读取注册表时整份失败（实测 11 条全是 slot=0、body 混着 0/1/3）。
+			if (slot == 0)
 			{
 				layerBySlot[slot] = 1;
-				registryPiecesByPlan[planIndex] = plan.Group.Region == BodyRegion.Head
-					// 头盔：Lua 会把 body=3 的 slot 0 展开进目标的原生 body 行，所以这里就该是 Any。
-					? [new VpkRegistryPiece(3, slot, 0, false)]
-					// 本体：目标原生行是 body=0（Stocky）与 body=1（Slim）两行，
-					// 必须各出一条才能命中真正的 Piece 模板。
-					: [new VpkRegistryPiece(0, slot, 0, true), new VpkRegistryPiece(1, slot, 0, true)];
+				registryPiecesByPlan[planIndex] = [new VpkRegistryPiece(3, slot, 0, false)];
+			}
+			else if (plan.Group.Kind == MeshGroupKind.BodyPart)
+			{
+				layerBySlot[slot] = 1;
+				// 本体：目标原生行是 body=0（Stocky）与 body=1（Slim）两行，
+				// 必须各出一条才能命中真正的 Piece 模板。
+				registryPiecesByPlan[planIndex] = [new VpkRegistryPiece(0, slot, 0, true), new VpkRegistryPiece(1, slot, 0, true)];
 			}
 			else
 			{
@@ -472,33 +609,92 @@ public sealed class VpkPatchAssembler
 					$"HelldiverCustomizationPieceType_{plan.PieceTypeName}");
 		}
 
+		// ①a' 头身合并：把头的注册件从「头盔槽 / 层 0」挪到胸部的第一个空层（不会改任何 patch 字节，
+		// 只改注册表条目）。要在候选构造之前做，后面的 Unit 注册与 sections 都读这份 pieces。
+		if (mergeHeadIntoTorso)
+			MergeHeadIntoTorso(effectivePlans, registryPiecesByPlan);
+
 		// ①b 把 jiggle 骨的**合成节点**追加进 TransformInfo（必须在建网格之前）。
 		// 网格是按 `NameHashes[目标骨下标]` 取哈希的：合成骨不进表，那条路径就会拿到越界下标，
 		// 表现是"骨哈希 … 不在外壳扩展后的 TransformInfo 里"。追加只影响末尾，原生下标一个不动。
+		// Local single/native binds are authoritative, including their motion and helper layers.
+		// Only the ordinary upstream append route may reduce the per-unit extra-bone table.
+		var extras = retarget?.ExtraBones;
+		var extraBaseCount = avatarTransformInfo?.Matrices.Count ?? 0;
+		var preserveSkeletonBind = retarget?.SingleHd2Transforms is not null
+			|| retarget?.SourceNativeTransforms is not null;
 		var transformInfo = retarget?.SingleHd2Transforms ?? retarget?.SourceNativeTransforms
-			?? UnitTransformInfoAppender.Append(avatarTransformInfo!, retarget?.ExtraBones);
-		if (transformInfo is not null && retarget?.ExtraBones is { Count: > 0 })
+			?? UnitTransformInfoAppender.Append(avatarTransformInfo, extras);
+		if (transformInfo is not null && extras is { Count: > 0 })
 		{
 			// 转换时就把"locals ↔ world 自洽"这条不变量钉住：
 			// 不一致时游戏不报错，只会把那些骨上的网格拉长 1~3 米（2026-10-31 实机踩过）。
-			UnitTransformInfoAppender.AssertLocalAndWorldAgree(transformInfo, avatarTransformInfo!.Matrices.Count);
+			UnitTransformInfoAppender.AssertLocalAndWorldAgree(transformInfo, extraBaseCount);
 		}
 
 		// ② 逐 Unit 的"重活"并行：建网格 + 写 Unit 互不相干（输入只读、产物各归各的数组）。
 		//    实测一份 42 万顶点的模型，7 个 Unit 串行 18.3 s，并行之后约 3 s。
 		var meshes = new RetargetedMesh[effectivePlans.Count];
 		var authoredUnits = new UnitAuthorResult[effectivePlans.Count];
+		// 逐件的物理骨数（= 它真正带进产物的合成骨根数；没有物理骨时为 null）。
+		var extraBonesByPlan = new int?[effectivePlans.Count];
+		// 切分失败（退回全量）的逐件原因，收口时并进 warnings。
+		var subsetNotes = new string?[effectivePlans.Count];
+		// UV 整格归位的逐件说明（见 UvTileNormalizer），收口时按计划顺序并进 warnings。
+		var uvTileNotes = new string?[effectivePlans.Count];
+		// 裙摆离体清空的偏移量（米）。0 = 关（默认）。用环境变量而不是设置项，
+		// 是因为这是**实验性几何改动**：只影响转换那一刻，改一次重转一次，不需要进产品界面。
+		var skirtClearanceAmount = ResolveSkirtClearance();
+		var pelvis = skirtClearanceAmount > 0 ? FindPelvis(transformInfo) : null;
+		if (skirtClearanceAmount > 0 && pelvis is null)
+		{
+			diagnostics.Add("裙摆离体清空：没能从 TransformInfo 里找到 hips，本次跳过（不做任何偏移）。");
+			skirtClearanceAmount = 0;
+		}
+		// UV 整格归位的退路（同样走环境变量）：这一处理默认生效、会改变全部输出的顶点表，
+		// 而它要修的"越界 UV 让面消失"机制本身还没查证 ⇒ 必须能就地关掉做 A/B。
+		var uvTileDisabled = ResolveUvTileDisabled();
 		var unitsDone = 0;
 		Parallel.For(0, effectivePlans.Count, VpkParallel.Options, planIndex =>
 		{
 			var plan = effectivePlans[planIndex];
 			var mesh = RetargetedMeshBuilder.Build(plan.Group, geometry!, retarget!, transformInfo!);
+			// 裙摆离体清空（默认关）。见 SkirtClearance：那片布 64% 刚性蒙在 hips 上，
+			// 运行时没有任何杠杆能推动它，只能在几何上把它偏出来。
+			if (skirtClearanceAmount > 0)
+				mesh = SkirtClearance.Apply(mesh, sourceMaterialNames, pelvis!.Value, skirtClearanceAmount);
+			// UV 整格归位（见 UvTileNormalizer）：源侧把镜像那半边 UV 挪到 1..2 那一格，
+			// HD2 里那些面会整片不显示（实测某模型一侧袖子整只消失）。按三角形平移整数格，wrap 采样下结果不变。
+			// `HD2_NO_UV_TILE=1` 整体跳过（退路）：生效机制还没查证，且这是影响全部输出拓扑的默认生效处理。
+			if (!uvTileDisabled)
+			{
+				var uvTiles = UvTileNormalizer.Apply(mesh);
+				mesh = uvTiles.Mesh;
+				if (uvTiles.ShiftedTriangles > 0)
+					uvTileNotes[planIndex] = $"{plan.Group.Name}：{uvTiles.ShiftedTriangles} 个三角形的 UV 不在 0..1 那一格"
+						+ $"（源侧整格平移过），已按整数格平移回来"
+						+ (uvTiles.DuplicatedVertices > 0 ? $"，为此复制了 {uvTiles.DuplicatedVertices} 个接缝顶点" : string.Empty)
+						+ "。不归位的话这些面在游戏里可能不显示（实测 U 出格的面会整片消失）。";
+			}
 			// ⚠️ **每份一个作者对象。** UnitAuthor 内部持有几个 Canonical* 编译器实例，
 			// 它们没有跨调用状态，但共用一个实例就等于把"它们确实无状态"变成并行正确性的前提。
 			// 多造几个小对象比赌这一条便宜得多。
+			//
+			// ①c **每件只带自己蒙到的物理骨。** 分段模型的每个 unit 都带一份整套 <c>source_extra_*</c>，
+			// 运行时又是逐 unit 逐链驱动的 ⇒ 不裁的话"7 件 × 39 条链 = 273 链/玩家"，其中大部分骨上
+			// 根本没有几何（实测 Lunalice 就是这样，见 docs/agent/physbone-per-unit-rig-for-converter.md）。
+			// 判据来自**刚建好的这份网格**的顶点影响（骨名哈希），是精确答案，不是按材质名猜的。
+			var unitTransformInfo = VpkUnitBonePolicy.ForUnit(avatarTransformInfo, extras, transformInfo!, mesh,
+				retarget?.SingleHd2Transforms, retarget?.SourceNativeTransforms, out var selection);
+			if (selection is not null)
+			{
+				extraBonesByPlan[planIndex] = selection.Extras.Count;
+				subsetNotes[planIndex] = selection.Warning;
+			}
+
 			var unitAuthor = new UnitAuthor();
 			var authored = unitAuthor.Author(new UnitAuthorRequest(
-				plan.Donor.Model, plan.Donor.TocData, transformInfo!, mesh, customizations[planIndex],
+				plan.Donor.Model, plan.Donor.TocData, unitTransformInfo, mesh, customizations[planIndex],
 				plan.Donor.FileId, materialIdsBySourceMaterial));
 			meshes[planIndex] = mesh;
 			authoredUnits[planIndex] = authored;
@@ -520,7 +716,12 @@ public sealed class VpkPatchAssembler
 				authored.TocData?.Length ?? 0, authored.GpuData?.Length ?? 0, authored.Diagnostics)
 			{
 				SectionSources = BuildSectionSources(mesh, sourceMaterialNames, materialIdsBySourceMaterial),
+				ExtraBoneCount = extraBonesByPlan[planIndex],
 			});
+			if (subsetNotes[planIndex] is { } subsetNote)
+				warnings.Add($"{plan.Group.Name} 没能按件裁物理骨，退回全量：{subsetNote}");
+			if (uvTileNotes[planIndex] is { } uvTileNote)
+				warnings.Add(uvTileNote);
 
 			if (!authored.IsValid)
 			{
@@ -590,6 +791,11 @@ public sealed class VpkPatchAssembler
 
 		if (materialScope is not null && materialConverter is not null)
 			ReportSkippedTextures();
+
+		// Persist an explicit routing contract for the later container embed step.
+		// Material-only conversions do not own a physics route.
+		if (effectivePlans.Count > 0)
+			PhysBoneRouteSidecar.Write(outputDirectory, preserveSkeletonBind);
 
 		return new(tocPath, units, [])
 		{
@@ -1259,6 +1465,49 @@ public sealed class VpkPatchAssembler
 	/// 会再用材质 id 自校验一次，所以即使这里错位，也不会把开关接到别的部件上。
 	/// </para>
 	/// </summary>
+	/// <summary>
+	/// 裙摆离体清空的偏移量（米）。读环境变量 <c>HD2_SKIRT_CLEARANCE</c>，缺省/非法 = 关。
+	/// </summary>
+	private static double ResolveSkirtClearance()
+	{
+		var raw = Environment.GetEnvironmentVariable("HD2_SKIRT_CLEARANCE");
+		if (string.IsNullOrWhiteSpace(raw)) return 0;
+		return double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var value)
+			&& value > 0 && value < 0.2
+			? value
+			: 0;
+	}
+
+	/// <summary>
+	/// <c>HD2_NO_UV_TILE=1</c>：整体跳过 UV 整格归位（A/B 与退路）。
+	/// <para>
+	/// 与 <c>HD2_NO_NORMAL_MAP</c> / <c>HD2_NO_MATCAP_LAYER</c> 同一族：只影响转换那一刻，
+	/// 改一次重转一次，不需要进产品界面。存在的理由见 <see cref="UvTileNormalizer"/> 顶部：
+	/// 这是默认生效、会改变全部输出顶点表的几何处理，而它要修的机制还没查证。
+	/// </para>
+	/// </summary>
+	private static bool ResolveUvTileDisabled()
+		=> Environment.GetEnvironmentVariable("HD2_NO_UV_TILE") == "1";
+
+	/// <summary>
+	/// 从 TransformInfo 里找出 <c>hips</c> 的绑定世界位置（行主序矩阵，平移在 12/13/14）。
+	/// 找不到就返回 null——绝不拿别的骨凑数，径向圆心错了会把裙子整体推歪。
+	/// </summary>
+	private static Vec3? FindPelvis(HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitTransformInfo? info)
+	{
+		if (info is null) return null;
+		var target = Hd2NameHash.Of("hips");
+		var count = Math.Min(info.NameHashes.Count, info.Matrices.Count);
+		for (var index = 0; index < count; index++)
+		{
+			if (info.NameHashes[index] != target) continue;
+			var values = info.Matrices[index].Values;
+			if (values.Count < 15) return null;
+			return new Vec3(values[12], values[13], values[14]);
+		}
+		return null;
+	}
+
 	private static IReadOnlyList<VpkSectionSource> BuildSectionSources(
 		RetargetedMesh mesh,
 		IReadOnlyList<string>? sourceMaterialNames,

@@ -207,7 +207,7 @@ namespace HD2ModManager
             catch (Exception exception)
             {
                 LogService.Error($"退出前保存护甲组件失败：{exception}");
-                MessageBox.Show("护甲组件尚未成功保存，已暂缓关闭。\n" + exception.Message,
+                HD2ModManager.Views.AppDialog.Show("护甲组件尚未成功保存，已暂缓关闭。\n" + exception.Message,
                     "保存失败", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
             finally { _workspaceClosePending = false; }
@@ -245,22 +245,20 @@ namespace HD2ModManager
             shell.CancelBottomBarEdit();
         }
 
-        private static bool IsDescendantOf(DependencyObject source, DependencyObject ancestor)
+        private static bool IsDescendantOf(DependencyObject? source, DependencyObject ancestor)
         {
-            while (source != null)
+            for (var current = source; current is not null; current = VisualTreeWalk.Parent(current))
             {
-                if (ReferenceEquals(source, ancestor)) return true;
-                source = VisualTreeHelper.GetParent(source);
+                if (ReferenceEquals(current, ancestor)) return true;
             }
             return false;
         }
 
-        private static bool IsDescendantOfType<T>(DependencyObject source) where T : DependencyObject
+        private static bool IsDescendantOfType<T>(DependencyObject? source) where T : DependencyObject
         {
-            while (source != null)
+            for (var current = source; current is not null; current = VisualTreeWalk.Parent(current))
             {
-                if (source is T) return true;
-                source = VisualTreeHelper.GetParent(source);
+                if (current is T) return true;
             }
             return false;
         }
@@ -297,14 +295,16 @@ namespace HD2ModManager
                 shell.EnableSelectedDecorationsCommand,
                 shell.DisableSelectedDecorationsCommand,
                 shell.SetSelectedModsAsOptionsCommand,
-                shell.AttachSelectedDecorationsCommand,
+
                 shell.RemoveSelectedOptionsFromHostCommand,
                 shell.PromoteArmorProvidersCommand,
                 shell.RegisterArmorTargetsCommand,
                 shell.ReleaseArmorProvidersCommand,
                 shell.ReleaseArmorTargetsCommand,
                 shell.ClearArmorTargetsCommand,
+                shell.RebuildSelectionCommand,
                 shell.CancelSelectionCommand);
+            _selectionActionPresentation.CategoryTargetProvider = shell.GetCategorySelectionTarget;
             _temporaryEditorPresentation ??= new TemporaryEditorBarPresentation(shell.BottomBar);
 
             if (shell.BottomBar.HasSelection)
@@ -493,13 +493,11 @@ namespace HD2ModManager
             e.Handled = true;
         }
 
-        private static T? FindVisualParent<T>(DependencyObject source) where T : DependencyObject
+        private static T? FindVisualParent<T>(DependencyObject? source) where T : DependencyObject
         {
-            var current = source;
-            while (current is not null)
+            for (var current = source; current is not null; current = VisualTreeWalk.Parent(current))
             {
                 if (current is T match) return match;
-                current = System.Windows.Media.VisualTreeHelper.GetParent(current);
             }
             return null;
         }
@@ -543,12 +541,11 @@ namespace HD2ModManager
             public int ImageCount { get; set; }
         }
 
-        private static T? FindAncestor<T>(DependencyObject current) where T : DependencyObject
+        private static T? FindAncestor<T>(DependencyObject? current) where T : DependencyObject
         {
-            while (current != null)
+            for (var node = current; node is not null; node = VisualTreeWalk.Parent(node))
             {
-                if (current is T match) return match;
-                current = VisualTreeHelper.GetParent(current);
+                if (node is T match) return match;
             }
             return null;
         }

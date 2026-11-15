@@ -1,0 +1,77 @@
+-- Opt-in test09_chr654 only. Inlined by tools/build_test09_axis_test.py into
+-- a separate TEST compat copy; the production compat file never imports this.
+-- Source authoring frames were transformed into canonical helper-bind axes.
+-- No runtime fitting, no readback-derived direction and no new per-frame API.
+local TEST09_AXIS = __PROFILE_LITERAL__
+
+local function test09_same(actual, expected)
+    if type(actual) ~= type(expected) then return false end
+    if type(expected) == "number" then
+        return actual == actual and math.abs(actual - expected) <= 1e-7
+    end
+    if type(expected) ~= "table" then return actual == expected end
+    if #expected > 0 and #actual ~= #expected then return false end
+    for key, value in pairs(expected) do
+        if not test09_same(actual[key], value) then return false end
+    end
+    return true
+end
+
+local function test09_records(actual, expected)
+    if type(actual) ~= "table" or #actual ~= #expected then return false end
+    local seen = {}
+    for _, row in ipairs(actual) do
+        if type(row) ~= "table" or type(row.name) ~= "string" or seen[row.name] then return false end
+        seen[row.name] = row
+    end
+    for _, row in ipairs(expected) do
+        if not test09_same(seen[row.name], row) then return false end
+    end
+    return true
+end
+
+-- Full binary-authoring contract, not a loose skirt-name/flag selector.
+function M.test09_axis_profile(rig)
+    if type(rig) ~= "table" or rig.version ~= TEST09_AXIS.springVersion
+        or type(rig.drivers) ~= "table" or rig.drivers.version ~= TEST09_AXIS.driverVersion
+        or not test09_records(rig.bones, TEST09_AXIS.springBones)
+        or not test09_records(rig.drivers.bones, TEST09_AXIS.driverBones) then return nil end
+    return TEST09_AXIS.frames
+end
+
+-- Atomically accept ALL 22 known single-node skirts, or NONE. This catches
+-- re-scaled/changed bind graphs and missing nodes before any frame replacement.
+-- Animated helper rotations are intentionally NOT captured as canonical bind.
+local function test09_preflight(S, unit, resolveNode, frames)
+    local seen = {}
+    for _, frame in ipairs(frames) do
+        if not M.unit_alive(S, unit) then return false, "dead" end
+        local node, parent = resolveNode(frame.name), resolveNode(frame.parentName)
+        if node == nil or parent == nil or node == parent or seen[node] then return false, "node:" .. frame.name end
+        seen[node] = true
+        local ok, pose = pcall(function() return S.Unit.local_pose(unit, node) end)
+        local snap = (ok and pose ~= nil) and snapshot_pose(S, pose) or nil
+        if snap == nil then return false, "pose:" .. frame.name end
+        local p = frame.bindOffset
+        if math.abs(snap.px-p[1]) > 0.00002 or math.abs(snap.py-p[2]) > 0.00002
+            or math.abs(snap.pz-p[3]) > 0.00002 then return false, "offset:" .. frame.name end
+        local x,y,z,w = stored9_quaternion(snap.r)
+        local b = frame.bindQ
+        local dot = math.abs(x*b[1]+y*b[2]+z*b[3]+w*b[4])
+        if dot ~= dot or dot < 1-1e-10 then return false, "bind:" .. frame.name end
+    end
+    return true
+end
+
+local function test09_apply_frame(chain, bones, directions, frames)
+    if #chain ~= 1 then return false end
+    for _, frame in ipairs(frames) do
+        if chain[1].name == frame.name and chain[1].parentName == frame.parentName then
+            local f, l, u = frame.forward, frame.left, frame.up
+            directions[1] = {f[1],f[2],f[3]}
+            bones[1].frameLocal = {l[1],l[2],l[3],u[1],u[2],u[3]}
+            return true
+        end
+    end
+    return false
+end

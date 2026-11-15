@@ -80,13 +80,41 @@ public sealed record CliArmorRegistryExecution(
 	string RegistryRoot,
 	string ProtocolPath,
 	int Revision,
-	int ActiveMappingCount);
+	int ActiveMappingCount)
+{
+	/// <summary>
+	/// 真映射那一层的结论（没写成功时说明原因）。<c>null</c> = 这次没有动数据层。
+	/// <para>
+	/// <b>为什么要带出来。</b>命令行以前只写协议文件、**完全不碰真映射**，
+	/// 于是"真映射模式下用命令行应用映射"在游戏里没有任何效果，而且一句提示都没有。
+	/// 现在它和界面走同一条实现（<c>RuntimeArmorRegistryService.ApplyAsync</c>），
+	/// 结论一并回给调用方。
+	/// </para>
+	/// </summary>
+	public string? DataMappingMessage { get; init; }
+
+	/// <summary>数据层是否真的写了。<c>null</c> = 没动数据层。</summary>
+	public bool? DataMappingWritten { get; init; }
+
+	/// <summary>换成本源 unit 的格子数。</summary>
+	public int? DataMappingReplaced { get; init; }
+
+	/// <summary>被写成 <c>0</c>（隐藏）的格子数。来源没覆盖到的部位都算在这里。</summary>
+	public int? DataMappingHidden { get; init; }
+}
 
 public static class CliArmorRegistryProtocol
 {
 	public const string SpecificationSchema = "hd2mod.armor-registry-spec";
 	public const string PlanSchema = "hd2mod.armor-registry-plan";
 	public const string ProtocolFileName = "armor-registry.protocol";
+
+	/// <summary>
+	/// 上一次成功应用之前的协议。**协议本身是用户输入**（几十条映射），
+	/// 而它只有一份——写坏了就什么都不剩，`show` 也读不出来。
+	/// 留一份滚动备份，才有可能"退回去"。
+	/// </summary>
+	public const string ProtocolBackupFileName = "armor-registry.protocol.bak";
 	public const string RuntimeStatusFileName = "runtime.status";
 	public const string LocatorCacheFileName = "locator.cache";
 
@@ -448,11 +476,65 @@ public static class CliArmorRegistryProtocol
 	public static async ValueTask<CliArmorRegistryExecution> ApplyAsync(
 		CliArmorRegistryPlan plan,
 		string? registryRootOverride,
+		CliWorkspace? workspace = null,
 		CancellationToken cancellationToken = default)
 	{
 		ValidatePlan(plan);
 		var root = ResolvePlanRoot(plan, registryRootOverride);
 		Directory.CreateDirectory(root);
+		var validation = await ValidateAsync(plan, root, cancellationToken).ConfigureAwait(false);
+		var protocolPath = Path.Combine(root, ProtocolFileName);
+		if (validation.Status == "already-applied")
+		{
+			return new CliArmorRegistryExecution(
+				true,
+				"already-applied",
+				root,
+				protocolPath,
+				plan.Desired.Revision,
+				plan.Desired.Enabled ? plan.Desired.Mappings.Count : 0);
+		}
+		if (!validation.IsValid)
+			throw new CliUserException("ArmorRegistryProtocolChanged", validation.Diagnostics[0].Message);
+
+		// **和界面走同一条实现。** 以前这里只原子替换协议文件，于是真映射模式下
+		// "命令行应用映射"在游戏里没有任何效果（数据层根本没动），而且一句提示都没有。
+		// 现在交给 `RuntimeArmorRegistryService.ApplyAsync`：协议 + 工作区 + wardrobe.links
+		// + 真映射落地/还原，一次做完，结论一并带回。
+		//
+		// ⚠️ **不要在这里再拿一次 `.manager.lock`。** 服务内部自己会拿同一把锁
+		// （`FileShare.None`），外面先占住会让它直接失败在"文件被另一个进程占用"。
+		// 原子性由服务的"指纹校验 + 锁"保证：计划过期时它会拒绝写入。
+		if (workspace is { ManagerRoot.Length: > 0, LibraryRoot.Length: > 0 })
+		{
+			var paths = new HD2ModCore.Infrastructure.StoragePaths(workspace.ManagerRoot, workspace.LibraryRoot);
+			var service = new HD2ModCore.Infrastructure.RuntimeArmorRegistryService(paths, root);
+			var snapshot = await service.ReadSnapshotAsync(cancellationToken).ConfigureAwait(false);
+			var applied = await service.ApplyAsync(
+				snapshot.Fingerprint,
+				plan.Desired.Enabled,
+				ToDomainMappings(plan.Desired.Mappings),
+				ToDomainModels(plan.Desired.Models, snapshot.Document.ModelDefinitions),
+				ToDomainPieceOverrides(plan.Desired.PieceOverrides),
+				ToDomainTargetModes(plan.Desired.TargetModes),
+				cancellationToken,
+				gameDataDirectory: workspace.GameDataRoot).ConfigureAwait(false);
+			return new CliArmorRegistryExecution(
+				true,
+				"applied",
+				root,
+				protocolPath,
+				applied.Document.Revision,
+				applied.Document.Enabled ? applied.Document.Mappings.Count : 0)
+			{
+				DataMappingMessage = applied.DataMapping?.Message,
+				DataMappingWritten = applied.DataMapping?.Written,
+				DataMappingReplaced = applied.DataMapping?.Replaced,
+				DataMappingHidden = applied.DataMapping?.Hidden,
+			};
+		}
+
+		// 回退路径（没给库/游戏目录）：只替换协议文件。这条路上必须自己拿锁。
 		var lockPath = Path.Combine(root, ".manager.lock");
 		FileStream? lease = null;
 		try
@@ -465,20 +547,18 @@ public static class CliArmorRegistryProtocol
 		}
 		await using (lease)
 		{
-			var validation = await ValidateAsync(plan, root, cancellationToken).ConfigureAwait(false);
-			var protocolPath = Path.Combine(root, ProtocolFileName);
-			if (validation.Status == "already-applied")
+			// 先留旧协议的备份，再原子替换。顺序不能反：反了就没有"上一版"可退回。
+			if (File.Exists(protocolPath))
 			{
-				return new CliArmorRegistryExecution(
-					true,
-					"already-applied",
-					root,
-					protocolPath,
-					plan.Desired.Revision,
-					plan.Desired.Enabled ? plan.Desired.Mappings.Count : 0);
+				try
+				{
+					File.Copy(protocolPath, Path.Combine(root, ProtocolBackupFileName), overwrite: true);
+				}
+				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+				{
+					// 备份失败不该挡住应用：它只是"退路"，不是这次操作的前提。
+				}
 			}
-			if (!validation.IsValid)
-				throw new CliUserException("ArmorRegistryProtocolChanged", validation.Diagnostics[0].Message);
 
 			var temporaryPath = Path.Combine(root, "." + ProtocolFileName + "." + Guid.NewGuid().ToString("N") + ".tmp");
 			try
@@ -494,16 +574,62 @@ public static class CliArmorRegistryProtocol
 			{
 				if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
 			}
-
-			return new CliArmorRegistryExecution(
-				true,
-				"applied",
-				root,
-				protocolPath,
-				plan.Desired.Revision,
-				plan.Desired.Enabled ? plan.Desired.Mappings.Count : 0);
 		}
+
+		return new CliArmorRegistryExecution(
+			true,
+			"applied",
+			root,
+			protocolPath,
+			plan.Desired.Revision,
+			plan.Desired.Enabled ? plan.Desired.Mappings.Count : 0);
 	}
+
+	/// <summary>
+	/// CLI 的协议模型 → 领域模型。
+	/// <para>
+	/// ⚠️ <b>名字必须从现有工作区补回来。</b><c>CliArmorRegistryModel</c> 里没有 <c>name</c>
+	/// （Lua 不需要它），而工作区里那份是要给人看的：直接把 null 写回去，等于"命令行应用一次，
+	/// 所有素体名字全丢"。这正是 2026-11-05 那批 bug 的同一类。
+	/// </para>
+	/// </summary>
+	private static IReadOnlyList<HD2ModCore.Domain.RuntimeArmorRegistryModel> ToDomainModels(
+		IReadOnlyList<CliArmorRegistryModel>? models,
+		IReadOnlyList<HD2ModCore.Domain.RuntimeArmorRegistryModel> existing)
+	{
+		if (models is null || models.Count == 0) return Array.Empty<HD2ModCore.Domain.RuntimeArmorRegistryModel>();
+		var namesByKey = existing
+			.Where(model => !string.IsNullOrWhiteSpace(model.Name))
+			.GroupBy(model => model.Key, StringComparer.Ordinal)
+			.ToDictionary(group => group.Key, group => group.First().Name!, StringComparer.Ordinal);
+		return models.Select(model => new HD2ModCore.Domain.RuntimeArmorRegistryModel(
+			model.Key,
+			model.SourceItemId,
+			(model.Pieces ?? Array.Empty<CliArmorRegistryModelPiece>())
+				.Select(piece => new HD2ModCore.Domain.RuntimeArmorRegistryModelPiece(
+					piece.Body, piece.Unit, piece.Slot, piece.PieceType, piece.Tone, piece.Enabled, piece.IsDefaultBase))
+				.ToArray(),
+			namesByKey.GetValueOrDefault(model.Key))).ToArray();
+	}
+
+	private static IReadOnlyList<HD2ModCore.Domain.RuntimeArmorRegistryMapping> ToDomainMappings(
+		IReadOnlyList<CliArmorRegistryMapping> mappings)
+		=> mappings.Select(mapping => new HD2ModCore.Domain.RuntimeArmorRegistryMapping(
+			mapping.TargetItemId, mapping.SourceItemId, mapping.ModelKey)).ToArray();
+
+	private static IReadOnlyList<HD2ModCore.Domain.RuntimeArmorRegistryPieceOverride> ToDomainPieceOverrides(
+		IReadOnlyList<CliArmorRegistryPieceOverride>? overrides)
+		=> overrides is null || overrides.Count == 0
+			? Array.Empty<HD2ModCore.Domain.RuntimeArmorRegistryPieceOverride>()
+			: overrides.Select(item => new HD2ModCore.Domain.RuntimeArmorRegistryPieceOverride(
+				item.OwnerItemId, item.Body, item.Unit, item.Slot, item.PieceType, item.Enabled)).ToArray();
+
+	private static IReadOnlyList<HD2ModCore.Domain.RuntimeArmorRegistryTargetMode> ToDomainTargetModes(
+		IReadOnlyList<CliArmorRegistryTargetMode>? modes)
+		=> modes is null || modes.Count == 0
+			? Array.Empty<HD2ModCore.Domain.RuntimeArmorRegistryTargetMode>()
+			: modes.Select(item => new HD2ModCore.Domain.RuntimeArmorRegistryTargetMode(
+				item.TargetItemId, item.FollowSource)).ToArray();
 
 	public static async ValueTask<object> ReadStatusAsync(
 		string registryRoot,
@@ -823,5 +949,44 @@ public static class CliArmorRegistryProtocol
 		{
 			throw new CliUserException("ArmorRegistryStatusReadFailed", $"无法读取运行时状态文件 {path}：{exception.Message}");
 		}
+	}
+
+	/// <summary>把上一次应用前的协议放回去。没有备份就如实说没有。</summary>
+	public static async ValueTask<CliArmorRegistryExecution> RestoreAsync(
+		string? registryRoot,
+		CancellationToken cancellationToken = default)
+	{
+		var root = ResolveRegistryRoot(registryRoot);
+		var protocolPath = Path.Combine(root, ProtocolFileName);
+		var backupPath = Path.Combine(root, ProtocolBackupFileName);
+		if (!File.Exists(backupPath))
+			throw new CliUserException("ArmorRegistryBackupMissing",
+				$"没有可回滚的协议备份：{backupPath}（每次 armor-registry apply 之前会留一份）。");
+
+		try
+		{
+			File.Copy(backupPath, protocolPath, overwrite: true);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			throw new CliUserException("ArmorRegistryRestoreFailed", $"回滚协议失败：{exception.Message}");
+		}
+
+		CliArmorRegistryDocument? restored = null;
+		try
+		{
+			restored = await ReadProtocolAsync(root, allowMissing: true, cancellationToken).ConfigureAwait(false);
+		}
+		catch (CliUserException)
+		{
+			// 备份本身也读不懂时，至少已经把文件放回去了——报告里 revision 留空。
+		}
+		return new CliArmorRegistryExecution(
+			true,
+			"restored",
+			root,
+			protocolPath,
+			restored?.Revision ?? 0,
+			restored is null || !restored.Enabled ? 0 : restored.Mappings.Count);
 	}
 }

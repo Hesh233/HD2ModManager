@@ -32,18 +32,30 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 		foreach (var dir in EnumerateDirectoriesDepthFirst(rootDir))
 		{
 			cancellationToken.ThrowIfCancellationRequested();
+			// **装饰包已不再支持**（2026-11-04）：它的整条能力被「分件模组」取代，
+			// 生成入口（页面 / CLI / 服务）已全部移除。这里整条跳过，**不建节点**——
+			// 落到下面的 Standard 分支会让它看起来像一个可部署的 Mod，那比不导入更糟。
+			if (IsDecorationPackageDirectory(dir))
+				continue;
+
 			var patchGroups = CollectPatchGroups(dir);
-			var isDecoration = IsDecorationPackageDirectory(dir);
-			var option = !isDecoration ? TryReadOptionRelation(dir) : null;
+			var option = TryReadOptionRelation(dir);
 			// Logical markers describe zero-payload structure only. If a user later
 			// places a real Patch in the directory, preserve the Patch as deployable
 			// instead of silently importing it as a skipped logical anchor.
-			var isLogicalContainer = !isDecoration
-				&& patchGroups.Count == 0
+			var isLogicalContainer = patchGroups.Count == 0
 				&& ModNodeStorageProtocol.IsLogicalDirectory(dir.FullName);
 			var hasExternalInstallFiles = dir.FullName.Equals(rootDir.FullName, StringComparison.OrdinalIgnoreCase)
 				&& ExternalInstallFileFactsService.HasRecognizedFiles(dir.FullName);
-			if (patchGroups.Count == 0 && !isDecoration && option is null && !hasExternalInstallFiles && !isLogicalContainer)
+			// **根上只有来源 VPK 也是合法条目。**
+			//
+			// vpk2patch / sectional 类的**来源**就是权威事实：`sectional/` 与 `Overwrite/` 是派生物，
+			// 由重构建（转换 → 编译）产出。所以"解压 → 建条目 → 重构建"这条链的第一步
+			// 不能因为"还没有 patch"被判成空目录丢弃。
+			// 只看根目录：子目录里的 .vpk 属于别的结构（选项/附属包），不在这里扩语义。
+			var hasSourceVpk = dir.FullName.Equals(rootDir.FullName, StringComparison.OrdinalIgnoreCase)
+				&& HasSourceVpk(dir.FullName);
+			if (patchGroups.Count == 0 && option is null && !hasExternalInstallFiles && !isLogicalContainer && !hasSourceVpk)
 			{
 				continue;
 			}
@@ -55,13 +67,11 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 			}
 
 			var id = ModNodeId.New();
-			var kind = isDecoration
-				? ModNodeKind.Decoration
-				: option is not null
-					? ModNodeKind.Option
-					: hasExternalInstallFiles && patchGroups.Count == 0
-						? ModNodeKind.ReShade
-						: ModNodeKind.Standard;
+			var kind = option is not null
+				? ModNodeKind.Option
+				: hasExternalInstallFiles && patchGroups.Count == 0
+					? ModNodeKind.ReShade
+					: ModNodeKind.Standard;
 			var metadata = new ModNodeMetadata(
 				Name: BuildFlatName(rootDir.Name, rel),
 				Notes: null,
@@ -93,6 +103,10 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 		return ValueTask.FromResult(tree);
 	}
 
+    /// <summary>
+    /// 这个目录是不是一个装饰包。<b>现在只用来拒绝它</b>：装饰能力已被分件模组取代，
+    /// 生成入口全部移除，库里也不该再有这种节点。
+    /// </summary>
     private static bool IsDecorationPackageDirectory(DirectoryInfo dir)
         => File.Exists(Path.Combine(dir.FullName, "decoration.json"));
 
@@ -116,6 +130,21 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 
 	// 载荷目录 = 节点根 + （存在时的）`vpk2patch/`。后者是 vpk2patch 转换产物的家：
 	// 那些 patch 本来就不在根上，所以必须算进这个节点的内容，否则「导入了但一个 patch 都没有」。
+	/// <summary>这个目录根上有没有来源 VPK（`*.vpk`，顶层）。</summary>
+	internal static bool HasSourceVpk(string directory)
+	{
+		try
+		{
+			return Directory.Exists(directory)
+				&& Directory.EnumerateFiles(directory, "*.vpk", SearchOption.TopDirectoryOnly).Any();
+		}
+		catch (Exception exception) when (exception is IOException
+			or UnauthorizedAccessException
+			or DirectoryNotFoundException)
+		{
+			return false;
+		}
+	}
 	private List<PatchGroupKey> CollectPatchGroups(DirectoryInfo dir)
 	{
 		var patchGroups = new HashSet<PatchGroupKey>();

@@ -12,7 +12,7 @@ internal static class NativeSkeletonProjectService
     internal static string ResolveConfig(string modDirectory)
     {
         var paths = new[] { Path.Combine(modDirectory, "config.toml"),
-            Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName, "config.toml"),
+            Path.Combine(ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(modDirectory) ?? ModNodePayloadLayout.GetVpkPatchDirectory(modDirectory), "config.toml"),
             Path.Combine(AppContext.BaseDirectory, "config.toml"),
             Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "config.toml") };
         return paths.FirstOrDefault(File.Exists)
@@ -96,11 +96,11 @@ print(scale)
             PhysBoneLuaPackageExport.Export(Path.Combine(project, "physics-runtime"));
             foreach (var file in Directory.EnumerateFiles(Path.Combine(project, "physics-runtime"), "*.patch_0*"))
                 File.Move(file, file.Replace(".patch_0", ".patch_3", StringComparison.Ordinal));
-            // 挂点对调（2026-11-05）：原生骨架工程同时产出 [骨骼挂点修正] 独立 lua 包。
+            // B3 正式配套：独立基础运行时与选项面板按当前模型校准，不复用测试包。
             // patch_4 高于物理包的 patch_3，避免同一补丁家族里互相覆盖。
             var attachmentFix = Path.Combine(project, "attachment-fix-runtime");
-            stage("正在生成本模型的挂点配置与配套骨架");
-            await VpkAnimationBuildService.BuildAttachmentFixAsync(modelDirectory, attachmentFix, cancellationToken, snapshot);
+            stage("正在生成本模型的 B3 基础运行时、FP Source 与开关面板");
+            var companions = await VpkAnimationBuildService.BuildAttachmentFixAsync(modelDirectory, attachmentFix, cancellationToken, snapshot, Path.GetFileNameWithoutExtension(sources[0]));
             stage("正在批量生成配套动画");
             var animation = await Hd2ModProcess.RunAsync(runner,
                 ["-X", "utf8", script, "native-project", "--manifest", manifests[0], "--config", snapshot,
@@ -114,7 +114,7 @@ print(scale)
                 var root = report.RootElement;
                 if (root.GetProperty("status").GetString() != "complete"
                     || root.GetProperty("animations").GetArrayLength() != root.GetProperty("expected_animations").GetInt32())
-                    throw new InvalidDataException("配套动画报告不完整，工程不能用于测试。");
+                    throw new InvalidDataException("配套动画报告不完整，禁止发布工程。");
             }
             VpkAnimationBuildService.WriteAnimationIdentity(Path.Combine(project, "animations", "runtime"), Path.GetFileNameWithoutExtension(sources[0]));
             // Retain the original material options as separate choices; avoid merging conflicting variants.
@@ -123,33 +123,47 @@ print(scale)
             var materialIndex = 0;
             foreach (var directory in materialDirectories)
             {
-                var payload = Path.Combine(directory!, "vpk2patch");
-                if (!Directory.Exists(payload) || File.Exists(Path.Combine(payload, "sections.json"))) continue;
+                var payload = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(directory!);
+                if (payload is null || !Directory.Exists(payload) || File.Exists(Path.Combine(payload, "sections.json"))) continue;
                 var destination = Path.Combine(project, "material-options", (++materialIndex).ToString("D3"));
                 Directory.CreateDirectory(destination);
                 foreach (var file in Directory.EnumerateFiles(payload, "*.patch_*"))
                     File.Copy(file, Path.Combine(destination, Path.GetFileName(file)));
             }
-            var readme = "原生骨架人工测试工程\n\n"
-                + "模型材质.zip：导入时自动登记原生素体，再到护甲映射选择测试护甲；models 保留转换中间文件。\n"
+            var readme = "多骨骼模型正式配套工程\n\n"
+                + "模型材质.zip：导入时自动登记原生素体，再到护甲映射选择目标护甲；models 保留转换中间文件。\n"
                 + "配套动画.zip：作为单独 Mod 导入，与模型同时启用。全部第三人称动画、avatar Unit、Bones 和扩展骨骼混合遮罩整合为一个 patch；模型包不含 StateMachine。\n"
-                + "physics-runtime：物理运行时。管理器内置物理与外置 Lua 加载器方案任选其一，勿重复加载。\n"
-                + "attachment-fix-runtime：[骨骼挂点修正] 本模型的 Lua patch_4 和配套骨架 patch_5；一并启用，物理包独立。头部子节点不修正。\n"
+                + "物理运行时.zip：正式物理运行时平铺包。内置物理与外置 Lua 加载器方案任选其一，勿重复加载。\n"
+                + "基础运行时 ZIP＋开关面板 ZIP：按本模型自动生成；基础始终启用，FP 与各 TP 骨骼独立勾选。两 ZIP 分别导入，物理独立。\n"
                 + "material-options：沿用原 Mod 的材质选项，只选与原来一致的一组。\n"
                 + "config.toml：本次配置快照；修改后从原 Mod 再点原生骨架转换生成新工程。\n"
-                + "此补丁替换共享的第三人称动画，一次只测试一个原生骨架角色。第一人称手臂与物理动力学尚未验证。\n"
+                + "此补丁替换共享的第三人称动画，一次只启用一个多骨骼角色。FP 与 TP 开关独立；本次生成产物的游戏视觉与动力学仍需单独验收。\n"
                 + "自定义骨名统一为 hd2n 前缀；source-skeleton.json 保存原名映射。保留父子关系和 bind 轴，保留源原点并统一缩放网格与骨架。权重受 HD2 half 格式量化。\n"
                 + "两套骨架采用相同浮点采样时间；标准挂点名称保留，Mod 手臂通过 IK 对齐，超出臂长的动作仍需检查握持距离。\n"
                 + "检查待机、行走、冲刺、蹲伏、趴下、瞄准、换弹、手指与脚底。结束后整套停用。\n"
                 + $"界面选择的目标护甲：{targetArchive ?? "自定义素体"}\n游戏内验收：待人工测试。\n";
-            await File.WriteAllTextAsync(Path.Combine(project, "人工测试说明.txt"), readme, cancellationToken);
+            await File.WriteAllTextAsync(Path.Combine(project, "安装与验证说明.txt"), readme, cancellationToken);
             stage("正在打包模型与全部配套动画");
             cancellationToken.ThrowIfCancellationRequested();
             ZipFile.CreateFromDirectory(Path.Combine(project, "models"), Path.Combine(project, "模型材质.zip"), CompressionLevel.Fastest, false);
             ZipFile.CreateFromDirectory(Path.Combine(project, "animations", "runtime"), Path.Combine(project, VpkImportService.NativeAnimationName(Path.GetFileNameWithoutExtension(sources[0])) + ".zip"), CompressionLevel.Fastest, false);
             cancellationToken.ThrowIfCancellationRequested();
+            using (var physicsZip = ZipFile.Open(Path.Combine(project, "物理运行时.zip"), ZipArchiveMode.Create))
+            {
+                var physicalFiles = Directory.GetFiles(Path.Combine(project, "physics-runtime"), "*.patch_3*")
+                    .Append(Path.Combine(project, "physics-runtime", "manifest.json")).ToArray();
+                if (physicalFiles.Length != 4) throw new InvalidDataException("正式物理配套必须含根 manifest 与补丁三件套。");
+                foreach (var file in physicalFiles)
+                    physicsZip.CreateEntryFromFile(file, Path.GetFileName(file), CompressionLevel.Optimal);
+            }
+            foreach (var file in new[] { companions.BaseZip, companions.PanelZip })
+                File.Copy(file, Path.Combine(project, Path.GetFileName(file)));
+            File.Copy(companions.Report, Path.Combine(project, "runtime-companions.json"));
             await File.WriteAllTextAsync(Path.Combine(project, "project.json"), JsonSerializer.Serialize(new
-                { status = "complete", source = modDirectory, targetArchive, config, gameTested = false },
+                { status = "complete", source = modDirectory, targetArchive, config, gameTested = false,
+                    runtimeCompanionVersion = NativeRuntimeCompanionPackageExport.RuntimeVersion,
+                    runtimePackages = new[] { Path.GetFileName(companions.BaseZip), Path.GetFileName(companions.PanelZip) },
+                    runtimeCompanionReport = "runtime-companions.json" },
                 new JsonSerializerOptions { WriteIndented = true }), cancellationToken);
             return project;
         }

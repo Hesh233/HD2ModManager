@@ -60,4 +60,18 @@ public sealed class SingleSkeletonAnimationReportTests
     [Fact]public void LegacyCannotClaimOptimizedOutput(){var r=OptimizedReport();r["pipelineVersion"]="1.0.20";Assert.Throws<InvalidDataException>(()=>SingleSkeletonAnimationReport.Validate(JsonSerializer.Serialize(r)));}
     [Fact]public void NewVersionCannotOmitOutputContract(){var r=Report();r["pipelineVersion"]="1.0.21";Assert.Throws<InvalidDataException>(()=>SingleSkeletonAnimationReport.Validate(JsonSerializer.Serialize(r)));}
 
+    [Fact]public void FingerSafeReportIsAccepted()
+    {
+        var r=OptimizedReport();r["pipelineVersion"]="1.0.22";
+        r["fingerSegmentPolicy"]="native-axis-source-length-finger-chain-v1";
+        SingleSkeletonAnimationReport.Validate(JsonSerializer.Serialize(r));
+    }
+    [Theory][InlineData(null)][InlineData("mesh-only-finger-pose")][InlineData("native-axis-source-length-hand-follow-v2")]
+    public void NewFingerVersionCannotBypassAxisContract(string? policy)
+    {
+        var r=OptimizedReport();r["pipelineVersion"]="1.0.22";
+        if(policy!=null)r["fingerSegmentPolicy"]=policy;
+        Assert.Throws<InvalidDataException>(()=>SingleSkeletonAnimationReport.Validate(JsonSerializer.Serialize(r)));
+    }
+
 }

@@ -392,6 +392,9 @@ public enum NormalDelivery
 
 	/// <summary>声明了法线图，但来源里找不到那张 <c>.vtf</c>，只能退回平面法线。</summary>
 	TextureMissing = 2,
+
+	/// <summary><c>$bumpmap</c> 是裸名单段（如基材质模板里的 <c>normal</c>）：占位写法，源侧不加载那张图。</summary>
+	PlaceholderPath = 3,
 }
 
 /// <summary>
@@ -502,6 +505,47 @@ public sealed class SourceMaterialConverter
 	/// </summary>
 	public const uint DirtGlobalAmountVariableId = 0xa3351311;
 
+	/// <summary>
+	/// <c>advanced</c> 模板的 <c>SubsurfaceIntensity</c>（次表面散射强度）。
+	/// <para>
+	/// <b>SDK 模板的默认值是 0.46、<c>SubsurfaceDiffusion</c> 是 0.7 —— 我们从没写过它，
+	/// 于是每个高级材质都在用游戏那套皮肤散射。</b>浅色皮肤上的表现是：
+	/// 明暗交界/侧面一圈**特别红」，正对镜头的地方又**特别白**（2026-11-08 用户截图）。
+	/// 源侧 NekoToon 没有这个特性，所以默认关掉；用 <c>HD2_SUBSURFACE</c> 可以调回来做对照。
+	/// </para>
+	/// </summary>
+	public const uint SubsurfaceIntensityVariableId = 0x38dae7bd;
+
+	/// <summary>
+	/// <c>translucent</c>（纯色透明材质）的整体不透明度倍率，<c>HD2_TRANSPARENT_ALPHA</c> 可调，默认 1。
+	/// <para>
+	/// 源 alpha 已经写进贴图；这个系数只用来整体压暗/提亮那层"玻璃感"。
+	/// 全透明件（源 alpha ≈ 0）乘什么都还是看不见，不受影响。
+	/// </para>
+	/// </summary>
+	private static readonly float TransparentAlphaScale = ReadTransparentAlphaScale();
+
+	private static float ReadTransparentAlphaScale()
+	{
+		var raw = Environment.GetEnvironmentVariable("HD2_TRANSPARENT_ALPHA");
+		return float.TryParse(raw, System.Globalization.NumberStyles.Float,
+			System.Globalization.CultureInfo.InvariantCulture, out var value)
+			? Math.Clamp(value, 0f, 1f)
+			: 1f;
+	}
+
+	/// <summary>次表面散射强度，默认 0（关）。见 <see cref="SubsurfaceIntensityVariableId"/>。</summary>
+	private static readonly float SubsurfaceLevel = ReadSubsurfaceLevel();
+
+	private static float ReadSubsurfaceLevel()
+	{
+		var raw = Environment.GetEnvironmentVariable("HD2_SUBSURFACE");
+		return float.TryParse(raw, System.Globalization.NumberStyles.Float,
+			System.Globalization.CultureInfo.InvariantCulture, out var value)
+			? Math.Clamp(value, 0f, 1f)
+			: 0f;
+	}
+
 	/// <summary><c>WeatheringCoverage</c>（0x4a7cd0ef）：天气覆盖率（标量，alphaclip 默认 0.5）。</summary>
 	public const uint WeatheringCoverageVariableId = 0x4a7cd0ef;
 
@@ -534,6 +578,22 @@ public sealed class SourceMaterialConverter
 	/// </para>
 	/// </summary>
 	public const double MetalF0 = 0.96;
+
+	/// <summary>
+	/// 「金属 + 真镂空」的件（只能进 <c>alphaclip</c>，没有金属度槽）把底色写成这个电平：
+	/// <b>线性 0.58 ≈ sRGB 200 的中性银灰</b>。
+	/// <para>
+	/// <b>为什么是平色、不用 matcap。</b>这些件的观感全在一张球面图上，而多数件的 UV 只是
+	/// 一两纹素的缝隙（实测 MourningVeil 的 <c>Mat_ACCMetal_Tiara</c> U 宽 0.001），
+	/// 没有纹理空间存图案；按 matcap 抬升还会采到球心的暗像素，算出 ~91 的深灰，等于没变。
+	/// 所以这里给一个能一眼看出"是金属"的平色，比任何花活都可靠。
+	/// </para>
+	/// <para>
+	/// <b>为什么不是满 F0 0.96。</b>没有金属反射可依靠，顶到 0.96 会变成一块亮银塑料
+	/// （11-01 的实机结论）；0.58 保住金属明度，又留一点灰度。
+	/// </para>
+	/// </summary>
+	public const double CutoutMetalLevel = 0.58;
 
 	/// <summary>
 	/// <see cref="CutoutStrategy.AdvancedOpacity"/> 的陡度。抄自游戏本体角色材质
@@ -654,7 +714,27 @@ public sealed class SourceMaterialConverter
 		(string Name, int Length, ulong Hash), byte[]> decodedTextures = new();
 
 	/// <summary>
-	/// 解码一张 VTF 成裸像素，<b>命中缓存时返回副本</b>。
+	/// 「这张贴图读不出来」这一类的异常：格式不支持、文件坏了、算术溢出（头部字段是垃圾时）。
+	/// <para>
+	/// <b>为什么收敛成一个谓词。</b>本文件里有十处 <c>catch</c> 都在做同一件事——把"某张贴图不可用"
+	/// 降级成"这个材质缺这一项"，而不是让整包转换失败。它们曾经各自写着
+	/// <c>InvalidDataException or IOException or InvalidOperationException</c>，**都漏了
+	/// <c>OverflowException</c>**：2026-11-09 的 <c>牛牛rebone替换路易斯.vpk</c>（21 张 VTF 7.1）
+	/// 就是这样把"该材质降级"变成了"整个 VPK 失败、patches 为空"。修的时候漏一处等于没修，
+	/// 所以判据只留这一个定义。
+	/// </para>
+	/// </summary>
+	internal static bool IsTextureReadFailure(Exception exception)
+		=> exception is InvalidDataException
+			or IOException
+			or InvalidOperationException
+			// 头部字段被当成层数/尺寸乘出 int 范围：VTF 7.1 那次的真身。
+			or OverflowException
+			// 解码器对不认识的布局会抛这两个；同样属于"这张图用不了"，不是我们的 bug。
+			or NotSupportedException
+			or ArgumentException;
+
+	/// <summary>解码一张 VTF 成裸像素，<b>命中缓存时返回副本</b>。
 	/// <para>
 	/// <b>为什么必须复制。</b>调用方会就地改像素——擦 alpha、烘 matcap、涂金属 F0、压暗。
 	/// 共享同一份数组会让"后一个材质改了前一个材质的底色"，那种错在产物里表现为
@@ -716,7 +796,10 @@ public sealed class SourceMaterialConverter
 		// 法线，而法线贴图给的是切线空间的方向。没有它时这两样退回"取正中"。
 		Func<string, UvNormalMap?>? worldNormalFactory = null,
 		// 源侧 `$no_draw` 的落地方式（见 NoDrawPolicy）。默认 Hide：不显示，但几何留着。
-		NoDrawPolicy noDrawPolicy = NoDrawPolicy.Show)
+		NoDrawPolicy noDrawPolicy = NoDrawPolicy.Show,
+		// 这些材质**强制不镂空**：几何已经被 CutoutMesh 裁过了（见 --cutout-geometry），
+		// 再叠一层 alpha 测试等于把裁好的边又啃一遍，而且会白白丢掉金属度。
+		IReadOnlyCollection<string>? opaqueMaterials = null)
 	{
 		this.source = source;
 		this.encoder = encoder;
@@ -739,6 +822,9 @@ public sealed class SourceMaterialConverter
 		this.cutoutTemplate = cutoutTemplate;
 		this.normalFlipY = normalFlipY;
 		this.noDrawPolicy = noDrawPolicy;
+		this.opaqueMaterials = opaqueMaterials is null
+			? null
+			: new HashSet<string>(opaqueMaterials.Where(name => !string.IsNullOrWhiteSpace(name)), StringComparer.OrdinalIgnoreCase);
 		this.includeTargets = new Lazy<IReadOnlySet<string>>(BuildIncludeTargets, LazyThreadSafetyMode.ExecutionAndPublication);
 	}
 
@@ -759,6 +845,12 @@ public sealed class SourceMaterialConverter
 	public NoDrawPolicy NoDrawPolicy => noDrawPolicy;
 
 	private readonly NoDrawPolicy noDrawPolicy;
+
+	/// <summary>几何已被裁开的材质：不写 alpha 测试，走 <c>advanced</c>（金属度可用）。</summary>
+	private readonly HashSet<string>? opaqueMaterials;
+
+	/// <summary>贴图名 → 已解出的 RGBA（alpha 采样器用，避免同一张图反复解码）。</summary>
+	private readonly Dictionary<string, (byte[] Rgba, int Width, int Height)?> alphaSamplers = new(StringComparer.OrdinalIgnoreCase);
 
 	/// <summary>
 	/// matcap 承载面在 <c>advanced</c> 槽 2 <b>alpha</b> 里写的粗糙度（0..255）。
@@ -1067,7 +1159,7 @@ public sealed class SourceMaterialConverter
 			material.TrySetScalar(DirtGlobalAmountVariableId, 0f);
 			material.TrySetScalar(WeatheringCoverageVariableId, 0f);
 		}
-		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		catch (Exception exception) when (IsTextureReadFailure(exception))
 		{
 			return MaterialSynthesisResult.Failed($"{stem}：「不显示」材质造不出来——{exception.Message}");
 		}
@@ -1219,7 +1311,7 @@ public sealed class SourceMaterialConverter
 				if (mean is not null)
 					means[stem] = mean;
 			}
-			catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+			catch (Exception exception) when (IsTextureReadFailure(exception))
 			{
 				// 单张 matcap 解码失败不该让整批转换停下；拿不到平均色就只是不烘。
 				continue;
@@ -1387,6 +1479,15 @@ public sealed class SourceMaterialConverter
 		public bool MatcapKeepsBaseColour { get; init; }
 
 		/// <summary>
+		/// 源侧底色 <b>≥95% 的像素是透明的</b>（见 <see cref="AlphaStats.IsEffectivelyTransparent"/>）。
+		/// <para>
+		/// 这种件既不该按不透明渲染（实心板），也不该走抖动（噪点壳）；它落地成
+		/// HD2 的 <c>translucent</c> 纯色透明材质（玻璃/塑料观感）。
+		/// </para>
+		/// </summary>
+		public bool FullyTransparent { get; init; }
+
+		/// <summary>
 		/// <c>$bumpstrength</c>（凹凸强度，NekoToon 默认 1.0）。只缩放 XY 的偏离量，Z 重新归一化。
 		/// </summary>
 		public double BumpStrength { get; init; } = 1.0;
@@ -1532,10 +1633,14 @@ public sealed class SourceMaterialConverter
 		if (string.IsNullOrWhiteSpace(bumpStem))
 			return NormalDelivery.TextureMissing;
 
-		// **判据是"来源里有没有这张图"**，不是"能不能解出来"——解码失败要跑一次 texconv，
-		// 在统计阶段做这件事会把整包扫描变成几分钟。真正的解码失败会走
-		// `TryNormalRoughnessTexture` 的保底路径（退回平面法线），结果一样是不接法线。
-		return source.ContainsVtf(bumpStem) ? NormalDelivery.Wired : NormalDelivery.TextureMissing;
+		// 判据是"按声明路径找得到"，不是"能不能解出来"——解码失败会走保底路径，结果一样是不接法线。
+		if (source.TryResolveDeclaredTexture(bump, out _))
+			return NormalDelivery.Wired;
+
+		// 带目录 = 材质包缺图；裸名单段 = 占位写法，不兜底。
+		return VmtDocument.NormalizePath(bump).Contains('/')
+			? NormalDelivery.TextureMissing
+			: NormalDelivery.PlaceholderPath;
 	}
 
 	/// <summary>见 <see cref="DescribeBumpMap"/>。</summary>
@@ -1596,7 +1701,7 @@ public sealed class SourceMaterialConverter
 			textures.Add(flatNormal);
 			textures.Add(sharedPbr);
 		}
-		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		catch (Exception exception) when (IsTextureReadFailure(exception))
 		{
 			return MaterialSynthesisResult.Failed($"{stem}：兜底材质造不出来——{exception.Message}");
 		}
@@ -1639,17 +1744,19 @@ public sealed class SourceMaterialConverter
 		{
 			(texture, opacityMask, translucentMap) = BuildBaseColorTexture(loaded);
 		}
-		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		catch (Exception exception) when (IsTextureReadFailure(exception))
 		{
 			return MaterialSynthesisResult.Failed($"{stem}：贴图 {textureName} 转换失败——{exception.Message}");
 		}
 
 		// ===== 实验路线 1：translucent 模板 =====
 		// 槽只有 1 个（NormalXyRoughnessOpacity），没有反照率槽 ⇒ 颜色只能靠 BaseColor 平涂。
-		if (alphaExperiment == AlphaExperiment.Translucent && loaded.UseAlphaClip)
+		// 正式路径（2026-11-08）：源侧 ≥95% 像素透明 → 用 translucent 做纯色透明玻璃/塑料。
+		// 实验档 `--alpha-experiment translucent` 仍然复用同一段代码。
+		if (loaded.FullyTransparent || (alphaExperiment == AlphaExperiment.Translucent && loaded.UseAlphaClip))
 		{
 			if (translucentMap is null)
-				return MaterialSynthesisResult.Failed($"{stem}：实验路线 1 需要不透明度贴图，但没有产出");
+				return MaterialSynthesisResult.Failed($"{stem}：translucent 材质需要不透明度贴图，但没有产出");
 			if (material.TextureIds.Count == 0)
 				return MaterialSynthesisResult.Failed($"{stem}：translucent 模板没有贴图槽");
 
@@ -1661,7 +1768,9 @@ public sealed class SourceMaterialConverter
 			if (!material.TrySetVector(TranslucentBaseColorVariableId, average[0], average[1], average[2]))
 				return MaterialSynthesisResult.Failed($"{stem}：translucent 模板里找不到 BaseColor 变量");
 			// OpacityBase 是整体不透明度倍率：源 alpha 已经在贴图里，这里给 1 不做二次衰减。
-			material.TrySetScalar(TranslucentOpacityBaseVariableId, 1.0f);
+			// OpacityBase 是整体不透明度倍率。源 alpha 已经在贴图里，再乘一个可调系数：
+			// 全透明件（源 alpha≈0）乘什么都不影响，而"很淡的玻璃"可以靠它整体压暗/提亮。
+			material.TrySetScalar(TranslucentOpacityBaseVariableId, TransparentAlphaScale);
 
 			return new MaterialSynthesisResult(
 				new SynthesizedMaterial(loaded.MaterialId, material.Write(), loaded.TemplateName, loaded.BaseTexture, material.TextureIds),
@@ -1669,7 +1778,9 @@ public sealed class SourceMaterialConverter
 				[])
 			{
 				Identity = loaded.ToIdentity(),
-				Notices = [.. loaded.Notices, $"{stem}：实验路线 1（translucent 模板，平涂色 + 贴图 alpha）"],
+				Notices = [.. loaded.Notices, loaded.FullyTransparent
+					? $"{stem}：源侧 ≥95% 像素透明 → 按纯色透明材质（translucent）落地"
+					: $"{stem}：实验路线 1（translucent 模板，平涂色 + 贴图 alpha）"],
 			};
 		}
 
@@ -1755,6 +1866,10 @@ public sealed class SourceMaterialConverter
 				return MaterialSynthesisResult.Failed(
 					$"advanced 模板只有 {material.TextureIds.Count} 个槽，放不下下标 {AdvancedAlbedoSlot} 的底色");
 			material.SetTexture(AdvancedAlbedoSlot, texture.Id);
+
+			// 关掉模板默认的次表面散射（见 SubsurfaceIntensityVariableId 的注释：
+			// 不关就是"侧面一圈特别红、正面特别白"）。
+			material.TrySetScalar(SubsurfaceIntensityVariableId, SubsurfaceLevel);
 
 			// ===== 实验路线 2：advanced + SclarFieldOpacity =====
 			// 想知道的是：advanced 会不会**混合**，还是只做裁切。
@@ -1923,9 +2038,10 @@ public sealed class SourceMaterialConverter
 		// 而 NekoToon 那套模型普遍带 ATI2N/BC5 高清法线图（官方文档 `pbr.vmt` /
 		// `nekotoon.vmt` 都写着 `$bumpmap` + `$bumpstrength`）。现在它在装配时决定
 		// "这张材质要不要配一张自己的法线贴图"，见 `TryBuildNormalTexture`。
-		var bumpTextureName = string.IsNullOrWhiteSpace(vmt.Value("$bumpmap"))
-			? null
-			: Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(vmt.Value("$bumpmap")!));
+		// 必须按声明路径解析：裸名兜底会把 `"$bumpmap" "normal"` 这种占位绑到名字碰巧相同的旧图上。
+		var bumpTextureName = source.TryResolveDeclaredTexture(vmt.Value("$bumpmap"), out var resolvedBump)
+			? resolvedBump
+			: null;
 		var bumpStrength = MaterialAppearance.ParseBumpStrength(vmt.Value("$bumpstrength"));
 
 		// matcap 的**合成参数**（N2）：模式 + 逐通道强度 + 蒙版。
@@ -2108,6 +2224,9 @@ public sealed class SourceMaterialConverter
 		// "matcap 是不是这个表面本身"。判定必须看内容，不能只看 tint —— 见下面的注释。
 		VtfFile vtf;
 		byte[] rgba;
+		// 「完全透明」档：交给 translucent 纯色透明材质（见 LoadedMaterial.FullyTransparent）。
+		var fullyTransparent = false;
+
 		AlphaStats baseAlpha;
 		// **源底色的 alpha 到底存不存在。**
 		//
@@ -2149,7 +2268,7 @@ public sealed class SourceMaterialConverter
 				rgba = DecodeTextureCached(textureName, vtfBytes, vtf);
 				baseAlpha = TextureAlpha.Measure(rgba);
 			}
-			catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+			catch (Exception exception) when (IsTextureReadFailure(exception))
 			{
 				reason = $"{stem}：贴图 {textureName} 读不出来——{exception.Message}";
 				return LoadOutcome.Failed;
@@ -2287,7 +2406,7 @@ public sealed class SourceMaterialConverter
 		// `rgba` 早已被换成 matcap 图像，于是"保留源底色"实际保留的是**那张金属球面图**
 		// （亮度与亮银接近）—— 用户实测"MourningVeil 无变化"，因为确实几乎没变。
 		// 修正办法不是调数值，而是把顺序理顺：**先知道模板能不能表达金属，再决定要不要换底色**。
-		var provisionalUseAlphaClip = ShouldUseAlphaClip(vmt.WantsTransparency, hasSourceOpacity, baseAlpha, vmt.WantsAlphaTest);
+		var provisionalUseAlphaClip = !IsGeometryCut(stem) && ShouldUseAlphaClip(vmt.WantsTransparency, hasSourceOpacity, baseAlpha, vmt.WantsAlphaTest);
 		if (provisionalUseAlphaClip && matcapIsMetal && metalCutout == MetalCutoutPolicy.MetalWins)
 			provisionalUseAlphaClip = false;   // MetalWins 会放弃镂空、回到 advanced
 		var provisionalTemplate = ResolveTemplate(provisionalUseAlphaClip);
@@ -2389,7 +2508,7 @@ public sealed class SourceMaterialConverter
 					// 加后缀 = 声明"这是本材质派生出来的图"，于是它一定跟着材质走。
 					textureName = matcapTextureName + MetalF0Suffix;
 				}
-				catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+				catch (Exception exception) when (IsTextureReadFailure(exception))
 				{
 					// 读不出来就用现有的（源或合成）底色。判失败会让整件丢掉材质，
 					// 而"颜色不一定对的金属"远好过"部件不见了"。
@@ -2456,7 +2575,28 @@ public sealed class SourceMaterialConverter
 			// 所以取舍交给 `--metal-cutout`：默认保镂空，可选保金属。
 			// 实测 MourningVeil 的金属饰品全是 `$alphatest 1` + alpha 镂空，
 			// 一刀切成 advanced 就等于既没有镂空也没有金属——那是最坏的一种。
-			useAlphaClip = ShouldUseAlphaClip(vmt.WantsTransparency, hasSourceOpacity, baseAlpha, vmt.WantsAlphaTest);
+			// 几何已裁过（--cutout-geometry）就不再做 alpha 测试：洞已经在网格里了，
+			// 再裁一遍等于把边啃掉，而且白白失去 advanced 的金属度。
+			// **几乎全透明**的件单独成一档：不镂空、不抖动，交给 translucent 纯色透明材质。
+			// 判据只看数据（像素占比），不看材质名。
+			fullyTransparent = !IsGeometryCut(stem)
+				&& vmt.WantsTransparency
+				&& baseAlpha.IsEffectivelyTransparent;
+
+			// 「几乎全不透明」的件：源侧写了透明键，但 alpha 实质上是不透明的
+			// （≥95% 像素 alpha ≥ 250）。按不透明处理，否则会变成"半透明 + 一脸雀斑"。
+			if (!fullyTransparent
+				&& vmt.WantsTransparency
+				&& baseAlpha.IsEffectivelyOpaque
+				&& !IsGeometryCut(stem))
+			{
+				notices.Add(
+					$"{stem}：源侧写了透明键（$alphatest/$translucent），但底色 {1 - baseAlpha.Coverage:P0} 的像素"
+					+ "是不透明的 —— 按**不透明**处理（不做镂空、也不抖动，避免出现半透明与噪点）。");
+			}
+			useAlphaClip = !fullyTransparent
+				&& !IsGeometryCut(stem)
+				&& ShouldUseAlphaClip(vmt.WantsTransparency, hasSourceOpacity, baseAlpha, vmt.WantsAlphaTest);
 
 			// 诊断：这条链上"整件消失"的每一次都只能靠猜，所以把判据的四个输入打出来。
 			// `HD2MOD_CUTOUT_DEBUG=1` 时每个材质一行。
@@ -2468,7 +2608,8 @@ public sealed class SourceMaterialConverter
 					+ $"meaningful={baseAlpha.IsMeaningful} uniform={baseAlpha.IsUniformlyTranslucent} "
 					+ $"empty={baseAlpha.IsEmpty} | wantsTransparency={vmt.WantsTransparency} "
 					+ $"alphatest={vmt.WantsAlphaTest} translucent={vmt.WantsTranslucency} "
-					+ $"hasSource={hasSourceOpacity} => useAlphaClip={useAlphaClip} "
+					+ $"hasSource={hasSourceOpacity} opaque={baseAlpha.IsEffectivelyOpaque} "
+					+ $"fullyTransparent={fullyTransparent} => useAlphaClip={useAlphaClip} "
 					+ $"template={ResolveTemplate(useAlphaClip)}");
 			}
 
@@ -2615,6 +2756,7 @@ public sealed class SourceMaterialConverter
 		{
 			BumpTexture = bumpTextureName,
 			MatcapKeepsBaseColour = metalKeepsBaseColour,
+			FullyTransparent = fullyTransparent,
 			BumpStrength = bumpStrength,
 			// **只认显式开关，不再按文件名猜。**
 			//
@@ -2726,6 +2868,15 @@ public sealed class SourceMaterialConverter
 		var rgba = loaded.Rgba;
 		var textureName = loaded.TextureName;
 
+		if (Environment.GetEnvironmentVariable("HD2MOD_ALBEDO_DEBUG") == "1")
+		{
+			double beginSum = 0;
+			var beginCount = Math.Max(1, rgba.Length / 4);
+			for (var i = 0; i < rgba.Length; i += 4)
+				beginSum += (0.299 * rgba[i]) + (0.587 * rgba[i + 1]) + (0.114 * rgba[i + 2]);
+			Console.Error.WriteLine($"[albedo-in ] {loaded.Stem,-24} meanLum={beginSum / beginCount,6:F1}");
+		}
+
 		// ⚠️ **遮罩取 `SourceBaseRgba`（源底色），不是 `rgba`（可能已被换成 matcap）。**
 		// 这两者在 matcap 承载表面的件上是**两张完全不同的图**：
 		//   · `rgba`           = 渲染用底色（matcap 承载表面时**就是**那张球面图）
@@ -2740,7 +2891,8 @@ public sealed class SourceMaterialConverter
 		// 实验路线 1：`translucent` 模板唯一那个槽是 `NormalXyRoughnessOpacity`
 		// （RGB = 平面法线 XY + 粗糙度，A = 不透明度），必须在**清零 alpha 之前**合成出来，
 		// 同样取源底色的 alpha。
-		var translucentMap = alphaExperiment == AlphaExperiment.Translucent && loaded.UseAlphaClip
+		var translucentMap = (alphaExperiment == AlphaExperiment.Translucent && loaded.UseAlphaClip)
+			|| loaded.FullyTransparent
 			? BuildTranslucentMap(textureName, loaded.SourceBaseRgba, loaded.SourceBaseWidth, loaded.SourceBaseHeight)
 			: null;
 
@@ -2756,19 +2908,26 @@ public sealed class SourceMaterialConverter
 		//
 		// 所以先除以 ramp 自己的受光段（受光 = 1.0），再按**法线的 N·L** 查这条归一化曲线：
 		// 受光面保持原样，背光面带作者指定的色偏，整体亮度不变。
+		// ⚠️ **没有世界方向法线就整段跳过。**
+		//
+		// 这条以前是"按正面朝光算 ⇒ 等于不动"，实测**并不等于不动**：
+		// 它仍然按 ramp 的曲线压了一遍高光。Manuka 那两张亮粉底图被压成
+		// 229 → 216（暗部 192 → 140、饱和度 0.149 → 0.206），实机就是
+		// "侧面红斑、正面过白"（2026-11-08 用户截图 + `HD2MOD_ALBEDO_DEBUG` 实测）。
+		//
+		// 所以：拿不到世界法线就不烘。要这条效果，先用 UvNormalBake 把几何烘出来。
+		var shadingNormal = LightwarpShadingEnabled ? WorldNormalFor(loaded.Stem) : null;
 		if (LightwarpShadingEnabled
+			&& shadingNormal is not null
 			&& loaded.LightwarpTexture is { Length: > 0 } warpName
 			&& TryReadTextureRgba(warpName, out var warpRgba, out var warpWidth, out var warpHeight))
 		{
-			// **必须用世界方向的法线**（见 UvNormalBake）：拿切线空间法线算 N·L 会让阴影
-			// 跟着贴图细节一块块跳。没有烘焙结果时按"正面朝光"算 ⇒ 等于不动。
-			var shadingNormal = WorldNormalFor(loaded.Stem);
 			MaterialAppearance.BakeLightwarpShading(
 				rgba, vtf.Width, vtf.Height,
 				warpRgba, warpWidth, warpHeight,
-				shadingNormal?.Rgba,
-				shadingNormal?.Width ?? 0,
-				shadingNormal?.Height ?? 0);
+				shadingNormal.Rgba,
+				shadingNormal.Width,
+				shadingNormal.Height);
 		}
 
 		// 压暗必须在**清零 alpha 之前、编码 sRGB 之前**：
@@ -2817,6 +2976,21 @@ public sealed class SourceMaterialConverter
 			// 归一成中性 F0 会把它变成一条白边。这里什么都不做，只让下面的金属度槽生效。
 			if (metalDeliverable && !loaded.MatcapKeepsBaseColour)
 				MaterialAppearance.FlattenToMetalF0(rgba, MetalF0 * matcapBakeGain);
+			else if (!metalDeliverable && loaded.MatcapIsSurface)
+			{
+				// ── 「金属 + 真镂空」的件（判据全部来自数据，不点任何 mod / 材质名）──────
+				//
+				// ① 模板表达不了金属：`$alphatest` + 底色 alpha 真有图案 ⇒ 落进 `alphaclip`
+				//    （镂空优先），而它的 11 个变量里**没有任何金属参数**；
+				// ② 底色没有自己的颜色（占位图 ∨ 近黑）——观感本来就只在 matcap 上。
+				// 「是不是金属」由外层的 `loaded.MatcapIsMetal` 保证（这个分支就在它里面）。
+				//
+				// 于是这批件既没有金属度、底色又是近黑占位 ⇒ 实机是一块灰黑剪影。
+				// 做法：底色写成**平的中性金属色**（见 CutoutMetalLevel），镂空完全不动。
+				// 平色而不是 matcap：这些件的 UV 多是缝隙（存不下图案），而按 matcap 抬升
+				// 还会采到球心的暗像素，算出 ~91 的深灰 —— 等于没变（11-05 实机结论）。
+				MaterialAppearance.FlattenToMetalF0(rgba, CutoutMetalLevel);
+			}
 		}
 
 		// ===== N2：把 matcap 层合进底色 =====
@@ -2856,14 +3030,22 @@ public sealed class SourceMaterialConverter
 				TryReadTextureRgba(maskName, out maskRgba, out maskWidth, out maskHeight);
 
 			var worldNormal = WorldNormalFor(loaded.Stem);
-			MaterialAppearance.CompositeMatcap(
-				rgba, vtf.Width, vtf.Height,
-				matcapRgba, matcapWidth, matcapHeight,
-				normal: worldNormal?.Rgba,
-				normalWidth: worldNormal?.Width ?? 0,
-				normalHeight: worldNormal?.Height ?? 0,
-				maskRgba, maskWidth, maskHeight,
-				loaded.MatcapTintRgba, loaded.MatcapBlend, maskChannel: 0, sourceAxes: true);
+
+			// ⚠️ 加法（`$matcap 2`）这一档**不烘**。理由与实测数据见
+			// `MaterialAppearance.CanBakeIntoAlbedo`：那档是视角相关的高光，用模型空间法线烘
+			// 出来必然是一层固定的白（实测 Elise_Bill 的脸/身体各被加了 +79 ≈ 255 × 0.31，
+			// 实机表现就是"蒙了一层雾"）。
+			if (MaterialAppearance.CanBakeIntoAlbedo(loaded.MatcapBlend))
+			{
+				MaterialAppearance.CompositeMatcap(
+					rgba, vtf.Width, vtf.Height,
+					matcapRgba, matcapWidth, matcapHeight,
+					normal: worldNormal?.Rgba,
+					normalWidth: worldNormal?.Width ?? 0,
+					normalHeight: worldNormal?.Height ?? 0,
+					maskRgba, maskWidth, maskHeight,
+					loaded.MatcapTintRgba, loaded.MatcapBlend, maskChannel: 0, sourceAxes: true);
+			}
 
 			// ===== 第二层（`$MATCAP2`）：叠在第一层之上，蒙版用 `$mask1` 的 **B** 通道 =====
 			//
@@ -2970,6 +3152,29 @@ public sealed class SourceMaterialConverter
 		}
 
 		// DecodeToRgba 返回的是**裸像素**，编码前要重新包一层 DDS——texconv 只吃 DDS。
+		// 诊断开关 `HD2MOD_ALBEDO_DEBUG=1`：把"即将编码的底色"的统计打出来。
+		// 用来判定"亮/暗偏差发生在编码前还是编码后"——只靠看产物分不清这两者。
+		if (Environment.GetEnvironmentVariable("HD2MOD_ALBEDO_DEBUG") == "1")
+		{
+			double sum = 0;
+			var count = Math.Max(1, rgba.Length / 4);
+			for (var i = 0; i < rgba.Length; i += 4)
+				sum += (0.299 * rgba[i]) + (0.587 * rgba[i + 1]) + (0.114 * rgba[i + 2]);
+			Console.Error.WriteLine($"[albedo] {loaded.Stem,-24} {vtf.Width}x{vtf.Height} meanLum={sum / count,6:F1}");
+		}
+
+		// 诊断开关 `HD2_DEBUG_FLAT_ALBEDO=1`：把底色替换成中性灰，用来判定"某个观感到底来自底色还是光照"。
+		// 典型用法：红斑在平灰底上还在 → 不是底色；消失 → 是底色。
+		if (Environment.GetEnvironmentVariable("HD2_DEBUG_FLAT_ALBEDO") == "1")
+		{
+			for (var offset = 0; offset < rgba.Length; offset += 4)
+			{
+				rgba[offset] = 128;
+				rgba[offset + 1] = 128;
+				rgba[offset + 2] = 128;
+			}
+		}
+
 		var bc7 = EncodeBc7Deduplicated(rgba, vtf.Width, vtf.Height, srgb: true);
 
 		var texture = new Hd2TextureAsset();
@@ -3082,7 +3287,30 @@ public sealed class SourceMaterialConverter
 			// 纯贴图包（只换色）里同一张 VTF 常被多个 patch 引用，解码结果可以复用。
 			var rgba = DecodeTextureCached(stem, vtfBytes, vtf);
 			ZeroAlpha(rgba);
-			var bc7 = EncodeBc7Deduplicated(rgba, vtf.Width, vtf.Height, srgb: true);
+			// 诊断开关 `HD2MOD_ALBEDO_DEBUG=1`：把"即将编码的底色"的统计打出来。
+		// 用来判定"亮/暗偏差发生在编码前还是编码后"——只靠看产物分不清这两者。
+		if (Environment.GetEnvironmentVariable("HD2MOD_ALBEDO_DEBUG") == "1")
+		{
+			double sum = 0;
+			var count = Math.Max(1, rgba.Length / 4);
+			for (var i = 0; i < rgba.Length; i += 4)
+				sum += (0.299 * rgba[i]) + (0.587 * rgba[i + 1]) + (0.114 * rgba[i + 2]);
+			Console.Error.WriteLine($"[albedo] {stem,-24} {vtf.Width}x{vtf.Height} meanLum={sum / count,6:F1}");
+		}
+
+		// 诊断开关 `HD2_DEBUG_FLAT_ALBEDO=1`：把底色替换成中性灰，用来判定"某个观感到底来自底色还是光照"。
+		// 典型用法：红斑在平灰底上还在 → 不是底色；消失 → 是底色。
+		if (Environment.GetEnvironmentVariable("HD2_DEBUG_FLAT_ALBEDO") == "1")
+		{
+			for (var offset = 0; offset < rgba.Length; offset += 4)
+			{
+				rgba[offset] = 128;
+				rgba[offset + 1] = 128;
+				rgba[offset + 2] = 128;
+			}
+		}
+
+		var bc7 = EncodeBc7Deduplicated(rgba, vtf.Width, vtf.Height, srgb: true);
 			var asset = new Hd2TextureAsset();
 			asset.FromDds(bc7);
 			texture = new SynthesizedTexture(
@@ -3091,7 +3319,7 @@ public sealed class SourceMaterialConverter
 			failure = string.Empty;
 			return true;
 		}
-		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		catch (Exception exception) when (IsTextureReadFailure(exception))
 		{
 			failure = $"{stem}：贴图转换失败——{exception.Message}";
 			return false;
@@ -3140,9 +3368,67 @@ public sealed class SourceMaterialConverter
 	/// 才能用单测把"哪种输入得到哪种模板"钉死，而不必每次都进游戏。
 	/// </para>
 	/// </summary>
+	/// <summary>这个材质的几何是不是已经被 <see cref="CutoutMesh"/> 裁开了（于是不需要 alpha 测试）。</summary>
+	public bool IsGeometryCut(string stem)
+		=> opaqueMaterials is not null && opaqueMaterials.Contains(CutoutMesh.StemOf(stem));
+
+	/// <summary>
+	/// 取某个材质<b>底色贴图的 alpha 采样器</b>（供 <see cref="CutoutMesh"/> 用）。
+	/// <para>
+	/// 返回 <c>null</c> 表示这个材质拿不到可用的 alpha（没有 <c>$basetexture</c>、或在来源里找不到那张图）——
+	/// 调用方必须把这种材质<b>原样保留</b>，绝不能当成"全在外面"而把几何删光。
+	/// </para>
+	/// </summary>
+	public Func<double, double, double>? TryCreateAlphaSampler(string stem)
+	{
+		if (string.IsNullOrWhiteSpace(stem))
+			return null;
+
+		var name = CutoutMesh.StemOf(stem);
+		if (!alphaSamplers.TryGetValue(name, out var cached))
+		{
+			cached = LoadAlphaSource(name);
+			alphaSamplers[name] = cached;
+		}
+
+		if (cached is not { } source)
+			return null;
+
+		var (rgba, width, height) = source;
+		return (u, v) =>
+		{
+			var x = Math.Clamp((int)(u * (width - 1)), 0, width - 1);
+			var y = Math.Clamp((int)((1 - v) * (height - 1)), 0, height - 1);
+			return rgba[(((y * width) + x) * 4) + 3] / 255.0;
+		};
+	}
+
+	private (byte[] Rgba, int Width, int Height)? LoadAlphaSource(string name)
+	{
+		try
+		{
+			if (!source.TryReadVmt(name, out var vmtBytes) || vmtBytes.Length == 0)
+				return null;
+			var baseTexture = VmtDocument.Parse(vmtBytes).Value("$basetexture");
+			if (string.IsNullOrWhiteSpace(baseTexture))
+				return null;
+			var stem = CutoutMesh.StemOf(baseTexture);
+			if (string.IsNullOrWhiteSpace(stem) || !source.TryReadVtf(stem, out var vtfBytes))
+				return null;
+			var vtf = VtfFile.Read(vtfBytes);
+			return (DecodeTextureCached(stem, vtfBytes, vtf), vtf.Width, vtf.Height);
+		}
+		catch (Exception exception) when (IsTextureReadFailure(exception))
+		{
+			return null;
+		}
+	}
 	public static bool ShouldUseAlphaClip(bool wantsTransparency, bool hasSourceOpacity, AlphaStats alpha, bool wantsAlphaTest = true)
 		=> wantsTransparency
 			&& hasSourceOpacity
+			// 「几乎全不透明」的件直接判不透明：作者只是用低 alpha 当不透明写，
+			// 放行到 alphaclip + 抖动就会得到"半透明身体 + 一脸雀斑"。
+			&& !alpha.IsEffectivelyOpaque
 			&& (alpha.IsMeaningful
 				|| alpha.IsUniformlyTranslucent
 				// **隐藏物品类**：`$alphatest` + 整片 alpha ≈ 0 = "作者就是要它整片不画"。
@@ -3408,6 +3694,20 @@ public sealed class SourceMaterialConverter
 				}
 
 				break;
+			case 5:    // I8 -> 灰度（alpha 补 255）
+				// 1 字节/像素的灰度图，常见的"自发光蒙版"/"发光遮罩"就是这种格式。
+				// 补 A=255 而不是复制灰度：I8 没有 alpha 通道，蒙版读的是 RGB 亮度，
+				// 把亮度也写进 A 会让"当作透明度用"的那条路读出一个假的半透明。
+				Require(source, pixels, vtf.FormatName);
+				for (var i = 0; i < pixels; i++)
+				{
+					output[(i * 4) + 0] = source[i];
+					output[(i * 4) + 1] = source[i];
+					output[(i * 4) + 2] = source[i];
+					output[(i * 4) + 3] = 255;
+				}
+
+				break;
 			default:
 				throw new InvalidDataException(
 					$"VTF 格式 {vtf.FormatName} 既不是 BC 压缩、也不在已实现的非压缩拆包列表里");
@@ -3438,6 +3738,12 @@ public sealed class SourceMaterialConverter
 	/// <summary>
 	/// 读一张贴图并解成裸像素（带 <see cref="DecodeTextureCached"/> 的复用）。
 	/// 供 matcap 合成读 matcap / 蒙版 / 法线用——它们只需要像素，不需要走材质那一套。
+	/// <para>
+	/// <b>失败时三个输出参数必须一起"归零"。</b>调用方只按「宽高 &gt; 0」判断"读到了"，
+	/// 留下"宽高有值、像素是空数组"的半成品会让它们按读到了去索引空数组——
+	/// 实测事故：`ramune-战术女仆(louis).vpk` 的 `I8` 自发光蒙版解不出来，整批转换抛
+	/// <c>IndexOutOfRangeException</c>，管理器侧只给一句"重新转换失败"。
+	/// </para>
 	/// </summary>
 	private bool TryReadTextureRgba(string textureName, out byte[] rgba, out int width, out int height)
 	{
@@ -3453,10 +3759,17 @@ public sealed class SourceMaterialConverter
 			width = vtf.Width;
 			height = vtf.Height;
 			rgba = DecodeTextureCached(textureName, bytes, vtf);
+			var expected = (long)width * height * 4;
+			if (rgba.Length < expected)
+				throw new InvalidDataException(
+					$"贴图 {textureName} 解码后只有 {rgba.Length} 字节，不足以填满 {width}x{height} 的 RGBA（应为 {expected}）");
 			return width > 0 && height > 0;
 		}
-		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		catch (Exception exception) when (IsTextureReadFailure(exception))
 		{
+			rgba = [];
+			width = 0;
+			height = 0;
 			return false;
 		}
 	}
@@ -3509,8 +3822,14 @@ public sealed class SourceMaterialConverter
 	/// 逐顶点的世界方向，而不是现在这张切线空间法线图。
 	/// </para>
 	/// </summary>
+	/// <para>
+	/// <b>默认关闭。</b>它需要"世界方向法线"这个前提；拿不到时旧实现会按错误假设压一遍曲线，
+	/// 把亮粉底图压出红斑（2026-11-08 实机）。要开就显式 <c>HD2_LIGHTWARP=1</c>；
+	/// <c>HD2_NO_LIGHTWARP=1</c> 仍然认，用来保证旧脚本不失效。
+	/// </para>
 	private static readonly bool LightwarpShadingEnabled =
-		Environment.GetEnvironmentVariable("HD2_NO_LIGHTWARP") != "1";
+		Environment.GetEnvironmentVariable("HD2_LIGHTWARP") == "1"
+		&& Environment.GetEnvironmentVariable("HD2_NO_LIGHTWARP") != "1";
 
 	/// <summary>
 	/// 把 <c>$bumpmap</c> 转成一张 HD2 法线贴图；读不出来返回 <c>null</c>（调用方退回平面法线）。
@@ -3579,7 +3898,7 @@ public sealed class SourceMaterialConverter
 			// 法线是**线性**数据：DXT5/ATI2N 都按线性 DXGI 格式交给 texconv，绝不能走 sRGB。
 			rgba = DecodeTextureCached(bumpTexture, bytes, vtf);
 		}
-		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		catch (Exception exception) when (IsTextureReadFailure(exception))
 		{
 			return (null, $"{bumpTexture}：法线图读不出来（{exception.Message}）");
 		}

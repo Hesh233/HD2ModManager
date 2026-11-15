@@ -35,10 +35,10 @@ left_source = "ValveBiped.L_weapon_bone"
 required_bone = "l_pinky_finger3"
 [ik_chains.r_hand]
 chain = ["r_shoulder", "r_elbow"]
-target_multiplier = [0.4,0.4,1]
+target_multiplier = [0.7,0.7,1]
 [ik_chains.l_hand]
 chain = ["l_shoulder", "l_elbow"]
-target_multiplier = [0.4,0.4,1]
+target_multiplier = [0.7,0.7,1]
 [ik_chains.r_foot]
 chain = ["r_thigh", "r_knee"]
 target_multiplier = [0.4,0.4,1]
@@ -230,7 +230,11 @@ l_middle_finger3 = [1.3403493924202263e-06, -2.8365559634009602e-05, 2.923227089
 # Single VPK -> HD2 skeleton route. Uses the ORIGINAL batch processor, not native-v15/B23.
 [single_skeleton]
 rotate_multipliers = true
-# Required whenever the converted single model changes HD2 bind axes.
-rotation_compensation = true
+rotation_compensation = false
 ik_correction = true
 allow_additive = true
+
+# VPK model conversion only; shared by single and dual skeleton routes.
+[vpk_conversion]
+# Opt-in: merge procedural wrist weights into forearm; keep all bones and VRD.
+merge_wrist_weights = false

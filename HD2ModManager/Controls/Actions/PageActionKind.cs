@@ -34,16 +34,18 @@ public enum PageActionKind
     CrossArmor,
     Compact,
     Package,
-    BatchDecoration,
-    DecorationPlan,
     Helmet,
     Merge,
     CustomModel,
-    EditDecoration,
     PatchRebuild,
+    /// <summary>把 sectional / vpk2patch 类 Mod 复制成独立命名空间的变体。</summary>
+    CloneVariant,
     // 模组库的「一键重构所有 VPK 模组」。与详情页的 PatchRebuild 是两种粒度
     // （一个是这一个 Mod，一个是全库），所以不复用同一个值。
     RebuildAllVpk,
+    // 详情页的「用来源重构建」：只重出**这一个** Mod（可选连带子级）。
+    // 与 RebuildAllVpk 是两种粒度，所以不复用同一个值。
+    RebuildVpk,
 }
 
 // 语义色调。逻辑层只说"这是主操作 / 普通操作 / 危险操作"，
@@ -85,13 +87,12 @@ internal static class PageActionIconCatalog
         PageActionKind.CrossArmor => "ActionIcon.Switch",
         PageActionKind.Compact => "ActionIcon.Compact",
         PageActionKind.Package => "ActionIcon.Package",
-        PageActionKind.BatchDecoration => "ActionIcon.HangerPlus",
-        PageActionKind.DecorationPlan => "ActionIcon.HangerPlus",
         PageActionKind.Helmet => "ActionIcon.Helmet",
         PageActionKind.Merge => "ActionIcon.Merge",
         PageActionKind.CustomModel => "ActionIcon.CustomModel",
-        PageActionKind.EditDecoration => "ActionIcon.Hanger",
         PageActionKind.PatchRebuild => "ActionIcon.Refresh",
+        PageActionKind.CloneVariant => "ActionIcon.Package",
+        PageActionKind.RebuildVpk => "ActionIcon.Refresh",
         _ => "ActionIcon.Plus",
     };
 }

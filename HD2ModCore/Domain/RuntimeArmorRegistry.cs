@@ -1,4 +1,28 @@
 namespace HD2ModCore.Domain;
+/// <summary>
+/// 真映射模式的执行结果。
+/// <para>
+/// <b>为什么放在 Domain 而不是 Infrastructure。</b>它要挂到
+/// <see cref="RuntimeArmorRegistryApplyResult"/> 上一起回给调用方（界面/CLI），
+/// 而 Domain 不能反向依赖 Infrastructure。记录本身只有四个原始字段，没有行为依赖。
+/// </para>
+/// <param name="Applied">实际写进注册表的映射条数。</param>
+/// <param name="Skipped">被跳过的映射条数（目标护甲或来源件表找不到）。</param>
+/// <param name="Written">是否真的写了文件。<c>false</c> 时 <paramref name="Message"/> 说明为什么没写。</param>
+public sealed record ArmorRegistryDataMappingResult(
+	int Applied,
+	int Skipped,
+	bool Written,
+	string? Message = null)
+{
+	public static readonly ArmorRegistryDataMappingResult Nothing = new(0, 0, false, null);
+
+	/// <summary>被写成 <c>0</c>（隐藏）的格子数。来源没覆盖到的部位都算在这里。</summary>
+	public int Hidden { get; init; }
+
+	/// <summary>换成本源 unit 的格子数。</summary>
+	public int Replaced { get; init; }
+}
 
 public sealed record RuntimeArmorRegistryModel(
 	string Key,
@@ -23,7 +47,18 @@ public sealed record RuntimeArmorRegistryModelPiece(
 	bool Enabled = true,
 	bool IsDefaultBase = false,
 	bool IsReserved = false,
-	uint? OriginalBody = null);
+	uint? OriginalBody = null)
+{
+	/// <summary>
+	/// 这一件是**被挪过来的**时，写下它原来的格子（形如 <c>slot0/layer0</c>）；空 = 原生件。
+	/// <para>
+	/// 只给"头身合并"用：素体的头原本是「头盔槽 / 层 0」，合并后被挪到胸部的某个空层。
+	/// 没有这个字段，事后没人能证明"某个胸甲层的那件就是头盔层 0 挪过去的"——看到的只是
+	/// 两条互不相干的记录，也没法据此还原。
+	/// </para>
+	/// </summary>
+	public string? MovedFrom { get; init; }
+}
 
 public sealed record RuntimeArmorRegistryPieceOverride(
 	uint OwnerItemId,
@@ -97,15 +132,15 @@ public static class RuntimeArmorMappingPairing
 // 这不是诊断细节，而是页面必须说清楚的事实：工作区在模组库里（跟库走），
 // 协议在用户目录里（跟用户走），两者生命周期不同——详见
 // docs/armor-registry-page-20261011-regression.md §13。
-// 工作区缺失时只能退回协议副本：那是用户映射**最后的一份存留**，绝不能隐藏，
-// 但必须让用户知道"这不是本库的工作区"，否则他会以为映射本来就长这样。
+//
+// ⚠️ **2026-11-05 起取消了「退回协议副本」这一档。** 映射结构的唯一来源是模组库里的那份 JSON；
+// 它不在，映射结构就是空的（<see cref="Empty"/>）。协议是**派生文件**：换库之后它属于上一个库，
+// 读它等于把旧库的映射带进新库。用户口径："每次更换 mod 库也必定只信任 mod 库中的映射结构文件"。
 public enum RuntimeArmorRegistryDocumentSource
 {
 	// 读的是本模组库的工作区文件（正常情况）。
 	Workspace,
-	// 本库没有工作区，退回读取用户目录里的协议副本。
-	ProtocolFallback,
-	// 既没有工作区也没有可用的协议。
+	// 本库没有工作区文件 ⇒ 映射结构为空（唯一会出现的"映射消失"场景）。
 	Empty,
 }
 
@@ -136,4 +171,15 @@ public sealed record RuntimeArmorRegistryApplyResult(
 	RuntimeArmorRegistryDocument Document,
 	string Fingerprint,
 	bool RuntimeProcessRunning,
-	bool RuntimeAcknowledged);
+	bool RuntimeAcknowledged)
+{
+	/// <summary>
+	/// 真映射这一层的结果（只有真的动过 <c>generated_customization_armor_sets.dl_bin</c> 时非 null）。
+	/// <para>
+	/// <b>为什么必须带出来。</b>这个值以前被直接丢掉，于是"没有一条映射能应用""备份基准失效
+	/// 无法还原""当前文件被外部替换"这些明确的失败原因<b>一个字都不会到界面</b>，
+	/// 用户看到的就是"点了没反应"（2026-11-05 反馈：真映射关不掉 / Steam 校验后打不开）。
+	/// </para>
+	/// </summary>
+	public ArmorRegistryDataMappingResult? DataMapping { get; init; }
+}

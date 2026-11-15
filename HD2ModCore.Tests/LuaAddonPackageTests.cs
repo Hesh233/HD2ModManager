@@ -81,8 +81,11 @@ public sealed class LuaAddonPackageTests
 		// 详细测试日志轮后文件名改为运行时拼接：普通会话仍是 hd2_grip_b23_compact.log，
 		// 仅 testRepairs.detailed 会话换用 hd2_grip_TEST_DETAILED_<模型>_<时间>.partNN 分段。
 		Assert.Contains("hd2_grip_b23_compact", source, StringComparison.Ordinal);
-		Assert.Contains("..'.log'", source, StringComparison.Ordinal);
-		Assert.Contains("io.open(logPath(),'w')", source, StringComparison.Ordinal);
+        // Accepted legacy resources use a fixed 'path'; newer entries use logPath().
+        // Verify the filename/write contract without assuming a promoted test-entry layout.
+        Assert.Matches(@"['""][^'""]*\.log['""]", source);
+        Assert.True(source.Contains("io.open(logPath(),'w')", StringComparison.Ordinal)
+            || source.Contains("io.open(path,'w')", StringComparison.Ordinal));
 		Assert.Contains("limits.recordSeconds or 90", source, StringComparison.Ordinal);
 		Assert.Contains("limits.maxBytes or 524288", source, StringComparison.Ordinal);
 		Assert.Contains("log_recording_stopped", source, StringComparison.Ordinal);
@@ -196,7 +199,7 @@ public sealed class LuaAddonPackageTests
 		Assert.DoesNotContain("NativeAttachmentProfile", source, StringComparison.Ordinal);
 		Assert.Contains("options = { compat = PhysBoneCompat, mode = '", source, StringComparison.Ordinal);
 		Assert.Contains("local PhysBoneCompat = (function()", source, StringComparison.Ordinal);
-		Assert.Contains("local PhysBoneRuntime = (function()", source, StringComparison.Ordinal);
+		Assert.Contains("local SkeletonRuntime = (function()", source, StringComparison.Ordinal);
 	}
 
 	[Fact]
@@ -215,7 +218,7 @@ public sealed class LuaAddonPackageTests
 	{
 		var source = LuaAddonCatalog.Physics().Source;
 		Assert.Contains("local PhysBoneCompat = (function()", source, StringComparison.Ordinal);
-		Assert.Contains("local PhysBoneRuntime = (function()", source, StringComparison.Ordinal);
+		Assert.Contains("local SkeletonRuntime = (function()", source, StringComparison.Ordinal);
 		Assert.Contains("PhysBoneRuntime.install(", source, StringComparison.Ordinal);
 		Assert.Contains("rawget(_G, 'stingray')", source, StringComparison.Ordinal);
 	}
@@ -338,8 +341,8 @@ public sealed class LuaAddonPackageTests
 	public void PhysicsPackageCarriesSingleFrontSkirtPolicyAndTipLimitDiagnostic()
 	{
 		var source = LuaAddonCatalog.Physics().Source;
-		Assert.Contains("M.version = \"1.3.1\"", source, StringComparison.Ordinal);
-		Assert.Contains("M.VERSION = \"2.3.1\"", source, StringComparison.Ordinal);
+		Assert.Contains("M.version = \"1.3.4\"", source, StringComparison.Ordinal);
+		Assert.Contains("M.VERSION = \"2.3.4\"", source, StringComparison.Ordinal);
 		Assert.Contains("function M.is_wrist_driver(bone)", source, StringComparison.Ordinal);
 		Assert.Contains("if M.is_wrist_driver(bone) then", source, StringComparison.Ordinal);
 		Assert.Contains("excludedWristDrivers = excludedWristDrivers", source, StringComparison.Ordinal);
@@ -350,7 +353,8 @@ public sealed class LuaAddonPackageTests
 		Assert.Contains("rig.drivers.version ~= 3", source, StringComparison.Ordinal);
 		Assert.Contains("root.parentName ~= expected.helper", source, StringComparison.Ordinal);
 		Assert.Contains("item.tip and item.tip.bones or item.bones", source, StringComparison.Ordinal);
-		Assert.DoesNotContain("local simBone = item.bones and item.bones[index]", source, StringComparison.Ordinal);
+		// The direct pipeline deliberately uses upstream fields; this contract applies to the local skeleton module.
+		Assert.DoesNotContain("local simBone = item.bones and item.bones[index]", PhysBoneLuaSource.LoadCompat(), StringComparison.Ordinal);
 	}
 
 	[Fact]
@@ -366,4 +370,28 @@ public sealed class LuaAddonPackageTests
 		Assert.Contains("local bind, frame = row.test06DriverBindQ, row.test06SetterFrame", source, StringComparison.Ordinal);
 		Assert.Contains("shipped_bind_frame_mismatch", source, StringComparison.Ordinal);
 	}
+
+	[Fact]
+	public void PhysicsPackageCarriesAcceptedTest1201Source2GuardedSolver()
+	{
+		var source = LuaAddonCatalog.Physics().Source;
+		Assert.Contains("M.test1201_matches_rig=sRig", source, StringComparison.Ordinal);
+		Assert.Contains("identity=Unit.resource_name", source, StringComparison.Ordinal);
+		Assert.Contains("spring=49 driver=9 wristExcluded=2", source, StringComparison.Ordinal);
+		Assert.Contains("READBACK", source, StringComparison.Ordinal);
+		Assert.DoesNotContain("2.3.3-test1201-source2", source, StringComparison.Ordinal);
+		Assert.DoesNotContain("1.3.3-test1201-source2", source, StringComparison.Ordinal);
+	}
+
+    [Fact]
+    public void PhysicsPackageDisablesVrdWithoutAnExportedSkeletonContract()
+    {
+        var source = LuaAddonCatalog.Physics().Source;
+        Assert.Contains("function M.vrd_skeleton_contract(rig)", source, StringComparison.Ordinal);
+        Assert.Contains("vrdSkeletonOnly = true", source, StringComparison.Ordinal);
+        Assert.Contains("original-or-no-driver-record", source, StringComparison.Ordinal);
+        Assert.Contains("if not vrdBlocked and rig.drivers", source, StringComparison.Ordinal);
+        Assert.Contains("deferVrdToScopedSolver", source, StringComparison.Ordinal);
+        Assert.Contains("session.vrdPolicyBlocked == true", source, StringComparison.Ordinal);
+    }
 }

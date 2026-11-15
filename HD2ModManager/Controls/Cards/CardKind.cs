@@ -19,9 +19,8 @@ public enum CardKind
     // Mod 详情页（动作已迁到浮动操作簇，不再是一张卡）
     ModHeader,
     ModDescription,
-    VpkActions,
+    SectionalActions,
     VpkComponents,
-    DecorationDetails,
     UserStatus,
     AssetTags,
     ModelCompatibility,

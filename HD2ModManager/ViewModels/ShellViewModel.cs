@@ -50,7 +50,11 @@ namespace HD2ModManager.ViewModels
         public bool HasModExportBottomBar => _modExportBottomBarOperation is not null;
         private readonly List<IDisposable> _sameKeyRebuildBottomBarRegistrations = [];
         private SameKeyRebuildBottomBarViewModel? _sameKeyRebuildBottomBarOperation;
-        private readonly List<IDisposable> _bulkVpkRebuildRegistrations = [];
+        // 「一键重构所有 VPK 模组」：一次只跑一批，所以目标清单在开跑前定下来（用户看到的就是这个数）。
+        // 详情页的「用来源重构建」底栏（单 Mod，可选连带子级）。
+        private readonly List<IDisposable> _vpkRebuildRegistrations = [];
+        private VpkRebuildBottomBarViewModel? _vpkRebuildOperation;
+        private readonly List<BottomBarRegistrationToken> _bulkVpkRebuildRegistrations = [];
         private VpkBulkRebuildBottomBarViewModel? _bulkVpkRebuildOperation;
         private IReadOnlyList<VpkBulkRebuildTarget> _bulkVpkRebuildTargets = [];
         public bool HasBulkVpkRebuildBottomBar => _bulkVpkRebuildOperation is not null;
@@ -156,13 +160,15 @@ namespace HD2ModManager.ViewModels
         public RelayCommand SelectionDeleteCommand { get; }
         public RelayCommand SelectionDeleteFromLibraryCommand { get; }
         public RelayCommand SetSelectedModsAsOptionsCommand { get; }
-        public RelayCommand AttachSelectedDecorationsCommand { get; }
+
         public RelayCommand RemoveSelectedOptionsFromHostCommand { get; }
         public RelayCommand PromoteArmorProvidersCommand { get; }
         public RelayCommand RegisterArmorTargetsCommand { get; }
         public RelayCommand ReleaseArmorProvidersCommand { get; }
         public RelayCommand ReleaseArmorTargetsCommand { get; }
         public RelayCommand ClearArmorTargetsCommand { get; }
+        /// <summary>选择栏的「重构」：点下去才检测（选中 + 递归后代），没有目标就只给一句提示。</summary>
+        public RelayCommand RebuildSelectionCommand { get; }
         public RelayCommand EnableSelectedDecorationsCommand { get; }
         public RelayCommand DisableSelectedDecorationsCommand { get; }
         public RelayCommand ToggleMessagePanelCommand { get; }
@@ -242,6 +248,8 @@ namespace HD2ModManager.ViewModels
             _applyStatus = new ApplyStatusService();
             _notificationService = new NotificationService();
             _messageCenter = new MessageCenterService(_notificationService, _backgroundTasks);
+            // 程序自身更新：启动检查与每日检查；没有部署/导入等后台任务时才允许自动安装。
+            AppUpdateService.Initialize(_notificationService, () => !_backgroundTasks.Tasks.Any(task => task.IsActive && !task.IsInformationCenter));
             _informationCenter.ProductionStarted += OnInformationProductionStarted;
             _informationCenter.DiagnosticRecorded += OnInformationDiagnosticRecorded;
             _bottomBar = new BottomBarCoordinator(_selection, _libraryService, _profileService, _notificationService, RefreshCurrentPage);
@@ -312,13 +320,14 @@ namespace HD2ModManager.ViewModels
             SelectionDeleteCommand = new RelayCommand(async _ => await ExecuteSelectionDeleteAsync());
             SelectionDeleteFromLibraryCommand = new RelayCommand(async _ => await ExecuteSelectionDeleteFromLibraryAsync());
             SetSelectedModsAsOptionsCommand = new RelayCommand(async _ => await SetSelectedModsAsOptionsAsync());
-            AttachSelectedDecorationsCommand = new RelayCommand(async _ => await AttachSelectedDecorationsAsync());
+
             RemoveSelectedOptionsFromHostCommand = new RelayCommand(async _ => await RemoveSelectedOptionsFromHostAsync());
             PromoteArmorProvidersCommand = new RelayCommand(_ => ApplyArmorRegistrySelection(ArmorRegistrySelectionAction.Promote));
             RegisterArmorTargetsCommand = new RelayCommand(_ => ApplyArmorRegistrySelection(ArmorRegistrySelectionAction.RegisterTargets));
             ReleaseArmorProvidersCommand = new RelayCommand(_ => ApplyArmorRegistrySelection(ArmorRegistrySelectionAction.ReleaseProviders));
             ReleaseArmorTargetsCommand = new RelayCommand(_ => ApplyArmorRegistrySelection(ArmorRegistrySelectionAction.ReleaseTargets));
             ClearArmorTargetsCommand = new RelayCommand(_ => ApplyArmorRegistrySelection(ArmorRegistrySelectionAction.ClearTargets));
+            RebuildSelectionCommand = new RelayCommand(_ => RebuildSelection());
             EnableSelectedDecorationsCommand = new RelayCommand(async _ => await SetSelectedDecorationsEnabledAsync(true));
             DisableSelectedDecorationsCommand = new RelayCommand(async _ => await SetSelectedDecorationsEnabledAsync(false));
             ToggleMessagePanelCommand = new RelayCommand(ToggleMessagePanel);
@@ -717,6 +726,13 @@ namespace HD2ModManager.ViewModels
         }
 
         public void BeginBottomBarNameEdit(string modId, string currentValue) => _bottomBar.BeginNameEdit(modId, currentValue);
+        /// <summary>
+        /// 通用改名输入条：不绑定任何 Mod，保存逻辑由调用方给。
+        /// 材质选项的名字存在 Mod 自己的结构文件里，走不了"改库里的 Mod 名"那条路，
+        /// 但输入这件事应该长得和别处一样，所以复用同一个编辑器。
+        /// </summary>
+        public void BeginCustomNameEdit(string currentValue, Func<string, Task> save)
+            => _bottomBar.BeginCustomNameEdit(currentValue, save);
         public void BeginBottomBarDescriptionEdit(string modId, string currentValue) => _bottomBar.BeginDescriptionEdit(modId, currentValue);
         public void BeginCreateLogicalMod()
         {
@@ -800,6 +816,37 @@ namespace HD2ModManager.ViewModels
             RaiseSlotFlags();
         }
 
+        /// <summary>
+        /// 打开分件编辑页：左边 section 组、右边 section 树。
+        /// <para>
+        /// <b>不复用 <c>CreatePage</c></b>：这一页要拿"当前详情页 VM"当数据源，
+        /// 而 <c>CreatePage</c> 是 new 一个新的（那会让编辑状态和详情页分成两份）。
+        /// 与 <see cref="OpenCrossArmorPlan"/> 同一个路子：设好页面类型再直接赋实例。
+        /// </para>
+        /// </summary>
+        public void OpenSectionalEditor(ModDetailsPageViewModel source)
+        {
+            ArgumentNullException.ThrowIfNull(source);
+            DismissToolBottomBars();
+            var page = new SectionalEditorPageViewModel(source, () => RestoreDetailsPage(source));
+            LeftPageType = WorkspacePageType.SectionalEditor;
+            RightPageType = WorkspacePageType.SectionalEditor;
+            LeftPage = page;
+            RightPage = null;
+            UpdateModeFromSlots();
+            RaiseSlotFlags();
+        }
+
+        /// <summary>从分件编辑页回到它来源的那个详情页（同一个实例，编辑状态不丢）。</summary>
+        private void RestoreDetailsPage(ModDetailsPageViewModel source)
+        {
+            LeftPageType = WorkspacePageType.ModDetails;
+            RightPageType = WorkspacePageType.ModDetails;
+            LeftPage = source;
+            RightPage = null;
+            UpdateModeFromSlots();
+            RaiseSlotFlags();
+        }
         public void OpenMaterialPackaging(ModDetailsPageViewModel sourcePage, MaterialPackagingPageViewModel packagingPage)
         {
             DismissToolBottomBars();
@@ -818,7 +865,6 @@ namespace HD2ModManager.ViewModels
             try
             {
                 LogService.Info("启动部署：活动配置已加载，立即部署并跳过变更缓冲等待。");
-                await _libraryService.FlushPendingDecorationRebuildsAsync(cancellationToken).ConfigureAwait(false);
                 var status = await _deploymentCoordinator.FlushAsync(cancellationToken).ConfigureAwait(false);
                 if (status.Stage != ProfileDeploymentStage.Completed)
                     LogService.Error($"启动部署未完成：{status.Message ?? status.Stage.ToString()}。");
@@ -828,32 +874,6 @@ namespace HD2ModManager.ViewModels
             {
                 LogService.Error($"启动部署失败：{exception}");
             }
-        }
-
-        public void OpenDecorationPlan(string sourceModId)
-        {
-            if (string.IsNullOrWhiteSpace(sourceModId)) return;
-            _editingDecorationId = null;
-            ClearTransientSelection();
-            SelectedModId = sourceModId;
-            OpenSinglePage(WorkspacePageType.DecorationPlan);
-        }
-
-        public void OpenDecorationEditor(string decorationId)
-        {
-            if (string.IsNullOrWhiteSpace(decorationId)) return;
-            _editingDecorationId = decorationId;
-            ClearTransientSelection();
-            SelectedModId = decorationId;
-            OpenSinglePage(WorkspacePageType.DecorationPlan);
-        }
-
-        public void OpenBatchDecorationPlan(string hostModId)
-        {
-            if (string.IsNullOrWhiteSpace(hostModId)) return;
-            ClearTransientSelection();
-            SelectedModId = hostModId;
-            OpenSinglePage(WorkspacePageType.BatchDecorationPlan);
         }
 
         public void OpenHelmetToArmorMergePlan(string sourceModId)
@@ -892,7 +912,39 @@ namespace HD2ModManager.ViewModels
             ClearMaterialPackagingBottomBar();
             ClearSameKeyRebuildBottomBar();
             ClearModExportBottomBar();
+            ClearVpkRebuildBottomBar();
+            // 正在跑的批量重构不收：那会把进度和「取消」一起藏掉。
             ClearBulkVpkRebuildBottomBar();
+        }
+
+        /// <summary>
+        /// 详情页的「用来源重构建」：开底栏选范围与并发。
+        /// <para>
+        /// 两行：选项行（范围 + 并发 + 开始）与进度行。<b>重跑时不换 VM</b>——
+        /// 结束后再点一次用的是同一个实例（用户的第一反应就是"再来一遍"），
+        /// 所以这里只在还没注册时注册一次。
+        /// </para>
+        /// </summary>
+        public void OpenVpkRebuild(VpkRebuildBottomBarViewModel operation)
+        {
+            ArgumentNullException.ThrowIfNull(operation);
+            if (ReferenceEquals(_vpkRebuildOperation, operation) && _vpkRebuildRegistrations.Count != 0) return;
+            ClearVpkRebuildBottomBar();
+            _vpkRebuildOperation = operation;
+            _vpkRebuildRegistrations.Add(_bottomBar.RegisterSurfaceSource(new BottomBarRegistrationRequest(
+                "vpk-rebuild-options",
+                [new BottomBarRowDefinition("main", new VpkRebuildBottomBarRow(operation, IsProgressRow: false))])));
+            _vpkRebuildRegistrations.Add(_bottomBar.RegisterSurfaceSource(new BottomBarRegistrationRequest(
+                "vpk-rebuild-progress",
+                [new BottomBarRowDefinition("main", new VpkRebuildBottomBarRow(operation, IsProgressRow: true))],
+                1)));
+        }
+
+        private void ClearVpkRebuildBottomBar()
+        {
+            foreach (var registration in _vpkRebuildRegistrations) registration.Dispose();
+            _vpkRebuildRegistrations.Clear();
+            _vpkRebuildOperation = null;
         }
 
         /// <summary>
@@ -1135,6 +1187,25 @@ namespace HD2ModManager.ViewModels
                             LogService.Warn($"导入没有产生 Mod：来源={item.Path}；{detail}");
                             _notificationService.Show($"没有导入任何 Mod。{detail}", NotificationLevel.Warning, TimeSpan.FromSeconds(12));
                         }
+
+                        // **导入到此结束**：来源已经在条目里了。
+                        // 接下来自动跑一次重构建 —— 只针对**这次导入**的条目，
+                        // 直接跑，不开底栏、不等用户再点一下。
+                        if (import.LastVpkImportTargets.Count != 0)
+                        {
+                            var rebuildTargets = import.LastVpkImportTargets
+                                .Select(guid => Guid.TryParse(guid, out var id)
+                                    && _libraryService.Snapshot.Nodes.TryGetValue(new ModNodeId(id), out var node)
+                                    ? new VpkBulkRebuildTarget(
+                                        node.Id,
+                                        node.Metadata.Name,
+                                        System.IO.Path.Combine(_libraryService.ModsRootDirectory, node.RelativePath))
+                                    : null)
+                                .Where(target => target is not null)
+                                .Select(target => target!)
+                                .ToArray();
+                            _ = RunImportRebuildAsync(rebuildTargets);
+                        }
                         foreach (var nodeId in import.LastAffectedNodeIds)
                             affectedNodeIds.Add(nodeId);
                         libraryChanged = true;
@@ -1161,7 +1232,7 @@ namespace HD2ModManager.ViewModels
                     {
                         _importQueue.MarkFailed(item, ex.Message);
                         task.MarkFailed(ex.Message);
-                        System.Windows.MessageBox.Show($"导入失败: {item.Path}\n{ex.Message}", "Import", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+                        HD2ModManager.Views.AppDialog.Show($"导入失败: {item.Path}\n{ex.Message}", "Import", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
                     }
                 }
 
@@ -1202,7 +1273,6 @@ namespace HD2ModManager.ViewModels
                                 if (added > 0)
                                 {
                                     LogService.Info($"导入后自动加入活动配置：新增={added}，选项/装饰未加入配置。即将统一部署一次。");
-                                    await _libraryService.FlushPendingDecorationRebuildsAsync(_lifetimeCancellation.Token).ConfigureAwait(false);
                                     await _deploymentCoordinator.FlushAsync(_lifetimeCancellation.Token).ConfigureAwait(false);
                                 }
                             }
@@ -1247,7 +1317,6 @@ namespace HD2ModManager.ViewModels
             {
                 // Window close is a consistency boundary too: do not leave a successful UI
                 // toggle waiting only in the in-memory debounce overlay.
-                await _libraryService.FlushPendingDecorationRebuildsAsync().ConfigureAwait(false);
             }
             catch (Exception exception) { LogService.Error($"退出前装饰合并失败：{exception}"); }
             _lifetimeCancellation.Cancel();
@@ -1397,7 +1466,6 @@ namespace HD2ModManager.ViewModels
         {
             try
             {
-                await _libraryService.FlushPendingDecorationRebuildsAsync(_lifetimeCancellation.Token);
                 var status = await _deploymentCoordinator.FlushAsync(_lifetimeCancellation.Token);
                 if (status.Stage == ProfileDeploymentStage.Completed) return;
                 _notificationService.Show(status.Message ?? "活动配置部署失败。", NotificationLevel.Error, TimeSpan.FromSeconds(8));
@@ -1630,7 +1698,6 @@ namespace HD2ModManager.ViewModels
 				ProfileDeploymentStatus status;
                     try
                     {
-                        await _libraryService.FlushPendingDecorationRebuildsAsync(_lifetimeCancellation.Token);
                         status = await _deploymentCoordinator.FlushAsync(_lifetimeCancellation.Token);
 				}
 				catch (Exception exception)
@@ -1759,7 +1826,6 @@ namespace HD2ModManager.ViewModels
             ModInformationKind.AdvancedUnitAnalysis => "高级分析",
             ModInformationKind.Thumbnail => "缩略图",
             ModInformationKind.UnitVersion => "版本",
-            ModInformationKind.MaintenanceAnalysis => "维护分析",
             _ => "文件",
         };
 
@@ -1896,9 +1962,25 @@ namespace HD2ModManager.ViewModels
 
         private async Task SetSelectedModsAsOptionsAsync()
         {
+            // 按钮永不禁用，所以这两条"做不了"要说出来（契约 §2.2）。按当前放置谓词
+            // 它们基本被前面蕴含、点不到 —— 但放置谓词一旦放宽，这里就会立刻变回静默 bug。
             if (!_selection.HasSelection
-                || (!_bottomBar.IsLibrarySelection && !_bottomBar.IsProfileSelection)
-                || string.IsNullOrWhiteSpace(_bottomBar.RelationshipHostId)) return;
+                || (!_bottomBar.IsLibrarySelection && !_bottomBar.IsProfileSelection))
+            {
+                _notificationService.Show(
+                    "「设为选项」只能对模组库页或配置页里的选择生效。请先在那两页里选中要变成选项的 Mod。",
+                    NotificationLevel.Info, TimeSpan.FromSeconds(8));
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(_bottomBar.RelationshipHostId))
+            {
+                _notificationService.Show(
+                    "现在没有「选项主体」：需要一个 Mod 的详情页与这一侧的库页/配置页并排打开，那个详情页就是主体。"
+                    + "并排好之后再选中要变成选项的 Mod，回来点这个按钮。",
+                    NotificationLevel.Warning, TimeSpan.FromSeconds(10));
+                return;
+            }
 
             await SetModsAsOptionsForHostAsync(
                 _bottomBar.RelationshipHostId,
@@ -1963,48 +2045,6 @@ namespace HD2ModManager.ViewModels
                 task.MarkFailed(exception.Message);
                 _notificationService.Show($"调整 Mod 父子关系失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(8));
                 return false;
-            }
-        }
-
-        private async Task AttachSelectedDecorationsAsync()
-        {
-            if (!_selection.HasSelection
-                || (!_bottomBar.IsLibrarySelection && !_bottomBar.IsProfileSelection)
-                || string.IsNullOrWhiteSpace(_bottomBar.RelationshipHostId)) return;
-
-            var host = _libraryService.Get(_bottomBar.RelationshipHostId);
-            if (host is null || host.IsDecoration || host.IsReShade) return;
-            var decorations = _selection.SelectedIds
-                .Select(_libraryService.Get)
-                .Where(mod => mod?.IsDecoration == true)
-                .Cast<HD2ModManager.Models.ModEntity>()
-                .Where(decoration => _libraryService.IsDecorationAvailableForHost(decoration.Guid, host.Guid))
-                .GroupBy(decoration => decoration.Guid, StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.First())
-                .ToArray();
-            if (decorations.Length == 0)
-            {
-                _notificationService.Show($"所选装饰没有可附加到“{host.Name}”的主体。", NotificationLevel.Warning);
-                return;
-            }
-
-            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "附加装饰", $"为“{host.Name}”附加 {decorations.Length} 个装饰");
-            task.MarkRunning("正在更新装饰状态");
-            try
-            {
-                await _libraryService.ApplyDecorationActivationBatchAsync(
-                    decorations.Select(decoration => new DecorationActivationMutation(decoration.Guid, true, host.Guid)).ToArray(),
-                    task.CancellationToken);
-                task.MarkCompleted();
-                _notificationService.Show($"已将 {decorations.Length} 个装饰附加到“{host.Name}”；后台将合并主体覆盖文件。 ");
-                _selection.Clear();
-                RefreshCurrentPage();
-            }
-            catch (OperationCanceledException) { task.MarkCanceled(); }
-            catch (Exception exception)
-            {
-                task.MarkFailed(exception.Message);
-                _notificationService.Show($"附加装饰失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(8));
             }
         }
 
@@ -2238,41 +2278,39 @@ namespace HD2ModManager.ViewModels
             }
         }
 
+        /// <summary>
+        /// 启用/停用选中的<b>选项</b>。
+        /// <para>
+        /// 名字里的 Decorations 是历史命名：这个方法过去同时处理装饰与选项，装饰包已不再支持。
+        /// 保留方法名与命令名是为了不动 XAML 里的绑定。
+        /// </para>
+        /// </summary>
         private async Task SetSelectedDecorationsEnabledAsync(bool enabled)
         {
             if (!_selection.HasSelection) return;
-            var decorations = _selection.SelectedIds
-                .Select(id => _libraryService.Get(id))
-                .Where(mod => mod?.IsDecoration == true)
-                .Cast<HD2ModManager.Models.ModEntity>()
-                .ToArray();
             var options = _selection.SelectedIds
                 .Select(id => _libraryService.Get(id))
                 .Where(mod => mod?.IsOption == true)
                 .Cast<HD2ModManager.Models.ModEntity>()
                 .ToArray();
-            if (decorations.Length == 0 && options.Length == 0) return;
+            if (options.Length == 0) return;
 
             var hostId = _selection.Scope?.StartsWith("DecorationHost:", StringComparison.Ordinal) == true
                 ? _selection.Scope["DecorationHost:".Length..]
                 : null;
-            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, enabled ? "启用装饰" : "禁用装饰", $"{decorations.Length} 个装饰 Mod");
-            task.MarkRunning(enabled ? "正在更新装饰启用状态" : "正在更新装饰禁用状态");
+            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, enabled ? "启用选项" : "禁用选项", $"{options.Length} 个选项 Mod");
+            task.MarkRunning(enabled ? "正在更新选项启用状态" : "正在更新选项禁用状态");
             try
             {
-                var result = await _libraryService.ApplyDecorationActivationBatchAsync(
-                    decorations.Select(decoration => new DecorationActivationMutation(decoration.Guid, enabled, hostId)).ToArray(),
-                    task.CancellationToken);
-                var optionMessages = new List<string>();
+                var messages = new List<string>();
                 foreach (var option in options)
                 {
-                    optionMessages.Add(hostId is null
+                    messages.Add(hostId is null
                         ? await _libraryService.SetOptionEnabledForAllAvailableHostsAsync(option.Guid, enabled, task.CancellationToken)
                         : await SetOptionEnabledForHostAsync(option.Guid, hostId, enabled, task.CancellationToken));
                 }
                 task.MarkCompleted();
-                var stateText = enabled ? "已启用选中的装饰。" : "已禁用选中的装饰。";
-                _notificationService.Show(result.ChangedDecorationCount == 0 ? "选中的装饰状态没有变化。" : stateText);
+                _notificationService.Show(messages.Count == 0 ? "没有可更新的选项。" : messages[0]);
                 _selection.Clear();
                 RefreshCurrentPage();
             }
@@ -2370,10 +2408,9 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.GameDataBrowser => new GameDataBrowserPageViewModel(_libraryService, _profileService, _derivedState.InformationCenter),
                 WorkspacePageType.GameDataArchiveDetails => new GameDataArchiveDetailsHostPageViewModel(null),
                 WorkspacePageType.CrossArmorPlan => throw new InvalidOperationException("跨护甲计划必须通过专用路由创建。"),
+                WorkspacePageType.SectionalEditor => throw new InvalidOperationException("分件编辑页必须通过专用路由创建（它要拿当前详情页当数据源）。"),
                 WorkspacePageType.MaterialPackaging => throw new InvalidOperationException("材质打包必须通过 Mod 详情创建。"),
                 WorkspacePageType.PatchResourceRepackaging => new PatchResourceRepackagingPageViewModel(_libraryService, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks),
-                WorkspacePageType.DecorationPlan => new DecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty, _backgroundTasks, _editingDecorationId),
-                WorkspacePageType.BatchDecorationPlan => new BatchDecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty, _backgroundTasks),
                 WorkspacePageType.HelmetToArmorMergePlan => new HelmetToArmorMergePlanPageViewModel(_libraryService, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks),
                 WorkspacePageType.ArmorRegistry => CreateArmorRegistryPage(),
                 _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
@@ -2388,6 +2425,41 @@ namespace HD2ModManager.ViewModels
                 _deploymentCoordinator,
                 _selection,
                 _armorDisplayFactsGate.Task);
+
+        // 选择栏"设置分类"用：当前选择属于哪个页面，就用哪个页面的分类筛选；返回选中的 Mod Guid。
+        //
+        // 按钮永不禁用（契约 §2.2），所以拿不到目标时必须当场说清为什么、下一步做什么，
+        // 不许静默 return —— 否则就是"按钮在那儿、点了没反应"。
+        // 注意：本方法只在那个 Click 里被调用一次（MainWindow.xaml.cs:307 →
+        // SelectionActionBarContent.xaml.cs:18），不是绑定属性；将来若被绑上，这段提示要挪进命令里。
+        internal (ModCategoryFilter Filter, IReadOnlyList<string> Guids)? GetCategorySelectionTarget()
+        {
+            var pageName = _bottomBar.IsProfileSelection ? "配置页" : "模组库页";
+            var filter = _bottomBar.IsLibrarySelection ? _libraryWorkspacePage?.Category
+                : _bottomBar.IsProfileSelection ? _profileWorkspacePage?.Category
+                : null;
+
+            if (filter is null)
+            {
+                _notificationService.Show(
+                    "「设置分类」只对模组库页和配置页里的选择生效。请先在那两页里选中要归类的 Mod，再点这个按钮。",
+                    NotificationLevel.Info, TimeSpan.FromSeconds(8));
+                return null;
+            }
+
+            if (!filter.IsEnabled)
+            {
+                // 出现判据用的是全局"上次记忆值"（BottomBarCoordinator.ShowSetCategory），
+                // 而这里要的是本页那份 filter 的开关，两者语义不同 —— 所以真的会出现
+                // "按钮看得见、点下去却没地方放分类"。这句就是那种情况下的解释。
+                _notificationService.Show(
+                    $"{pageName}的分类栏现在是关着的，没有地方放分类。请先在那页标题卡上打开分类开关，再回来点「设置分类」。",
+                    NotificationLevel.Info, TimeSpan.FromSeconds(10));
+                return null;
+            }
+
+            return (filter, _bottomBar.SelectedIds);
+        }
 
         private LibraryPageViewModel CreateLibraryPage()
         {
@@ -2458,21 +2530,144 @@ namespace HD2ModManager.ViewModels
             if (targets.Count == 0)
             {
                 _notificationService.Show(
-                    "库里没有 VPK 类模组（判据是目录里有转换器写的 vpk2patch.json），没有可重构的东西。",
+                    "库里没有 sectional 系列的 Mod（判据是存储形态：Sectional / Vpk2Patch），没有可重构的东西。",
                     NotificationLevel.Info, TimeSpan.FromSeconds(8));
+                return;
+            }
+
+            StartBulkVpkRebuild(targets, "一键重构", "一键重构所有 VPK 模组");
+        }
+
+        /// <summary>
+        /// 选择栏的「重构」：目标只从"当前选中 + 它的递归后代"里取。
+        /// <para>
+        /// <b>按钮不判断类型，这里才判断。</b>判定要扫盘（存储形态、后代关系），
+        /// 放进绑定属性会让每次选择变化都读一遍目录；而且"选中里没有可重构的"是正常路径，
+        /// 不是错误 —— 给一句提示就结束。
+        /// </para>
+        /// </summary>
+        private void RebuildSelection()
+        {
+            var targets = VpkBulkRebuildService.EnumerateTargets(
+                _libraryService.Snapshot,
+                _libraryService.ModsRootDirectory,
+                _bottomBar.SelectedIds);
+            if (targets.Count == 0)
+            {
+                _notificationService.Show(
+                    "当前选择里没有可重构的 Mod（含其子级）：只有 sectional 系列支持重构。",
+                    NotificationLevel.Info, TimeSpan.FromSeconds(8));
+                return;
+            }
+
+            StartBulkVpkRebuild(targets, "重构选中", "重构选中的 Mod");
+        }
+
+        /// <summary>
+        /// 按给定目标起一次批量重构建（底栏 + 并发 5）。**导入完成后也走这条**：
+        /// 导入只负责把来源摆进条目，转换与编译是另一件事。
+        /// </summary>
+        private void StartBulkVpkRebuild(IReadOnlyList<VpkBulkRebuildTarget> targets, string origin, string title)
+        {
+            if (targets.Count == 0) return;
+            if (_bulkVpkRebuildOperation is { IsRunning: true })
+            {
+                _notificationService.Show("上一批重构还在跑：等它结束，或者先在底栏里取消。",
+                    NotificationLevel.Warning, TimeSpan.FromSeconds(8));
                 return;
             }
 
             DismissToolBottomBars();
             _bulkVpkRebuildTargets = targets;
             _bulkVpkRebuildOperation = new VpkBulkRebuildBottomBarViewModel(
+                title,
+                origin,
                 targets.Count,
                 RunBulkVpkRebuildAsync,
                 ClearBulkVpkRebuildBottomBar);
             RegisterBulkVpkRebuildRow("bulk-vpk-rebuild-options", VpkBulkRebuildBottomBarRowKind.Options, insertAtRow: 1);
             RegisterBulkVpkRebuildRow("bulk-vpk-rebuild-progress", VpkBulkRebuildBottomBarRowKind.Progress);
             OnPropertyChanged(nameof(HasBulkVpkRebuildBottomBar));
-            LogService.Info($"一键重构：目标 {targets.Count} 个 VPK 类模组，默认并发 {VpkBulkRebuildService.DefaultConcurrency}。");
+            LogService.Info($"{origin}：目标 {targets.Count} 个，并发 {VpkBulkRebuildService.DefaultConcurrency}。");
+        }
+
+        /// <summary>
+        /// 导入完成后的自动重构建：**只针对这次导入的条目**。
+        /// <para>
+        /// 不开底栏、不等用户点：导入是把来源摆进条目，转换与编译是紧接着的自动一步。
+        /// 用户在底栏上再点一次"重构"不该是必经之路。
+        /// </para>
+        /// </summary>
+        private async Task RunImportRebuildAsync(IReadOnlyList<VpkBulkRebuildTarget> targets)
+        {
+            if (targets.Count == 0) return;
+
+            var concurrency = VpkBulkRebuildService.DefaultConcurrency;
+            var startedUtc = DateTime.UtcNow;
+            var task = _backgroundTasks.Enqueue(
+                BackgroundTaskKind.RebuildVpk,
+                "转换并编译新导入的 Mod",
+                $"{targets.Count} 个条目，并发 {concurrency}",
+                origin: "导入",
+                userVisibleReason: "刚导入的条目里只有来源 VPK，需要转换出 sectional 并编译出生效层。",
+                suggestedAction: "完成后重启游戏生效。",
+                retry: () => RunImportRebuildAsync(targets),
+                presentation: BackgroundTaskPresentation.Foreground);
+
+            task.MarkRunning("正在转换并编译");
+            try
+            {
+                var result = await VpkBulkRebuildService.RunAsync(
+                    targets,
+                    concurrency,
+                    (entry, done, total) => RefreshOnUiThread(() =>
+                    {
+                        task.UpdateStage($"{done}/{total}：{entry.Target.Name}（{(entry.Ok ? "完成" : "失败")}）");
+                        task.UpdateProgress(total == 0 ? null : (double)done / total);
+                    }),
+                    stage => RefreshOnUiThread(() => task.UpdateStage(stage)),
+                    task.CancellationToken).ConfigureAwait(true);
+
+                var succeeded = result.SucceededNodeIds;
+                if (succeeded.Count != 0)
+                {
+                    foreach (var nodeId in succeeded)
+                        await _libraryService.InvalidateContentNodeAsync(nodeId, CancellationToken.None).ConfigureAwait(true);
+                    await _libraryService.RefreshCommittedContentAsync(
+                        succeeded,
+                        ModContentChangeKind.Changed,
+                        alreadyInvalidated: true,
+                        cancellationToken: CancellationToken.None).ConfigureAwait(true);
+                }
+
+                var reportPath = VpkBulkRebuildService.WriteReport(
+                    result, concurrency, DateTime.UtcNow - startedUtc);
+                task.SetOutputArtifacts(_libraryService.ModsRootDirectory, reportPath);
+
+                var failures = result.Entries
+                    .Where(entry => !entry.Ok && entry.Outcome is not null)
+                    .Select(entry => $"{entry.Target.Name}：{entry.Error}")
+                    .ToArray();
+                var summary = result.Summary + "。" + (result.SucceededCount != 0 ? "重启游戏后生效。" : string.Empty);
+                if (result.SucceededCount == 0 && failures.Length != 0) task.MarkFailed(summary + " " + failures[0]);
+                else task.MarkCompleted();
+
+                RefreshOnUiThread(() => _notificationService.Show(
+                    "导入完成并已生成产物：" + summary,
+                    failures.Length == 0 ? NotificationLevel.Info : NotificationLevel.Warning,
+                    TimeSpan.FromSeconds(failures.Length == 0 ? 10 : 20)));
+            }
+            catch (OperationCanceledException)
+            {
+                task.MarkCanceled();
+            }
+            catch (Exception exception) when (exception is IOException or InvalidOperationException
+                or InvalidDataException or UnauthorizedAccessException)
+            {
+                task.MarkFailed(exception.Message);
+                RefreshOnUiThread(() => _notificationService.Show(
+                    "导入后自动转换失败：" + exception.Message, NotificationLevel.Error, TimeSpan.FromSeconds(20)));
+            }
         }
 
         private void RegisterBulkVpkRebuildRow(string sourceId, VpkBulkRebuildBottomBarRowKind kind, int? insertAtRow = null)
@@ -2505,10 +2700,10 @@ namespace HD2ModManager.ViewModels
             var startedUtc = DateTime.UtcNow;
             var task = _backgroundTasks.Enqueue(
                 BackgroundTaskKind.RebuildVpk,
-                "一键重构所有 VPK 模组",
+                operation.Title,
                 $"{targets.Count} 个模组，并发 {concurrency}",
-                origin: "模组库",
-                userVisibleReason: "用每个 Mod 文件夹里的来源 VPK 重出一遍产物，并按各自记着的配置重新生成换甲产物。",
+                origin: operation.Origin,
+                userVisibleReason: "用每个 Mod 记着的来源重出一遍 sectional 产物，并按各自记着的配置重新生成换甲产物。",
                 suggestedAction: "完成后重启游戏生效；逐条结果见本次任务的报告。",
                 retry: () => RunBulkVpkRebuildAsync(operation),
                 presentation: BackgroundTaskPresentation.Foreground);
@@ -2641,10 +2836,9 @@ namespace HD2ModManager.ViewModels
             WorkspacePageType.CrossArmorPlan => "跨护甲计划",
             WorkspacePageType.MaterialPackaging => "材质候选与输出",
             WorkspacePageType.PatchResourceRepackaging => "Patch 资源重打包",
-            WorkspacePageType.DecorationPlan => "生成装饰 Mod",
-            WorkspacePageType.BatchDecorationPlan => "批量生成装饰",
             WorkspacePageType.HelmetToArmorMergePlan => "头盔合并到盔甲并输出",
             WorkspacePageType.ArmorRegistry => "运行时护甲注册",
+            WorkspacePageType.SectionalEditor => "分件编辑",
             _ => "页面",
         };
 

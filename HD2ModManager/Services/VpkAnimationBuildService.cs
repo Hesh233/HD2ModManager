@@ -23,13 +23,18 @@ internal static class VpkAnimationBuildService
         => File.Exists(Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "runtime", "python.exe"))
         && File.Exists(Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "main.py"));
 
-    internal static async Task<string> BuildAttachmentFixAsync(string modDirectory, string outputRoot,
-        CancellationToken cancellationToken, string? configPath = null)
+    internal static async Task<NativeRuntimeCompanionPackageExport.Result> BuildAttachmentFixAsync(string modDirectory, string outputRoot,
+        CancellationToken cancellationToken, string? configPath = null, string? modelLabel = null)
     {
         var manifest = FindManifest(modDirectory);
+        var label = modelLabel ?? Path.GetFileName(modDirectory);
+        if (label.StartsWith(VpkImportService.NativeModelPrefix, StringComparison.Ordinal))
+            label = label[VpkImportService.NativeModelPrefix.Length..];
+
         var runner = Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "runtime", "python.exe");
         var script = Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "main.py");
-        if (!IsRuntimeAvailable()) throw new FileNotFoundException("缺少挂点修正配置生成器，请更新完整管理器。");
+        if (!IsRuntimeAvailable() || !File.Exists(Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "runtime_companions.py")))
+            throw new FileNotFoundException("缺少 B3 基础运行时与开关面板生成器，请更新完整管理器。");
         var gameData = SettingsService.GetGameDataFolder();
         if (string.IsNullOrWhiteSpace(gameData) || !Directory.Exists(gameData))
             throw new InvalidOperationException("请先配置 HD2 游戏 data 目录。");
@@ -42,30 +47,14 @@ internal static class VpkAnimationBuildService
             ["-X", "utf8", script, "attachment-runtime", "--manifest", manifest,
              "--model-directory", Path.GetDirectoryName(manifest)!, "--game-data", gameData,
              "--output", calibration, "--config", snapshot, "--attachment-config", ResolveAttachmentConfig(modDirectory),
-             "--mod-directory", modDirectory], cancellationToken).ConfigureAwait(false);
+             "--mod-directory", modDirectory, "--runtime-companions", "--model-label", label], cancellationToken).ConfigureAwait(false);
         if (result.ExitCode != 0) throw new InvalidOperationException(Hd2ModProcess.Explain(result, "挂点修正生成"));
         using var report = JsonDocument.Parse(await File.ReadAllTextAsync(
             Path.Combine(calibration, "attachment-build-report.json"), cancellationToken));
         if (report.RootElement.GetProperty("status").GetString() != "complete")
             throw new InvalidDataException("挂点修正骨架报告不完整。");
-        var profile = await File.ReadAllTextAsync(Path.Combine(calibration, "attachment-profile.lua"), cancellationToken);
-        var feature = LuaAddonCatalog.AttachmentFix(profile) with
-        {
-            Title = VpkImportService.NativeGripFixPrefix + Path.GetFileName(modDirectory),
-            ModGuid = new Guid(System.Security.Cryptography.MD5.HashData(
-                Encoding.UTF8.GetBytes("attachment-fix:" + Path.GetFileName(modDirectory) + ":" +
-                    report.RootElement.GetProperty("modelScale").ToString()))).ToString()
-        };
-        var exported = LuaAddonPackageExport.Export(outputRoot, feature);
-        var patches = Path.Combine(exported, "patch版");
-        foreach (var name in new[] { "attachment-fix.json", "attachment-profile.json" })
-            File.Copy(Path.Combine(calibration, name), Path.Combine(patches, name), true);
-        foreach (var path in Directory.EnumerateFiles(patches, "*.patch_0*").ToArray())
-            File.Move(path, path.Replace(".patch_0", ".patch_4", StringComparison.Ordinal));
-        foreach (var path in Directory.EnumerateFiles(Path.Combine(calibration, "native-parenting")))
-            File.Copy(path, Path.Combine(patches, Path.GetFileName(path)));
-        File.Copy(Path.Combine(calibration, "attachment-build-report.json"), Path.Combine(patches, "attachment-build-report.json"));
-        return exported;
+        cancellationToken.ThrowIfCancellationRequested();
+        return NativeRuntimeCompanionPackageExport.Export(outputRoot, calibration, label, cancellationToken);
     }
 
     internal static async Task<string> BuildAsync(
@@ -124,11 +113,7 @@ internal static class VpkAnimationBuildService
     /// <summary>转换产物里的骨架清单：优先 <c>vpk2patch/</c> 载荷目录，其次 Mod 根。</summary>
     private static string FindManifest(string modDirectory)
     {
-        foreach (var directory in new[]
-        {
-            Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName),
-            modDirectory,
-        })
+        foreach (var directory in ModNodePayloadLayout.EnumeratePayloadDirectories(modDirectory).Reverse())
         {
             if (!Directory.Exists(directory)) continue;
             var found = Directory.GetFiles(directory, "source-skeleton.json", SearchOption.TopDirectoryOnly);
@@ -239,8 +224,8 @@ internal static class VpkAnimationBuildService
         Action<string, int, int, string>? onProgress, CancellationToken cancellationToken, int? sampleCount = null, int threads = AnimationThreadCount.Default)
     {
         AnimationThreadCount.Validate(threads);
-        var payload = Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName);
-        if (!File.Exists(Path.Combine(payload, "single-skeleton.json"))) payload = modDirectory;
+        var payload = ModNodePayloadLayout.EnumeratePayloadDirectories(modDirectory).Reverse()
+            .FirstOrDefault(directory => File.Exists(Path.Combine(directory, "single-skeleton.json"))) ?? modDirectory;
         if (!File.Exists(Path.Combine(payload, "single-skeleton.json")))
             throw new InvalidDataException("单骨架模型缺少生成配置，请重新导入 VPK；不能混用双骨架模型。");
         var runner = Path.Combine(AppContext.BaseDirectory, "anim_batch_mod", "runtime", "python.exe");

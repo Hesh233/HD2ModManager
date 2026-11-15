@@ -18,8 +18,8 @@ from anim_batch_mod.processor import _calculate_world_transforms
 from anim_batch_mod.math3d import quat_rotate,quat_inverse
 from anim_batch_mod.native_skeleton import bone_name_hash
 import survey_native_weapon_grips as survey
-VERSION='1.0.18-test.detailed.7'
-DEFAULT_OUTPUT=ROOT/'outputs/grip-rollback-ragdoll-test-20261108-v7'
+VERSION='1.0.18-test.performance.9'
+DEFAULT_OUTPUT=ROOT/'outputs/grip-equipment-perf-test-20261108-v9'
 BEACON='16f397ca5f51f271'
 STOCK=('027dec442cc26a90','0b882808c6f498e8','9eb160830321bfd6')
 def sha(data):return hashlib.sha256(data).hexdigest()
@@ -140,7 +140,7 @@ def prepare_profile(profile,contacts,probes,specs,name,lines=None):
     p=copy.deepcopy(profile);lines=lines or dict(handContact=True,stockPolicy=True,components=True)
     p['testRepairs']=dict(enabled=True,version=VERSION,modelLabel=name,lines=lines,contacts=contacts,poseProbes=probes,
         anchorKind='knuckle-contact-proxy',maxReachCorrection=.025,notProduction=True)
-    p['variant']+='-TEST-DETAILED-THREE-LINES';p['packageName']=f'{name}-握持回退与布娃娃骨图排查-测试用详细日志-{VERSION}.zip'
+    p['variant']+='-TEST-DETAILED-THREE-LINES';p['packageName']=f'{name}-握持装备追加修复-测试用低负载日志-{VERSION}.zip'
     p['logging']=dict(compact=False,detailed=True,recordSeconds=3600,maxBytes=536870912,segmentBytes=16777216,exceptionIntervalSeconds=.25)
     p['logSeconds']=.25;p['maxRecords']=1000000
     p['sidearmDiagnostics']=dict(p.get('sidearmDiagnostics',{}),enabled=True,intervalSeconds=.25,maxSamplesPerPath=20000,
@@ -152,13 +152,41 @@ def prepare_profile(profile,contacts,probes,specs,name,lines=None):
         for id,spec in specs.items():p['allowedConsumers'][id]=True;p['consumers'][id]=copy.deepcopy(spec)
     return p
 
+def add_equipment_specs(specs,fixtures,provenance):
+    new=load(ROOT/'outputs/grip-equipment-followup-20261108/new-equipment-fixtures.json')
+    fixtures.update(new)
+    def make(rid,kind,node_names,root_name,**kwargs):
+        f=fixtures[rid];nodes=[]
+        for name in node_names:
+            h=bone_name_hash(name);i=f['hashes'].index(h)
+            nodes.append(dict(name=name,index=i,parent=f['parents'][i]))
+        spec=dict(kind=kind,resource=rid,count=f['count'],nodes=nodes,
+            root=f['hashes'].index(bone_name_hash(root_name)),order=2,verifiedComponent=True,**kwargs)
+        specs[rid]=spec;provenance[rid]=dict(source='readonly original game Unit fixture',kind=kind)
+        return spec
+    make('b98f2b3d1bde24b0','weapon_magazine',['skeleton','boss','grenade_1','game_mesh'],'skeleton',repairFamily='HMG_LAS')
+    make('bf7082f0287c254f','weapon_magazine',['skeleton','root','boss','chain_01','bullet_anim','game_mesh'],'root',repairFamily='HMG_LAS')
+    make('9c22a90da9c79de3','weapon_magazine',['game_mesh','g_mag'],'game_mesh',repairFamily='HMG_LAS')
+    for rid in ('68513d59bafa8c7a','7f19d05cd188c768'):
+        make(rid,'weapon_rigid_ammo',['game_mesh'],'game_mesh',heldAmmo={
+            '006e44327bb953fe':['shell','ammo_casing'],'02eecd0b1fa49630':['attach_ammo','attach_mag']})
+    for rid in ('9b75217d8312dd67','14368dc8784220b0'):
+        make(rid,'held_rigid_item',['game_mesh'],'game_mesh')
+    make('51f50d6321f52f3d','weapon',['skeleton','boss','IK_right','game_mesh'],'boss')
+    f=fixtures.get('411c4fd07740a7dd')
+    if f:
+        spec=make('411c4fd07740a7dd','weapon_grip',['skeleton','IK_left','game_mesh'],'skeleton')
+        spec['linkRootIndex']=2;spec['linkRootHash']=f['hashes'][2]
+    return specs
+
 def build(manager,out,name,specs,fixtures,provenance,lines):
+    add_equipment_specs(specs,fixtures,provenance)
     base=manager/f'test-library/[骨骼挂点修正]{name}'
     original=load(base/'attachment-profile.json');contacts,probes=contact_rows(manager,name,original)
     p=prepare_profile(original,contacts,probes,specs,name,lines)
     beacon,beacon_spec=beacon_configuration(fixtures[BEACON])
     p['testRepairs']['beacon']=beacon
-    p['testRepairs']['logTag']='ROLLBACK_RAGDOLL_V7'
+    p['testRepairs']['logTag']='EQUIPMENT_PERF_V9'
     p['testRepairs']['reloadParts']=dict(enabled=lines['components'],families=list(RELOAD_WEAPONS),resources=list(RELOAD_PARTS))
     p['testRepairs']['sg225Parts']=dict(enabled=lines['components'],families=list(SG225),extraResources=list(SG225_EXTRA),muzzleResources=list(SG225_MUZZLES))
     p['testRepairs']['aimDiagnostics']=dict(enabled=True,intervalSeconds=.05,readOnly=True)
@@ -193,12 +221,27 @@ def build(manager,out,name,specs,fixtures,provenance,lines):
         skinSurfaceObserved=False)
 
     p['testRepairs']['reverseExperimentRemoved']=True
+    p['leftGrip']['weaponTargets']['80f1a156d9fa1e36']['leftPolicy']='always'
+    p['leftGrip']['intent'].setdefault('weaponThresholds',{})['80f1a156d9fa1e36']=dict(enterMetres=.18,leaveMetres=.22)
+    det='51f50d6321f52f3d';f=fixtures[det]
+    p['leftGrip']['weaponTargets'][det]=dict(rootName='boss',linkNodes=['skeleton','boss'],leftPolicy='none',rootToIKRight=f['matrices'][21])
+    p['gripFixes']['sidearms'][det]=True;p['gripFixes']['sidearms']['64cdb52aca152be1']=True
+    rigid={}
+    for rid in ('9b75217d8312dd67','14368dc8784220b0'):
+        spec=specs[rid];node=next(n for n in spec['nodes'] if n['name']=='game_mesh')
+        rigid[rid]=dict(root=node,linkMetres=.02,linkDegrees=2)
+    p['testRepairs']['heldEquipment']=dict(enabled=True,rigidRight=rigid,nativeRightFallback={'64cdb52aca152be1':dict(count=24)})
+
     p['testRepairs']['bodyDiagnostics']=dict(enabled=True,intervalSeconds=.25,
         bypassNoAnimationStateMachine=True,requireObservedStateMachinePresent=True,readOnly=True,ragdollStateDirectlyObserved=False,
         skinStages=['next_render_input','final_output','inactive_after_restore','native_only_observer'],
         maxUnownedModels=6,unownedProbeRadius=4,
         pairs=copy.deepcopy([pair for pair in p['sync']['pairs'] if '_finger' not in pair['name']]),
         stages=['update_input','next_render_input','before_write','after_body_sync','final_output','inactive_after_restore','native_only_observer'])
+    for driver in ('l_thigh','l_knee','l_foot','r_thigh','r_knee','r_foot'):
+        x=source_by_driver[driver]
+        p['testRepairs']['bodyDiagnostics']['pairs'].append(dict(name=driver,
+            source=tracking_node(x['name'],x['hash']),native=tracking_node(driver,bone_name_hash(driver))))
     bone_rows=resources(base/'9ba626afa44a3aa3.patch_1')
     bones=BonesData.parse(next(data for _,typ,data in bone_rows if typ==BONE_TYPE_ID))
     names_by_hash=dict(zip(bones.hashes,bones.names));names_by_hash.update({x['hash']:x['name'] for x in source_meta['bones']})
@@ -206,8 +249,20 @@ def build(manager,out,name,specs,fixtures,provenance,lines):
     skin_rows={}
     for part in ('vpk','overwrite'):
         for row in load(skin_audit_root/f'{name}-skin-{part}.json')['rows']:skin_rows[row['resource']]=row['weightedNodes']
-    p['variant']+='-ROLLBACK-RAGDOLL-V7'
+    # Minimal entry roots + their Source ancestors, never native joints.
+    entry_nodes=[pair['source'] for pair in p['sync']['pairs'] if pair['name'] in ('neck','l_clavicle','r_clavicle')]
+    p['testRepairs']['sourceFkRefresh']=dict(enabled=True,levels=[copy.deepcopy(entry_nodes)],maxPasses=2,
+        stages=['after_body_sync','after_restore'],positionTolerance=.0002,basisTolerance=.0002,
+        sameLocalValuesOnly=True,nativeBonesReadOnly=True,entryRootsOnly=True)
+    p['testRepairs']['bodyDiagnostics']['enabled']=False
+    p['testRepairs']['bodyDiagnostics']['bypassNoAnimationStateMachine']=False
+    p['testRepairs']['aimDiagnostics']['enabled']=False;p['testRepairs']['gripTracking']['enabled']=False
+    p['testRepairs']['dualRagdollOriginal']=True;p['testRepairs']['performanceTest']=True
+    p['logging'].update(compact=True,detailed=False,maxBytes=8*1024*1024)
+    p['logSeconds']=1;p['sidearmDiagnostics']['enabled']=False;p['diagnostics']['consumers']=False
+    p['variant']+='-EQUIPMENT-PERF-V9'
     p['allowedConsumers'][BEACON]=True;p['consumers'][BEACON]=beacon_spec
+    for rid, spec in specs.items():p['allowedConsumers'][rid]=True;p['consumers'][rid]=copy.deepcopy(spec)
     p['sidearmDiagnostics']['resources'][BEACON]=True
     model_units={}
     for part in ('vpk2patch','Overwrite'):
@@ -244,9 +299,9 @@ def build(manager,out,name,specs,fixtures,provenance,lines):
     struct.pack_into('<Q',patch,32,len(patch));struct.pack_into('<I',patch,160,len(payload))
     parsed=TocArchive.parse_parts(patch,load_external_data=False);assert len(parsed.entries)==1
     assert bytes(next(iter(parsed.entries.values())).toc_data)==payload
-    manifest=load(base/'manifest.json');manifest.update(Guid=str(uuid.uuid4()),Name=f'[测试用·详细日志·握持回退与布娃娃骨图排查]{name}',
-        Description=f'TEST ONLY / DETAILED LOG {VERSION}. 撤回V6原生右臂对齐，恢复V4握持；只读全身/实际蒙皮骨/动画状态/帧交接诊断，未宣称布娃娃拉伸已修复；SG225配件覆盖/缓存修复；只读瞄准同步排查，不宣称高度修好；保留已验收朝向及战备球、原模型/动画/VRD。日志4Hz完整矩阵及10Hz枪坐标/手指/模型双阶段观测，1小时/512MiB上限，16MiB分段。不可与原挂点包同时启用。')
-    note=f'''# {name} P/40-K俯仰握持排查【测试用 / 详细日志版】\n\n版本：{VERSION}。回退与诊断版：V6原生右臂对齐已移除，恢复V4握持；新增全身关键骨、实际蒙皮骨和动画状态分阶段观测；没有全局缩放或物理改写，布娃娃拉伸未宣称修复。\n\n三线开关：{json.dumps(lines,ensure_ascii=False)}\n1. 左右手：骨架掌心代理校准，手腕朝向取同一avatar原生post-IK手；左手重定基到最终枪握点。不是网格掌面拟合。\n2. P-44/P-35/GP-20按双手持握代理处理，换弹/收枪仍有原生接触门禁。\n3. 真实弹匣/瞄具等图签名覆盖与枪→配件刷新，含AR-61标准弹匣89cce4d15db88aa8；不写配件local、不重挂。\n4. 保留已验收战备球修复。追加SG225无bullet_01弹匣和已核对的刚性部件；缓存根远但网格近时允许受限刷新。新增20Hz相机/肩根/锁骨只读同步日志；本版不盲改手臂长度或已正确右手方向。追加重机枪弹链箱、激光电池/散热器的精确布局与多锚点缓存刷新；新增最终接触日志，补偿前后误差分开。\n\n只使用与本模型名称匹配的一个测试包。保留同模型【原比例模型】、【原比例混合动画】及原物理包。停用原【骨骼挂点修正】和其它同名测试挂点包，再导入本ZIP并启用；按原配套顺序置于模型/动画后。完全重启游戏。不要同时启用test01与test06挂点。\n\n日志：%APPDATA%\\Arrowhead\\Helldivers2\\hd2_grip_TEST_DETAILED_{name}_ROLLBACK_RAGDOLL_V7_日期时间.partNN.log。保留所有part。不会覆盖hd2_grip_b23_compact.log。完整矩阵约4Hz；新增枪坐标、指根和模型双阶段约10Hz，最多1小时/512MiB，每16MiB分段；达到上限只停记录，不停握持。测试版会增加CPU/磁盘开销。\n\n检查加载版本{VERSION}，日志行含TEST_ONLY_DETAILED、testOnly=true。记录before_write、after_right_ik、after_mount_refresh、final_output、左右接触误差、程序腕骨节点/可见模型姿态、配件原生父级/刷新阶段。GPU skin矩阵与VRD内部状态未直接观测，不伪称通过。\n\n重点：P/40-K依次左右转动、仅上下转动、单持和双手瞄准、换弹切枪；同帧test_grip_tracking_probe含IK_right/腕/指根/模型与相机。两阶段为final_output和next_render_input，仍未读取GPU皮肤矩阵。本版撤回原生右臂写入；新增test_body_lifecycle_probe与test_actor_lifecycle；记录update_input/next_render_input/before_write/after_body_sync/final_output；已观测有动画状态机后确认丢失时仅恢复旧写入，不继续握持/上身驱动；临时布娃娃状态仍待日志证实；保留其它武器与所有已验收修复。回滚：停用本测试包、启用原挂点包并重启游戏；模型/动画/物理无需替换。\n'''
+    manifest=load(base/'manifest.json');manifest.update(Guid=str(uuid.uuid4()),Name=f'[测试用·低负载日志·装备追加修复]{name}',
+        Description=f'TEST ONLY / LOW-LOAD LOG {VERSION}. 保持V6原生对齐撤回；修复Source父骨写入/恢复后的入口子树FK缓存，仅重提交当前local值，不改骨长/原生骨；已验收常规握持高度保持；追加JAR5前握把、榴弹/灭菌器装填件、C4/炸药及导弹标记器；本版追加待实机验收，保留朝向及战备球、原模型/动画/VRD。默认关闭全身/相机/蒙皮矩阵与旧布娃娃门禁，约1Hz摘要，8MiB上限。不可与原挂点包同时启用。')
+    note=f'''# {name} 装备追加修复【测试用 / 低负载日志版】\n\n版本{VERSION}。不是已实机通过的生产包。\n\n保留已验收副武器/主武器左手握持、Source颈肩入口FK刷新。双骨骼布娃娃恢复原处理：关闭新增FSM丢失门禁及重型矩阵观测，motionroot/hips/spine1的布娃娃扩展刷新不再启用。原生r_hand对齐仍撤回。\n\n本版追加JAR5主武器双手策略/独立前握把真实根识别；GL21弹链、GL28链带、火焰/灭菌器罐体及受限已装填榴弹图刷新；C4引爆器按手枪右手逻辑，炸药/C4手中刚性物品受限跟随；导弹标记器无IK_right时仅对精确24节点布局采用原生右手参考。不会修改抛出物、枪/配件local或链接。\n\n停用旧同名挂点测试包，仅启用本模型ZIP，保留模型、动画、物理，完全重启游戏。\n\n日志为hd2_grip_TEST_PERF_{name}_EQUIPMENT_PERF_V9_日期时间.partNN.log，行TEST_ONLY_PERF，约1Hz摘要、8MiB上限。默认没有逐帧大矩阵。本合集重打包源码不是安装ZIP。\n\n单骨骼布娃娃是独立检查线，不使用本双骨骼挂点Lua；当前仅确认单骨骼bind/动画已改比例，而原生Havok ragdoll_profile未适配，尚未修好。\n'''
     artifact={};companions={}
     zipname=p['packageName']
     with zipfile.ZipFile(out/zipname,'w',zipfile.ZIP_DEFLATED,compresslevel=6) as z:
@@ -256,7 +311,7 @@ def build(manager,out,name,specs,fixtures,provenance,lines):
             file='9ba626afa44a3aa3.patch_1'+suffix;data=(base/file).read_bytes();companions[file]=sha(data);z.writestr(file,data);(folder/file).write_bytes(data)
         z.writestr('attachment-profile.json',json.dumps(p,ensure_ascii=False,indent=2))
         z.writestr('attachment-fix.json',(base/'attachment-fix.json').read_bytes())
-        z.writestr('manifest.json',json.dumps(manifest,ensure_ascii=False,indent=2));z.writestr('测试用详细日志版说明.md',note)
+        z.writestr('manifest.json',json.dumps(manifest,ensure_ascii=False,indent=2));z.writestr('测试用低负载日志版说明.md',note)
     with zipfile.ZipFile(out/zipname) as z:
         assert z.testzip() is None
         for file,h in companions.items():assert sha(z.read(file))==h
@@ -265,7 +320,7 @@ def build(manager,out,name,specs,fixtures,provenance,lines):
     (folder/'hd2attachmentfix-B23.lua').write_bytes(body);(folder/'B23-profile.json').write_text(json.dumps(p,ensure_ascii=False,indent=2),encoding='utf-8')
     (folder/'container-header.bin').write_bytes(header)
     (folder/'native-parenting.json').write_text(json.dumps(dict(files=[dict(name=n,sha256=h) for n,h in companions.items()]),indent=2),encoding='utf-8')
-    (folder/'测试用详细日志版说明.md').write_text(note,encoding='utf-8')
+    (folder/'测试用低负载日志版说明.md').write_text(note,encoding='utf-8')
     artifact=dict(model=name,package=str(out/zipname),sha256=sha((out/zipname).read_bytes()),luaSha256=sha(body),avatarNodes=p['avatar']['count'],models=len(p['models']),companionHashes=companions,testVersion=VERSION,
         newComponents=len(specs),repairLines=lines,gameTested=False,gameDeployed=False)
     (folder/'package-validation.json').write_text(json.dumps(artifact,ensure_ascii=False,indent=2),encoding='utf-8')
@@ -285,6 +340,7 @@ def main():
     specs,fixtures,provenance=component_inventory(args.manager_root,ids)
     add_sg225_components(specs,fixtures,provenance)
     add_reload_components(specs,fixtures,provenance)
+    add_equipment_specs(specs,fixtures,provenance)
     (args.output/'verified-component-specs.json').write_text(json.dumps(specs,indent=2),encoding='utf-8')
     (args.output/'equipment-fixtures.json').write_text(json.dumps(fixtures,indent=2),encoding='utf-8')
     (args.output/'component-provenance.json').write_text(json.dumps(provenance,indent=2),encoding='utf-8')

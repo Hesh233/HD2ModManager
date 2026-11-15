@@ -1,7 +1,7 @@
 """Historical full regressions plus opt-in three-line test package regressions."""
 from pathlib import Path
 import json,sys,hashlib
-ROOT=Path(__file__).resolve().parents[1];OUT=ROOT/'outputs/grip-rollback-ragdoll-test-20261108-v7'
+ROOT=Path(__file__).resolve().parents[1];OUT=ROOT/'outputs/grip-equipment-perf-test-20261108-v9'
 sys.path.insert(0,str(ROOT.parents[1]));sys.path.insert(0,str(ROOT/'outputs/native-v34-b23-integrated-20261105/manager-1.0.7'))
 import lz4;sys.modules['utils.lz4_311']=lz4
 import audit_test07_sidearm_111 as old
@@ -20,10 +20,14 @@ def main():
  prior=prior[:prior.rindex('\nreturn {status=')]
  # Original real_start also supports stock weapon resources with only boss.
  prior=prior.replace("weaponRoot=gun.names[hash_name('root')];under=", "weaponRoot=gun.names[hash_name('root')] or gun.names[hash_name('boss')];under=")
- h+='\nreturn (function()\nlocal weapon_assets='+lua(assets)+'\nlocal test_component_specs='+lua(spec)+'\nlocal test_beacon_spec='+lua(beacon_spec)+'\nlocal test_repair_configuration='+lua(config)+'\n'+prior+'\n'+(tests/'native_grip_three_line_test_harness.lua').read_text(encoding='utf-8-sig')+'\n'+(tests/'native_grip_beacon_test_harness.lua').read_text(encoding='utf-8-sig')+'\n'+(tests/'native_grip_sg225_aim_test_harness.lua').read_text(encoding='utf-8-sig')+'\n'+(tests/'native_grip_reload_parts_test_harness.lua').read_text(encoding='utf-8-sig')+'\n'+(tests/'native_grip_tracking_test_harness.lua').read_text(encoding='utf-8-sig')+'\n'+(tests/'native_grip_lifecycle_test_harness.lua').read_text(encoding='utf-8-sig')+'\nreturn {status="PASS_PENDING_GAME_TEST",checks=checks,weapons15=result15,logs=logs}\nend)()'
+ h+='\nreturn (function()\nlocal weapon_assets='+lua(assets)+'\nlocal test_component_specs='+lua(spec)+'\nlocal test_beacon_spec='+lua(beacon_spec)+'\nlocal test_repair_configuration='+lua(config)+'\n'+prior+'\n'+(tests/'native_grip_three_line_test_harness.lua').read_text(encoding='utf-8-sig')+'\n'+(tests/'native_grip_beacon_test_harness.lua').read_text(encoding='utf-8-sig')+'\n'+(tests/'native_grip_sg225_aim_test_harness.lua').read_text(encoding='utf-8-sig')+'\n'+(tests/'native_grip_reload_parts_test_harness.lua').read_text(encoding='utf-8-sig')+'\n'+(tests/'native_grip_tracking_test_harness.lua').read_text(encoding='utf-8-sig')+'\n'+(tests/'native_grip_lifecycle_test_harness.lua').read_text(encoding='utf-8-sig')+'\n'+(tests/'native_grip_source_fk_test_harness.lua').read_text(encoding='utf-8-sig')+'\n'+(tests/'native_grip_equipment_v9_harness.lua').read_text(encoding='utf-8-sig')+'\nreturn {status="PASS_PENDING_GAME_TEST",checks=checks,weapons15=result15,logs=logs}\nend)()'
  source=(ROOT/'HD2PhysBoneCompat/src/native_grip_transfer_test.lua').read_text(encoding='utf-8-sig')
  result=plain(run_harness(p,f,h,source=source));logs=result.pop('logs',None)
  if logs:(OUT/'full-runtime-regression.log').write_text('\n'.join(logs),encoding='utf-8')
+ if '--quick' in sys.argv:
+  result.update(gameTested=False,negativeControlsNotRun=True)
+  (OUT/'quick-runtime-regression.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
+  print(json.dumps(result,ensure_ascii=False,indent=2));return
  controls={}
  for label,broken,expected in [
   ('markerOrientation',source.replace('test.lines and test.lines.handContact','test.lines and false',1),'TEST right consumed weapon marker orientation'),
@@ -82,6 +86,18 @@ def main():
   except Exception as e:
    assert expected in str(e),str(e);controls[label]=True
   else:raise AssertionError('Missing negative control '+label)
+ broken=source.replace('local policy=test and test.sourceFkRefresh','local policy=false',1)
+ assert broken!=source
+ try:run_harness(p,f,h,source=broken)
+ except Exception as e:
+  assert 'TEST Source FK refresh failed' in str(e),str(e);controls['sourceFkRefresh']=True
+ else:raise AssertionError('Missing Source FK refresh negative control')
+ broken=source.replace('if item.spec.linkRootIndex then','if false then',1)
+ assert broken!=source
+ try:run_harness(p,f,h,source=broken)
+ except Exception as e:
+  assert 'TEST V9 JAR actual foregrip not selected' in str(e),str(e);controls['jarForegripRoot']=True
+ else:raise AssertionError('Missing JAR foregrip negative control')
  result.update(negativeControls=controls,status='PASS_PENDING_GAME_TEST',sourceSha256=hashlib.sha256(source.encode()).hexdigest(),gameTested=False)
  (OUT/'full-runtime-regression.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8');print(json.dumps(result,ensure_ascii=False,indent=2))
 if __name__=='__main__':sys.stdout.reconfigure(encoding='utf-8');main()

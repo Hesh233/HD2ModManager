@@ -699,7 +699,7 @@ def model_main(argv=None):
     a=p.parse_args(argv);print(json.dumps(prepare_native_model(a.manifest,a.model_directory,a.config,a.check_only)));return 0
 
 
-def build_transfer_package(manifest_path, model_directory, game_data, output, config_path=None, attachment_config=None, mod_directory=None):
+def build_transfer_package(manifest_path, model_directory, game_data, output, config_path=None, attachment_config=None, mod_directory=None, runtime_companions=False, model_label=None):
     """Build a model-specific profile and its required Avatar/Bones companion for the GUI."""
     import json,hashlib,tomllib
     from pathlib import Path
@@ -749,6 +749,26 @@ def build_transfer_package(manifest_path, model_directory, game_data, output, co
         apply_grip_fixes(profile)
         avatar,bones,right_rig=sidearm_right_outputs(avatar,bones,profile)
         rig['rightSidearm']=right_rig
+        if runtime_companions:
+            from .runtime_companions import compile_dual_fp_graph, prepare_option_profile, FP_RESOURCE, VERSION as COMPANION_VERSION
+            _,fp_entry=native.resolve_inline(index,store,int(FP_RESOURCE,16),UNIT_TYPE_ID,cache)
+            fp_unit=UnitData.parse(fp_entry.toc_data)
+            _,fp_bone_entry=native.resolve_inline(index,store,fp_unit.bones_ref,BONE_TYPE_ID,cache)
+            fp_manifest=copy.deepcopy(manifest)
+            linked=discovery.get('fpArmTargets',{})
+            fp_manifest['_fpPreferredArmTargets']={role:rid for rid,role in linked.items()}
+            fp_raw,fp_contract=compile_dual_fp_graph(bytes(fp_entry.toc_data),bytes(fp_bone_entry.toc_data),model_units,fp_manifest,discovery['armModelRoles'],model_label or Path(mod_directory or model_directory).name)
+            from .attachment_repair_profile import apply_repair_policy
+            def repair_native_unit(rid):
+                # Read only the current native weapon bind; never copy its external GPU/stream.
+                _,entry=index.resolve(int(rid,16),UNIT_TYPE_ID)
+                return UnitData.parse(entry.toc_data)
+            apply_repair_policy(profile,manifest,bytes(unit_entry.toc_data),bytes(bone_entry.toc_data),model_units,avatar,repair_native_unit)
+            prepare_option_profile(profile,manifest,settings,fp_contract)
+            fp_folder=output/'first-person-parenting';fp_folder.mkdir()
+            fp_writer=InlinePatchWriter(TocArchive(0,bytes(56),{}),fp_folder/'9ba626afa44a3aa3.patch_6',{UNIT_TYPE_ID:1},standalone=True)
+            revised=copy.deepcopy(fp_entry);revised.toc_data=bytearray(fp_raw);fp_writer.append(revised);fp_writer.finish()
+            (output/'first-person-source-profile.json').write_text(json.dumps(fp_contract,ensure_ascii=False,indent=2),encoding='utf8')
         filter_attachment_profile(profile,settings)
         (output/'attachment-fix.json').write_text(json.dumps(settings,ensure_ascii=False,indent=2),encoding='utf-8')
         (output/'source-skeleton.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf8')
@@ -771,6 +791,7 @@ def build_transfer_package(manifest_path, model_directory, game_data, output, co
             modelScale=manifest.get('modelScale'),modelResources=sorted(model_units),modelDiscovery=discovery,
             avatarNodes=profile['avatar']['count'],weaponTargets=len(targets),attachments=len(profile['attachments'])+int(profile['rightAttachmentEnabled']),attachmentMode=profile['attachmentMode'],attachmentConfigSha256=hashlib.sha256((output/'attachment-fix.json').read_bytes()).hexdigest(),
             headDescendants=False,rig=rig,attachmentContract=contract,files=[dict(name=p.name,sha256=hashlib.sha256(p.read_bytes()).hexdigest()) for p in files])
+        if runtime_companions: report['runtimeCompanions']=dict(version=COMPANION_VERSION,identity=profile['optionSwitches']['identity'],modelIdentity=profile['optionSwitches']['modelIdentity'],firstPersonSourceVersion=fp_contract['version'],optionCount=len(profile['optionSwitches']['specs']),fpAvatarCount=fp_contract['avatar']['count'],nativeFpCount=63,fpAnimationChannels=47,gameTested=False,profileFiles=[dict(name=name,sha256=hashlib.sha256((output/name).read_bytes()).hexdigest()) for name in ('attachment-profile.json','attachment-profile.lua','first-person-source-profile.json','attachment-fix.json')],fpFiles=[dict(name=p.name,sha256=hashlib.sha256(p.read_bytes()).hexdigest()) for p in sorted(fp_folder.iterdir())])
         (output/'attachment-build-report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf8')
         return report
     finally:index.close()
@@ -780,9 +801,9 @@ def main(argv=None):
     import argparse,json
     p=argparse.ArgumentParser(description='Compile model-specific B23 attachment runtime configuration')
     for name in ('manifest','model-directory','game-data','output'):p.add_argument('--'+name,required=True)
-    p.add_argument('--config');p.add_argument('--attachment-config');p.add_argument('--mod-directory')
+    p.add_argument('--config');p.add_argument('--attachment-config');p.add_argument('--mod-directory');p.add_argument('--runtime-companions',action='store_true');p.add_argument('--model-label')
     a=p.parse_args(argv)
-    print(json.dumps(build_transfer_package(a.manifest,a.model_directory,a.game_data,a.output,a.config,a.attachment_config,a.mod_directory),ensure_ascii=False))
+    print(json.dumps(build_transfer_package(a.manifest,a.model_directory,a.game_data,a.output,a.config,a.attachment_config,a.mod_directory,a.runtime_companions,a.model_label),ensure_ascii=False))
     return 0
 
 # Canonical engine mounts supported by the existing B23 Source attachment adapter.
@@ -918,7 +939,7 @@ def collect_model_units(manifest,model_directory,mod_directory=None):
     folders=[model_directory]
     overwrite=Path(mod_directory)/'Overwrite' if mod_directory else None
     if overwrite and overwrite.is_dir():folders += [overwrite]+sorted(p for p in overwrite.rglob('*') if p.is_dir())
-    models={};source_seen=set();skipped=[];target_ids=set();arm_roles={}
+    models={};source_seen=set();skipped=[];target_ids=set();arm_roles={};fp_targets={}
     for folder in folders:
         is_source=folder==model_directory
         section_file=folder/'sections.json'
@@ -957,10 +978,12 @@ def collect_model_units(manifest,model_directory,mod_directory=None):
                     continue
                 models[resource]=parsed
                 role=row.get('slot')
-                if role in ('LeftArm','RightArm'):arm_roles[resource]=role
+                if role in ('LeftArm','RightArm'):
+                    arm_roles[resource]=role
+                    if source_id in body_ids:fp_targets[resource]=role
                 if is_source:source_seen.add(file_id)
                 else:target_ids.add(resource)
     if body_ids-source_seen:
         raise ValueError('Missing verified Source body Units: '+','.join(f'{i:016x}' for i in sorted(body_ids-source_seen)))
     return models,dict(sourceBodies=len(source_seen),targetBodies=sorted(target_ids),skippedUnits=skipped,
-        policy='verified_source_carriers_only',sourceOwnershipGate=True,armModelRoles=arm_roles)
+        policy='verified_source_carriers_only',sourceOwnershipGate=True,armModelRoles=arm_roles,fpArmTargets=fp_targets)

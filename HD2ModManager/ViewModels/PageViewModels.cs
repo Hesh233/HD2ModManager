@@ -1,5 +1,6 @@
 using System;
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
@@ -217,7 +218,7 @@ namespace HD2ModManager.ViewModels
             var gameData = SettingsService.GetGameDataFolder();
             if (string.IsNullOrWhiteSpace(gameData) || !Directory.Exists(gameData))
             {
-                System.Windows.MessageBox.Show("请先配置有效的 Game Data 文件夹。", "一键修复", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+                HD2ModManager.Views.AppDialog.Show("请先配置有效的 Game Data 文件夹。", "一键修复", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
                 return;
             }
             IsRepairingOutdatedMods = true;
@@ -226,29 +227,44 @@ namespace HD2ModManager.ViewModels
             var bridge = new OperationProgressBridge(new BackgroundTaskOperationTarget(task), operationId, SynchronizationContext.Current ?? new SynchronizationContext());
             try
             {
-                task.MarkRunning("正在重建 GameData 资产索引");
+                task.MarkRunning("正在检查 GameData 资产索引");
                 var archiveHashes = await CoreServices.CreateFileSystemArchiveHashesProvider(_paths)
                     .GetArchiveHashesJsonAsync(task.CancellationToken);
                 var assetIndex = CoreServices.CreateAssetArchiveIndexService(_paths);
-                var lastProgressUpdate = 0L;
-                var indexProgress = new Progress<IndexBuildProgress>(item =>
+                // 索引指纹包含游戏 build 号与 GameData 文件元数据：与当前一致就直接沿用已建好的索引，
+                // 不再每次整库重扫；游戏更新 / 校验改了文件时才重建。
+                var existingStatus = await assetIndex.GetIndexStatusAsync(gameData, archiveHashes, task.CancellationToken);
+                if (existingStatus.IsCurrent)
                 {
-                    var now = Environment.TickCount64;
-                    if (now - Interlocked.Read(ref lastProgressUpdate) < 200 && item.Current < item.Total) return;
-                    Interlocked.Exchange(ref lastProgressUpdate, now);
-                    task.UpdateStage($"正在重建 GameData 资产索引 {item.Current}/{item.Total}");
-                    task.UpdateProgress(item.Total <= 0 ? null : (double)item.Current / item.Total);
-                });
-                await Task.Run(() => assetIndex.BuildOrRebuildAsync(gameData, archiveHashes, indexProgress, task.CancellationToken).AsTask(), task.CancellationToken);
-                var indexStatus = await assetIndex.GetIndexStatusAsync(gameData, archiveHashes, task.CancellationToken);
-                if (!indexStatus.IsCurrent)
-                    throw new InvalidOperationException("GameData 资产索引重建后仍不可用或已过时。");
+                    task.UpdateStage("索引与当前游戏版本一致，沿用已有索引");
+                    LogService.Info("一键修复：资产索引与当前游戏版本一致，跳过重建。");
+                }
+                else
+                {
+                    task.MarkRunning("正在重建 GameData 资产索引");
+                    var lastProgressUpdate = 0L;
+                    var indexProgress = new Progress<IndexBuildProgress>(item =>
+                    {
+                        var now = Environment.TickCount64;
+                        if (now - Interlocked.Read(ref lastProgressUpdate) < 200 && item.Current < item.Total) return;
+                        Interlocked.Exchange(ref lastProgressUpdate, now);
+                        task.UpdateStage($"正在重建 GameData 资产索引 {item.Current}/{item.Total}");
+                        task.UpdateProgress(item.Total <= 0 ? null : (double)item.Current / item.Total);
+                    });
+                    await Task.Run(() => assetIndex.BuildOrRebuildAsync(gameData, archiveHashes, indexProgress, task.CancellationToken).AsTask(), task.CancellationToken);
+                    var indexStatus = await assetIndex.GetIndexStatusAsync(gameData, archiveHashes, task.CancellationToken);
+                    if (!indexStatus.IsCurrent)
+                        throw new InvalidOperationException("GameData 资产索引重建后仍不可用或已过时。");
 
-                await Task.Run(() => _library.RefreshAssetSummariesAsync(task.CancellationToken), task.CancellationToken);
+                    await Task.Run(() => _library.RefreshAssetSummariesAsync(task.CancellationToken), task.CancellationToken);
+                }
 
                 task.UpdateStage("正在读取 Unit 版本并检测过时 Mod");
                 var nodes = new List<ModNode>();
                 var unreadableCount = 0;
+                // 音效 Mod 自带整库 Wwise bank，游戏更新后缺条目会连原版声音一起丢；与 Unit 版本检测互不相干，单独检测。
+                var audioService = new HD2ModCore.Audio.AudioBankRepairService(new HD2ModCore.Audio.GameDataOfficialBankSource(gameData));
+                var audioNodes = new List<(ModNode Node, string Directory, int SafeCount, int UnsafeCount)>();
                 var candidates = _library.Snapshot.Nodes.Values
                     .OrderBy(node => node.Metadata.Name, StringComparer.OrdinalIgnoreCase)
                     .ToArray();
@@ -271,33 +287,99 @@ namespace HD2ModManager.ViewModels
                     {
                         unreadableCount++;
                     }
+
+                    try
+                    {
+                        var nodeDirectory = Path.Combine(_library.ModsRootDirectory, candidate.RelativePath);
+                        var audio = await audioService.InspectDirectoryAsync(nodeDirectory, task.CancellationToken);
+                        if (audio.IsOutdated)
+                            audioNodes.Add((candidate, nodeDirectory, audio.Findings.Count(item => item.Safe), audio.Findings.Count(item => !item.Safe)));
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception audioException)
+                    {
+                        // 音频检测是附加能力：读取失败只记录，不能拖垮原有的 Unit 过时检测与修复。
+                        LogService.Warn($"音效过时检测失败，已跳过 {candidate.Metadata.Name}：{audioException.Message}");
+                    }
                 }
                 SetOutdatedDetectionResult(nodes.Count, unreadableCount);
-                if (nodes.Count == 0)
+                var repairableAudioNodes = audioNodes.Where(item => item.SafeCount > 0).ToArray();
+                var skippedAudioBanks = audioNodes.Sum(item => item.UnsafeCount);
+                if (nodes.Count == 0 && repairableAudioNodes.Length == 0)
                 {
                     task.MarkCompleted();
                     var summary = unreadableCount == 0
                         ? "检测完成：未发现需要修复的过时 Mod。"
                         : $"检测完成：未发现需要修复的过时 Mod；{unreadableCount} 个 Mod 的 Unit 版本无法确认，已跳过。";
-                    System.Windows.MessageBox.Show(summary, "检测并修复", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+                    if (skippedAudioBanks > 0)
+                        summary += $"\n另有 {skippedAudioBanks} 个语音类音库含较多自定义条目，为避免丢失自定义语音已跳过。";
+                    HD2ModManager.Views.AppDialog.Show(summary, "检测并修复", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
                     return;
                 }
 
                 var unreadableNotice = unreadableCount == 0 ? string.Empty : $"\n另有 {unreadableCount} 个 Mod 的 Unit 版本无法确认，本次将跳过。";
-                var confirm = System.Windows.MessageBox.Show($"已检测到 {nodes.Count} 个过时 Mod。{unreadableNotice}\n\n将仅为这些 Mod 生成当前版本候选，并仅在候选完整通过内部检查后替换原 Patch。原 Patch 与 sidecar 会独立备份到管理器目录 backups。是否继续？", "检测并修复过时 Mod", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
+                var detected = new List<string>();
+                if (nodes.Count > 0) detected.Add($"{nodes.Count} 个模型过时 Mod");
+                if (repairableAudioNodes.Length > 0) detected.Add($"{repairableAudioNodes.Length} 个音效过时 Mod");
+                var audioNotice = repairableAudioNodes.Length == 0
+                    ? string.Empty
+                    : "\n音效 Mod 会以当前官方音库为基础重建，保留 Mod 替换过的音频；任一音库校验不通过时退回官方音库（该库 Mod 音色失效，但原版声音保证可用）。"
+                      + (skippedAudioBanks > 0 ? $"\n另有 {skippedAudioBanks} 个语音类音库含较多自定义条目，已跳过。" : string.Empty);
+                var confirm = HD2ModManager.Views.AppDialog.Show($"已检测到 {string.Join("、", detected)}。{unreadableNotice}{audioNotice}\n\n将仅处理这些 Mod，并仅在候选完整通过内部检查后替换原 Patch。原 Patch 与 sidecar 会独立备份到管理器目录 backups。是否继续？", "检测并修复过时 Mod", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
                 if (confirm != System.Windows.MessageBoxResult.Yes)
                 {
                     task.MarkCompleted();
                     return;
                 }
 
-                task.UpdateStage("正在生成并验证重构候选");
-                task.UpdateProgress(null);
-                var result = await _repairBatch.RepairAsync(nodes, _library.ModsRootDirectory, gameData, task.CancellationToken, new InlineProgress<OperationProgressEvent>(bridge.Apply), operationId);
-                task.UpdateStage($"已修复 {result.RepairedModCount}；跳过 {result.SkippedModCount}；失败 {result.FailedModCount}；取消 {result.CanceledModCount}；未开始 {result.NotStartedModCount}");
-                if (result.CanceledModCount > 0 || result.NotStartedModCount > 0 || task.CancellationToken.IsCancellationRequested) task.MarkCanceled();
+                ModRepairBatchResult? result = null;
+                if (nodes.Count > 0)
+                {
+                    task.UpdateStage("正在生成并验证重构候选");
+                    task.UpdateProgress(null);
+                    result = await _repairBatch.RepairAsync(nodes, _library.ModsRootDirectory, gameData, task.CancellationToken, new InlineProgress<OperationProgressEvent>(bridge.Apply), operationId);
+                    task.UpdateStage($"已修复 {result.RepairedModCount}；跳过 {result.SkippedModCount}；失败 {result.FailedModCount}；取消 {result.CanceledModCount}；未开始 {result.NotStartedModCount}");
+                }
+
+                var audioRepairedMods = 0;
+                var audioFailedMods = 0;
+                var audioFallbackNotes = new List<string>();
+                var audioFailureNotes = new List<string>();
+                var audioBackupRoot = Path.Combine(_paths.AppRootDirectory, "backups", DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmssfff") + "-audio");
+                if (repairableAudioNodes.Length > 0 && !task.CancellationToken.IsCancellationRequested)
+                {
+                    task.UpdateStage("正在重建过时音效库");
+                    for (var index = 0; index < repairableAudioNodes.Length; index++)
+                    {
+                        task.CancellationToken.ThrowIfCancellationRequested();
+                        var item = repairableAudioNodes[index];
+                        task.UpdateStage($"正在重建音效库 {index + 1}/{repairableAudioNodes.Length}：{item.Node.Metadata.Name}");
+                        task.UpdateProgress((double)(index + 1) / repairableAudioNodes.Length);
+                        try
+                        {
+                            var repaired = await audioService.RepairDirectoryAsync(item.Directory, Path.Combine(audioBackupRoot, item.Node.RelativePath), includeUnsafe: false, task.CancellationToken);
+                            if (repaired.Repaired.Count > 0) audioRepairedMods++;
+                            audioFallbackNotes.AddRange(repaired.Repaired.SelectMany(patch => patch.Notes));
+                        }
+                        catch (OperationCanceledException) { throw; }
+                        catch (Exception audioException)
+                        {
+                            audioFailedMods++;
+                            audioFailureNotes.Add($"{item.Node.Metadata.Name}：{audioException.Message}");
+                            LogService.Warn($"音效库重建失败 {item.Node.Metadata.Name}：{audioException.Message}");
+                        }
+                    }
+                }
+
+                if (result is not null && (result.CanceledModCount > 0 || result.NotStartedModCount > 0) || task.CancellationToken.IsCancellationRequested) task.MarkCanceled();
                 else task.MarkCompleted();
-                if (result.HasRepairs)
+                if (audioRepairedMods > 0 && result?.HasRepairs != true)
+                {
+                    // 音效补丁同样是原地替换了 Mod 目录中的文件，指纹必须同步，否则下次启动会被当成外部修改。
+                    await _library.SynchronizeAsync(task.CancellationToken);
+                    if (_profiles.ActiveProfile is not null) _profiles.NotifyActiveModContentChanged();
+                }
+                if (result is not null && result.HasRepairs)
                 {
                     // 修复过程直接替换了 Mod 目录中的 Patch；必须同步并持久化新的 ContentFingerprint，
                     // 否则下次启动会把本次已知修改误判为外部修改并删除所有信息中心缓存。
@@ -308,7 +390,19 @@ namespace HD2ModManager.ViewModels
                     if (_profiles.ActiveProfile is not null) _profiles.NotifyActiveModContentChanged();
                     ClearOutdatedDetectionResult();
                 }
-                System.Windows.MessageBox.Show($"批次完成。\n已修复：{result.RepairedModCount}\n跳过：{result.SkippedModCount}\n失败：{result.FailedModCount}\n取消：{result.CanceledModCount}\n未开始：{result.NotStartedModCount}\n\n备份与审计清单：{result.BatchDirectory}", "一键修复", System.Windows.MessageBoxButton.OK, result.FailedModCount == 0 ? System.Windows.MessageBoxImage.Information : System.Windows.MessageBoxImage.Warning);
+                var report = new System.Text.StringBuilder("批次完成。");
+                if (result is not null)
+                    report.Append($"\n已修复：{result.RepairedModCount}\n跳过：{result.SkippedModCount}\n失败：{result.FailedModCount}\n取消：{result.CanceledModCount}\n未开始：{result.NotStartedModCount}");
+                if (repairableAudioNodes.Length > 0)
+                    report.Append($"\n音效已重建：{audioRepairedMods} 个 Mod" + (audioFailedMods > 0 ? $"；失败：{audioFailedMods}" : string.Empty));
+                if (audioFailureNotes.Count > 0)
+                    report.Append("\n\n以下音效 Mod 重建失败，文件保持原样（所以再次检测仍会提示过时）：\n" + string.Join("\n", audioFailureNotes.Take(5)) + (audioFailureNotes.Count > 5 ? $"\n…另有 {audioFailureNotes.Count - 5} 条" : string.Empty));
+                if (audioFallbackNotes.Count > 0)
+                    report.Append("\n\n以下音库已退回官方版本（Mod 音色失效）：\n" + string.Join("\n", audioFallbackNotes.Take(5)) + (audioFallbackNotes.Count > 5 ? $"\n…另有 {audioFallbackNotes.Count - 5} 条" : string.Empty));
+                if (audioRepairedMods > 0) report.Append($"\n\n音效备份：{audioBackupRoot}\n需要重新部署后，游戏里才会生效。");
+                if (result is not null) report.Append($"\n\n备份与审计清单：{result.BatchDirectory}");
+                var failed = (result?.FailedModCount ?? 0) + audioFailedMods;
+                HD2ModManager.Views.AppDialog.Show(report.ToString(), "一键修复", System.Windows.MessageBoxButton.OK, failed == 0 ? System.Windows.MessageBoxImage.Information : System.Windows.MessageBoxImage.Warning);
             }
             catch (OperationCanceledException)
             {
@@ -317,7 +411,7 @@ namespace HD2ModManager.ViewModels
             catch (Exception exception)
             {
                 task.MarkFailed(exception.Message);
-                System.Windows.MessageBox.Show($"批量修复失败：{exception.Message}", "一键修复", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+                HD2ModManager.Views.AppDialog.Show($"批量修复失败：{exception.Message}", "一键修复", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
             }
             finally
             {
@@ -364,12 +458,12 @@ namespace HD2ModManager.ViewModels
                     }
                 }
                 SettingsService.SetModLibraryFolder(target);
-                System.Windows.MessageBox.Show("Mod 库已复制并校验到推荐目录，旧库被保留。应用将重新启动以载入新路径。", "移动 Mod 库", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+                HD2ModManager.Views.AppDialog.Show("Mod 库已复制并校验到推荐目录，旧库被保留。应用将重新启动以载入新路径。", "移动 Mod 库", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
                 RestartCurrentProcess(elevated: false);
             }
             catch (Exception exception)
             {
-                System.Windows.MessageBox.Show($"迁移失败，当前 Mod 库未切换：{exception.Message}", "移动 Mod 库", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+                HD2ModManager.Views.AppDialog.Show($"迁移失败，当前 Mod 库未切换：{exception.Message}", "移动 Mod 库", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
             }
         }
 
@@ -430,6 +524,15 @@ namespace HD2ModManager.ViewModels
 
         public ModListProjectionSource<ProfileListItemViewModel> Items => _list.Items;
         public bool HasItems => _list.VisibleCount != 0;
+        // 自动分类筛选（与模组库页共用）。选中具体分类时列表是子集，禁用拖动排序。
+        private ModCategoryFilter? _categoryFilter;
+        public ModCategoryFilter Category => _categoryFilter ??= new ModCategoryFilter(
+            guid => _library.GetDerivedData(guid)?.AssetSummary,
+            () =>
+            {
+                OnPropertyChanged(nameof(CanReorder));
+                Refresh(ListTransitionKind.Filter);
+            });
         public ObservableCollection<string> Profiles { get; } = new();
         public string Query
         {
@@ -464,7 +567,7 @@ namespace HD2ModManager.ViewModels
             }
         }
         public string OutdatedFilterText => ShowOnlyOutdated ? "显示全部" : "显示过时";
-        public bool CanReorder => string.IsNullOrWhiteSpace(Query) && !ShowOnlyOutdated;
+        public bool CanReorder => string.IsNullOrWhiteSpace(Query) && !ShowOnlyOutdated && !Category.IsActive;
         private bool _canAcceptLibraryDrop;
         public bool CanAcceptLibraryDrop => _canAcceptLibraryDrop;
 
@@ -615,7 +718,7 @@ namespace HD2ModManager.ViewModels
         {
             var key = _profiles.SelectedKey;
             if (string.IsNullOrWhiteSpace(key)) return;
-            var confirm = System.Windows.MessageBox.Show($"确定删除当前配置“{key}”？\n这只会移除配置，不会删除库中的 Mod 文件。", "删除配置", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
+            var confirm = HD2ModManager.Views.AppDialog.Show($"确定删除当前配置“{key}”？\n这只会移除配置，不会删除库中的 Mod 文件。", "删除配置", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
             if (confirm != System.Windows.MessageBoxResult.Yes) return;
             await _profiles.RemoveAsync(key);
             Refresh();
@@ -627,7 +730,7 @@ namespace HD2ModManager.ViewModels
             if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(RenameText)) return;
             var newName = RenameText.Trim();
             if (string.Equals(key, newName, StringComparison.OrdinalIgnoreCase)) return;
-            var confirm = System.Windows.MessageBox.Show($"将配置“{key}”重命名为“{newName}”？", "重命名配置", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Question);
+            var confirm = HD2ModManager.Views.AppDialog.Show($"将配置“{key}”重命名为“{newName}”？", "重命名配置", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Question);
             if (confirm != System.Windows.MessageBoxResult.Yes) return;
             await _profiles.RenameAsync(key, RenameText);
             Refresh();
@@ -661,17 +764,17 @@ namespace HD2ModManager.ViewModels
                 var deletion = await _library.RemoveManyAsync(targets);
                 if (deletion.RemovedNodeIds.Count == 0)
                 {
-                    System.Windows.MessageBox.Show(ModLibraryService.DescribeDeletionResult(deletion), "删除 Mod", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+                    HD2ModManager.Views.AppDialog.Show(ModLibraryService.DescribeDeletionResult(deletion), "删除 Mod", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
                     return;
                 }
                 if (deletion.HasFailures)
-                    System.Windows.MessageBox.Show(ModLibraryService.DescribeDeletionResult(deletion), "删除 Mod", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+                    HD2ModManager.Views.AppDialog.Show(ModLibraryService.DescribeDeletionResult(deletion), "删除 Mod", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
                 _selection?.Clear();
                 Refresh();
             }
             catch (Exception ex)
             {
-                System.Windows.MessageBox.Show($"删除 Mod 失败：{ex.Message}", "删除 Mod", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+                HD2ModManager.Views.AppDialog.Show($"删除 Mod 失败：{ex.Message}", "删除 Mod", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
             }
         }
 
@@ -722,6 +825,8 @@ namespace HD2ModManager.ViewModels
             RefreshDirectOptionCounts();
             EnsureDisplayedOrders(profile);
             var states = new List<ProfileModListState>();
+            // 先过搜索/过时筛选得到候选集，用它统计分类芯片，再按选中的分类做最后一道筛选。
+            var candidates = new List<(string Guid, ProfileEntry Entry, HD2ModManager.Models.ModEntity? Mod, DerivedModNodeData? Derived)>();
             foreach (var entry in _profiles.GetSortedEntries(profile))
             {
                 var guid = entry.NodeId.Value.ToString("N");
@@ -730,6 +835,13 @@ namespace HD2ModManager.ViewModels
                 var assetSummary = derived?.AssetSummary;
                 if (!ModSearchMatcher.IsMatch(mod?.Name, mod?.Description, assetSummary, Query)) continue;
                 if (ShowOnlyOutdated && derived?.UnitCompatibility.IsOutdated != true) continue;
+                candidates.Add((guid, entry, mod, derived));
+            }
+            Category.Rebuild(candidates.Select(candidate => candidate.Guid).ToList());
+            OnPropertyChanged(nameof(CanReorder));
+            foreach (var (guid, entry, mod, derived) in candidates)
+            {
+                if (!Category.Matches(guid)) continue;
                 _userStatuses.TryGetValue(guid, out var status);
                 states.Add(CreateListState(guid, mod, derived, entry.LoadOrder, entry.AddedUtc, status));
             }
@@ -941,8 +1053,9 @@ namespace HD2ModManager.ViewModels
                 details: () => $"guids={guids.Count}; rebuild={requiresRebuild}; visibleContent={refreshVisibleContent}; refreshThumbnails={refreshThumbnails}; items={Items.Count}");
             RefreshUserStatuses();
             var contentCanAffectMembership = guids.Count != 0
-                && (!string.IsNullOrWhiteSpace(Query) || ShowOnlyOutdated);
-            if (requiresRebuild || contentCanAffectMembership)
+                && (!string.IsNullOrWhiteSpace(Query) || ShowOnlyOutdated || Category.IsActive);
+            var categoriesChanged = !requiresRebuild && Category.HasClassificationChanged(guids.Count != 0 ? guids : null);
+            if (requiresRebuild || contentCanAffectMembership || categoriesChanged)
                 Refresh();
             else if (guids.Count != 0)
                 PublishContent(guids);
@@ -1037,6 +1150,7 @@ namespace HD2ModManager.ViewModels
             var assetSummary = derived?.AssetSummary;
             if (!ModSearchMatcher.IsMatch(mod?.Name, mod?.Description, assetSummary, Query)) return null;
             if (ShowOnlyOutdated && derived?.UnitCompatibility.IsOutdated != true) return null;
+            if (!Category.Matches(guid)) return null;
             _userStatuses.TryGetValue(guid, out var status);
             return CreateListState(guid, mod, derived, entry.LoadOrder, entry.AddedUtc, status);
         }
@@ -1176,6 +1290,7 @@ namespace HD2ModManager.ViewModels
             _thumbnailCancellation?.Dispose();
             _thumbnailCancellation = null;
             _list.Committed -= OnListProjectionCommitted;
+            _categoryFilter?.Dispose();
             _list.Dispose();
         }
     }
@@ -1291,6 +1406,7 @@ namespace HD2ModManager.ViewModels
         private string? _description;
         private string? _thumbnailSourcePath;
         private string? _imagePath;
+        private bool _imagePathResolved;
         private int _thumbnailRevision;
         private string _contentVersion = string.Empty;
         private string _assetSummary;
@@ -1302,7 +1418,20 @@ namespace HD2ModManager.ViewModels
         private DateTimeOffset _addedUtc;
         public string Name => _name;
         public string? Description => _description;
-        public string? ImagePath => _imagePath;
+        public string? ImagePath
+        {
+            get
+            {
+                // 缩略图路径要 stat 磁盘：只在行真正被虚拟化面板实例化、绑定读取时才解析，
+                // 屏幕外的行不付这笔钱。
+                if (!_imagePathResolved)
+                {
+                    _imagePath = ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
+                    _imagePathResolved = true;
+                }
+                return _imagePath;
+            }
+        }
         public string AssetSummary => _assetSummary;
         public string AssetSummaryText => SecondaryDetailText;
         public ModListRowPresentation RowPresentation => _rowPresentation;
@@ -1328,7 +1457,7 @@ namespace HD2ModManager.ViewModels
             _name = name;
             _description = description;
             _thumbnailSourcePath = imagePath;
-            _imagePath = ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
+            _imagePathResolved = false;
             _assetSummary = assetSummary;
             _loadOrder = loadOrder;
             _displayOrder = displayOrder;
@@ -1356,7 +1485,7 @@ namespace HD2ModManager.ViewModels
             _thumbnailRevision = state.ThumbnailRevision;
             _contentVersion = state.ContentVersion;
             _thumbnailSourcePath = state.ImagePath;
-            _imagePath = ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
+            _imagePathResolved = false;
         }
 
         internal void ApplyListState(ProfileModListState state)
@@ -1379,7 +1508,7 @@ namespace HD2ModManager.ViewModels
             _thumbnailSourcePath = state.ImagePath;
             _thumbnailRevision = state.ThumbnailRevision;
             _contentVersion = state.ContentVersion;
-            if (imageChanged) _imagePath = ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
+            if (imageChanged) _imagePathResolved = false;
             _assetSummary = state.AssetSummary;
             _loadOrder = state.LoadOrder;
             _displayOrder = state.DisplayOrder;
@@ -1485,6 +1614,26 @@ namespace HD2ModManager.ViewModels
             }
         }
 
+        public bool AskToInstallSkeletonAnimation
+        {
+            get => SettingsService.GetAskToInstallSkeletonAnimation();
+            set
+            {
+                SettingsService.SetAskToInstallSkeletonAnimation(value);
+                OnPropertyChanged(nameof(AskToInstallSkeletonAnimation));
+            }
+        }
+
+        public bool EnableDualSkeletonAnimationVersion
+        {
+            get => SettingsService.GetEnableDualSkeletonAnimationVersion();
+            set
+            {
+                SettingsService.SetEnableDualSkeletonAnimationVersion(value);
+                OnPropertyChanged(nameof(EnableDualSkeletonAnimationVersion));
+            }
+        }
+
         public bool AutoImportToActiveProfile
         {
             get => SettingsService.GetAutoImportToActiveProfile();
@@ -1561,10 +1710,16 @@ namespace HD2ModManager.ViewModels
         /// <summary>当前模式的一句话说明，绑定到设置页的说明文字。</summary>
         public string ArmorMappingModeDescription => ArmorMappingMode.Description();
 
-        /// <summary>热切换提示：只有兼容模式可以运行中改映射。</summary>
+        /// <summary>
+        /// 热切换提示。
+        /// <para>
+        /// 2026-11-11：真映射（写注册表数据）停用后，剩下的档位全都走运行时，都支持热切换；
+        /// 只有「关闭」没有东西可切。这里不再出现"写进注册表数据、必须重启"那套话术。
+        /// </para>
+        /// </summary>
         public string ArmorMappingModeHotSwitchNote => ArmorMappingMode.AllowsHotSwitch()
             ? "该模式支持游戏运行中切换映射，不需要重启。"
-            : "该模式把外观写进注册表数据，改动映射后必须重启游戏才生效。";
+            : "外观映射已关闭，护甲保持原版外观；改成其它档位不需要重启游戏。";
 
         /// <summary>设置页「物理」下拉框的选项（按总开关过滤）。</summary>
         public IReadOnlyList<PhysicsModeOption> PhysicsModeOptions =>
@@ -1856,11 +2011,43 @@ namespace HD2ModManager.ViewModels
             }
         }
 
+        /// <summary>
+        /// VPK 构建时的角色头部缩放比例（默认 <c>8/7 ≈ 1.1429</c>）。
+        /// <para>
+        /// 用文本暴露而不是数字微调框：这一项是"填一个数"，比例上没有有意义的步进。
+        /// 绑定用 <c>LostFocus</c>：边打边校验会在输入到一半时就把中间值写进去
+        /// （"1.2" 打到 "1." 的瞬间判非法），失焦时判一次既够用又好解释。
+        /// </para>
+        /// <para>
+        /// 解析不了或超范围时**不写盘**，并把输入框拉回当前生效值。
+        /// 静默改成默认值是最坏的结果 —— 用户会以为填的值生效了。
+        /// </para>
+        /// </summary>
+        public string HeadScaleText
+        {
+            get => SettingsService.GetHeadScale().ToString("0.####", CultureInfo.InvariantCulture);
+            set
+            {
+                if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
+                    SettingsService.SetHeadScale(parsed);
+                // 无论成功与否都拉回一次：成功是把 "1.20" 归一成 "1.2"（存下的就是看到的），
+                // 失败是把输入框回滚。
+                OnPropertyChanged(nameof(HeadScaleText));
+            }
+        }
+
+        public string HeadScaleHint =>
+            $"范围 {SettingsService.MinHeadScale:0.##}–{SettingsService.MaxHeadScale:0.##}，"
+            + $"默认 {SettingsService.DefaultHeadScale:0.####}（8/7，现行比例）。"
+            + "只影响 VPK 构建出的角色网格：头围绕颈/头接缝等比缩放，不碰材质与 id。";
+
+
         public RelayCommand OpenModFolderCommand { get; }
         public RelayCommand ResetModFolderCommand { get; }
         public RelayCommand OpenGameDataFolderCommand { get; }
         public RelayCommand OpenDefaultExportFolderCommand { get; }
         public RelayCommand ResetDefaultExportPathCommand { get; }
+        public RelayCommand ResetHeadScaleCommand { get; }
         public RelayCommand DetectGameDataFolderCommand { get; }
         public RelayCommand ViewGameDataIndexCommand { get; }
         public RelayCommand OpenArmorRegistryCommand { get; }
@@ -1874,8 +2061,18 @@ namespace HD2ModManager.ViewModels
         private bool _isLoadingGameDataIndex;
         public bool IsLoadingGameDataIndex { get => _isLoadingGameDataIndex; private set => SetField(ref _isLoadingGameDataIndex, value); }
 
+        /// <summary>设置页「程序更新」卡片；更新服务在 Shell 启动时创建，这里只是它的界面视图模型。</summary>
+        public AppUpdateSectionViewModel AppUpdate { get; }
+
+        public override void Dispose()
+        {
+            AppUpdate.Dispose();
+            base.Dispose();
+        }
+
         public SettingsPageViewModel(ProfileService profiles, ModLibraryService library, BottomBarCoordinator bottomBar, BackgroundTaskService? backgroundTasks = null)
         {
+            AppUpdate = new AppUpdateSectionViewModel(AppUpdateService.Instance ?? throw new InvalidOperationException("应用更新服务尚未初始化。"));
             Title = "设置";
 			_profiles = profiles;
 			_library = library;
@@ -1888,6 +2085,13 @@ namespace HD2ModManager.ViewModels
             OpenGameDataFolderCommand = new RelayCommand(OpenGameDataFolder);
             OpenDefaultExportFolderCommand = new RelayCommand(OpenDefaultExportFolder);
             ResetDefaultExportPathCommand = new RelayCommand(() => DefaultExportPath = SettingsService.DefaultExportPath);
+            ResetHeadScaleCommand = new RelayCommand(() =>
+            {
+                // 重置成**精确的** 8/7，不是界面上那个四舍五入后的 1.1429 ——
+                // 默认值必须是原来那个数，"看起来一样"不等于一样。
+                SettingsService.SetHeadScale(SettingsService.DefaultHeadScale);
+                OnPropertyChanged(nameof(HeadScaleText));
+            });
             DetectGameDataFolderCommand = new RelayCommand(DetectGameDataFolder);
             ViewGameDataIndexCommand = new RelayCommand(_ => ViewGameDataIndex(), _ => !IsLoadingGameDataIndex);
             OpenArmorRegistryCommand = new RelayCommand(OpenArmorRegistry);
@@ -1896,9 +2100,8 @@ namespace HD2ModManager.ViewModels
             UpdateAssetMetadataCommand = new RelayCommand(UpdateAssetMetadata);
             RefreshAssetIndexStatusCommand = new RelayCommand(_ => _ = RefreshAssetIndexStatusAsync(), _ => !IsRefreshingAssetIndexStatus && !IsBuildingAssetIndex);
             BuildAssetIndexCommand = new RelayCommand(_ => _ = BuildAssetIndexAsync(), _ => !IsBuildingAssetIndex);
-            VerifyWithSteamCommand = new RelayCommand(
-                _ => _ = VerifyWithSteamAsync(),
-                _ => !IsVerifyingWithSteam && !string.IsNullOrWhiteSpace(GameDataFolder));
+            // 不设 canExecute：按钮永远可点，缺什么由 VerifyWithSteamAsync 当场说清（见那里的注释）。
+            VerifyWithSteamCommand = new RelayCommand(_ => _ = VerifyWithSteamAsync());
 
             // 早就是外置模式的用户永远不会再点那个下拉，唯一的刷新机会就是这里。
             RefreshLuaPackagesOnStartup();
@@ -1913,7 +2116,6 @@ namespace HD2ModManager.ViewModels
                 if (isVerifyingWithSteam == value) return;
                 isVerifyingWithSteam = value;
                 OnPropertyChanged(nameof(IsVerifyingWithSteam));
-                VerifyWithSteamCommand?.RaiseCanExecuteChanged();
             }
         }
 
@@ -1926,9 +2128,22 @@ namespace HD2ModManager.ViewModels
         /// </summary>
         private async Task VerifyWithSteamAsync()
         {
-            if (IsVerifyingWithSteam) return;
+            // 按钮永远可点（不用 CanExecute 禁用），所以"不能做"的三种情况都在这里说清。
+            // 提示写进 AssetIndexHint：它就在这个按钮**正上方**（SettingsPageView.xaml:205），
+            // 不新增任何控件，符合"按钮旁不许挂小字"的约定。
+            if (IsVerifyingWithSteam)
+            {
+                AssetIndexHint = "Steam 校验正在进行中；底栏里可以随时点「刷新状态」，完成前不会再开第二遍。";
+                return;
+            }
+
             var gameData = GameDataFolder;
-            if (string.IsNullOrWhiteSpace(gameData)) return;
+            if (string.IsNullOrWhiteSpace(gameData))
+            {
+                AssetIndexHint = "还没有填游戏目录。先在上面「游戏与资产 → 游戏目录」里选到 …\\steamapps\\common\\Helldivers 2\\data，再回来点这个按钮。";
+                return;
+            }
+
             IsVerifyingWithSteam = true;
             // 底栏**立刻**出现：用户此刻就等在电脑前，Steam 一校验完他就能自己点「刷新状态」，
             // 不必等我们先探测到校验结束。120 秒只是"没点按钮时"的兜底。
@@ -2041,6 +2256,8 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ModLibraryFolder));
             OnPropertyChanged(nameof(GameDataFolder));
             OnPropertyChanged(nameof(DefaultExportPath));
+            OnPropertyChanged(nameof(HeadScaleText));
+            OnPropertyChanged(nameof(HeadScaleHint));
             _ = RefreshAssetIndexStatusAsync();
         }
 
@@ -2072,7 +2289,7 @@ namespace HD2ModManager.ViewModels
 			if (!_hasPendingModLibrarySwitch) return;
 			if (_backgroundTasks?.Tasks.Any(task => task.IsActive) == true)
 			{
-				System.Windows.MessageBox.Show("请等待后台任务完成后再切换 Mod 库。", "切换 Mod 库", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+				HD2ModManager.Views.AppDialog.Show("请等待后台任务完成后再切换 Mod 库。", "切换 Mod 库", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
 				return;
 			}
 			try
@@ -2086,7 +2303,7 @@ namespace HD2ModManager.ViewModels
 			}
 			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
 			{
-				System.Windows.MessageBox.Show($"无法切换 Mod 库：{exception.Message}", "切换 Mod 库", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+				HD2ModManager.Views.AppDialog.Show($"无法切换 Mod 库：{exception.Message}", "切换 Mod 库", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
 			}
 		}
 
@@ -2360,13 +2577,13 @@ namespace HD2ModManager.ViewModels
         public void PromptLanguageIfMissing()
         {
             if (!string.IsNullOrWhiteSpace(SettingsService.GetLanguage())) return;
-            var result = System.Windows.MessageBox.Show(
+            var result = HD2ModManager.Views.AppDialog.Show(
                 "选择语言?\nYes: 中文(zh-CN) / No: English(en-US)",
                 "Language",
                 System.Windows.MessageBoxButton.YesNo,
                 System.Windows.MessageBoxImage.Question);
             Language = result == System.Windows.MessageBoxResult.Yes ? "zh-CN" : "en-US";
-            System.Windows.MessageBox.Show("语言已设置为 " + Language + "，请重启应用以生效。", "Language", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+            HD2ModManager.Views.AppDialog.Show("语言已设置为 " + Language + "，请重启应用以生效。", "Language", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
         }
 
         private static void OpenFolder(string folder)
@@ -2418,7 +2635,7 @@ namespace HD2ModManager.ViewModels
                 {
                     AssetMetadataStatus = $"更新失败：{result.ErrorMessage}";
                     task?.MarkFailed(result.ErrorMessage ?? "未知错误");
-                    System.Windows.MessageBox.Show(AssetMetadataStatus, "资产信息", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+                    HD2ModManager.Views.AppDialog.Show(AssetMetadataStatus, "资产信息", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
                     return;
                 }
 
@@ -2427,13 +2644,13 @@ namespace HD2ModManager.ViewModels
                 await Task.Run(() => _library.RefreshAssetSummariesAsync());
                 task?.MarkCompleted();
                 OnPropertyChanged(nameof(AssetMetadataLastCheckText));
-                System.Windows.MessageBox.Show(AssetMetadataStatus, "资产信息", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+                HD2ModManager.Views.AppDialog.Show(AssetMetadataStatus, "资产信息", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
             }
             catch (Exception ex)
             {
                 AssetMetadataStatus = $"更新失败：{ex.Message}";
                 task?.MarkFailed(ex.Message);
-                System.Windows.MessageBox.Show(AssetMetadataStatus, "资产信息", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+                HD2ModManager.Views.AppDialog.Show(AssetMetadataStatus, "资产信息", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
             }
         }
 

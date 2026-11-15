@@ -1,5 +1,13 @@
 namespace HD2ModManager.Services;
 
+/// <summary>VPK 导入的三条互斥路线；取消不属于任何导入路线。</summary>
+public enum VpkImportRoute
+{
+    OriginalFormat,
+    SingleSkeleton,
+    DualSkeletonWithLua,
+}
+
 /// <summary>拖入 VPK 后对单个模型主体的决策：是否制作原骨架护甲、倍率、是否生成骨架动画。</summary>
 public sealed record VpkModelDecision(
 	bool UseNativeSkeleton,
@@ -9,6 +17,20 @@ public sealed record VpkModelDecision(
     int AnimationThreads = AnimationThreadCount.Default)
 {
     public bool BuildsSkeletonPackage => UseNativeSkeleton || SingleHd2Skeleton;
+    // 仅记录倍率确认后的前置选择；模型入库后才应用，不在打包前改库。
+    public HD2ModManager.ViewModels.VpkTargetArmorOption? TargetArmor { get; init; }
+    /// <summary>原版格式沿用标准导入，不请求骨架动画或挂点 Lua。</summary>
+    public static VpkModelDecision ForImportRoute(VpkImportRoute route, double modelScale,
+        int animationThreads = AnimationThreadCount.Default) => route switch
+    {
+        VpkImportRoute.OriginalFormat => new(false, modelScale, false),
+        VpkImportRoute.SingleSkeleton => new(false, modelScale, true,
+            SingleHd2Skeleton: true, AnimationThreads: animationThreads),
+        VpkImportRoute.DualSkeletonWithLua => new(true, modelScale, true,
+            AnimationThreads: animationThreads),
+        _ => throw new ArgumentOutOfRangeException(nameof(route), route, "未知的 VPK 导入路线。"),
+    };
+
 }
 
 

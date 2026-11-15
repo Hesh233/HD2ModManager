@@ -16,33 +16,9 @@ namespace HD2ModManager
             // 于是设置页显示"已开启"、部署却不带物理运行时（2026-11-01 实机踩过：
             // 一局下来既没有物理，日志也没被创建）。
             Services.SettingsService.ApplyToLuaDeployment();
-            // Do not auto-compile a temporary diagnostic protocol or overwrite
-            // user state while a recovery journal is pending.
-            var recovery = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
-                "data", "diagnostics", "armor", "active.json");
-            if (System.IO.File.Exists(recovery))
-            {
-                try
-                {
-                    if (new System.IO.FileInfo(recovery).Length > 256 * 1024)
-                        throw new System.IO.InvalidDataException();
-                    using var journal = System.Text.Json.JsonDocument.Parse(System.IO.File.ReadAllText(recovery));
-                    if (!journal.RootElement.TryGetProperty("completed", out var completed) || !completed.GetBoolean())
-                    {
-                        MessageBox.Show("检测到尚未恢复的护甲诊断。请先完全退出游戏，再双击管理器目录中的 Armor-Diagnostics.cmd，按提示恢复原配置。\n\n为避免覆盖诊断状态，本次不启动管理器。",
-                            "护甲诊断待恢复", MessageBoxButton.OK, MessageBoxImage.Warning);
-                        Shutdown();
-                        return;
-                    }
-                }
-                catch
-                {
-                    MessageBox.Show("护甲诊断恢复记录无法读取。为避免覆盖原配置，本次停止启动。请保留 data/diagnostics/armor 目录并联系支持人员。",
-                        "护甲诊断恢复记录异常", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    Shutdown();
-                    return;
-                }
-            }
+            // 建包用的全局几何参数（头部缩放比例）走同一套：Core 的重构建只读静态字段，
+            // 启动这一次不同步，用户改过的值不会生效，而日志里看不出任何异常。
+            Services.SettingsService.ApplyToVpkBuild();
             ApplyLocalization();
             DispatcherUnhandledException += (_, args) =>
             {
@@ -62,11 +38,19 @@ namespace HD2ModManager
             // and startup synchronization are included in the trace.
             // 采集默认关闭（HD2_UI_DIAG=1 打开），打开后写 logs/trace_*.log。
             base.OnStartup(e);
+
+            // 每次启动都说明骨架测试版的使用范围，不再依赖旧外观映射设置是否发生迁移。
+            // 等主窗口 Loaded 后再弹，使说明框有 owner，避免被主窗口盖住。
+            Dispatcher.InvokeAsync(
+                () => Views.AppDialog.Show(MainWindow, SkeletonTestBuild.NoticeText, SkeletonTestBuild.NoticeTitle,
+                    MessageBoxButton.OK, MessageBoxImage.Information),
+                System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         }
 
         protected override void OnExit(ExitEventArgs e)
         {
             UiPerformanceDiagnostics.Stop();
+            AppUpdateService.Instance?.Dispose();
             SettingsService.FlushAsync().GetAwaiter().GetResult();
             base.OnExit(e);
         }

@@ -4,16 +4,19 @@
              xmlns:local="clr-namespace:HD2ModManager.Views">
     <UserControl.Resources>
         <DataTemplate x:Key="ProfileSearchActions">
-            <Button Style="{StaticResource AppHeaderTextButton}" Content="{Binding OutdatedFilterText}" Click="OnToggleOutdatedFilterClick"/>
+            <StackPanel Orientation="Horizontal">
+                <Button Style="{StaticResource AppHeaderTextButton}" Content="{Binding OutdatedFilterText}" Click="OnToggleOutdatedFilterClick"/>
+            </StackPanel>
         </DataTemplate>
     </UserControl.Resources>
     <local:ModListPanel x:Name="ProfileModList" ItemsSource="{Binding Items}"
+                        CategoryFilter="{Binding Category}"
                         HeaderTitle="{Binding CurrentProfileTitle}"
                         HeaderSummary="{Binding HeaderSummary}"
                         EmptyState="{Binding EmptyState}"
                         SearchText="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
                         SearchActionsTemplate="{StaticResource ProfileSearchActions}"
-                        RowActions="Details, ExportMod, MoveUp, MoveDown, RemoveFromProfile, DeleteFromLibrary"
+                        RowActions="Details, Category, ExportMod, MoveUp, MoveDown, RemoveFromProfile, DeleteFromLibrary"
                          RowActionInvoked="OnRowActionInvoked"
                          SelectionPolicy="Multiple"
                          RelationshipDragOperation="SetAsOption"
@@ -27,5 +30,17 @@
                          InternalReorderRequested="OnInternalReorderRequested"
                          TransitionStateChanged="OnListTransitionStateChanged"
                         RowRightClicked="OnOpenDetailsOnRightClick"
-                        BackgroundClicked="OnListBackgroundClick"/>
+                        BackgroundClicked="OnListBackgroundClick">
+        <local:ModListPanel.HeaderModes>
+            <!-- 分类是标题卡的一个可切换状态（第三态：标题 / 搜索 / 分类）。
+                 开关绑到**本页**的 Category.IsEnabled，所以点它只切换这一侧。 -->
+            <local:ModListHeaderMode Key="Categories"
+                                     ToggleToolTip="显示或隐藏分类"
+                                     ToggleIcon="{StaticResource RowIcon.Category}"
+                                     IsRequested="{Binding Category.IsEnabled, Mode=TwoWay}"
+                                     IsAvailable="{Binding Category.HasChips}">
+                <local:CategoryChipBar DataContext="{Binding Category}"/>
+            </local:ModListHeaderMode>
+        </local:ModListPanel.HeaderModes>
+    </local:ModListPanel>
 </UserControl>

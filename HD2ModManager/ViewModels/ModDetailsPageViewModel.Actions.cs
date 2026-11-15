@@ -43,13 +43,18 @@ public partial class ModDetailsPageViewModel
         PageActions.Add(new PageActionViewModel(PageActionKind.CrossArmor, "生成替换其他护甲的模组", PlanCrossArmorTransferCommand, order: 31));
         PageActions.Add(new PageActionViewModel(PageActionKind.Compact, "规整护甲 patch 包", NormalizeArmorCommand, order: 32));
         PageActions.Add(new PageActionViewModel(PageActionKind.Package, "Patch 资源重打包", PatchResourceRepackagingCommand, order: 33));
-        PageActions.Add(new PageActionViewModel(PageActionKind.BatchDecoration, "批量生成装饰（以主体 Mod）", PlanBatchDecorationCommand, order: 40));
-        PageActions.Add(new PageActionViewModel(PageActionKind.DecorationPlan, "生成装饰 Mod（以来源 Mod）", PlanDecorationCommand, order: 41));
         PageActions.Add(new PageActionViewModel(PageActionKind.Helmet, "头盔合并到盔甲并输出", PlanHelmetToArmorMergeCommand, order: 50));
         PageActions.Add(new PageActionViewModel(PageActionKind.Merge, HelmetMergeToggleText, ToggleHelmetToArmorMergeCommand, order: 51));
-        PageActions.Add(new PageActionViewModel(PageActionKind.CustomModel, "一键转为自定义素体", ConvertToCustomModelCommand, tone: PageActionTone.Danger, order: 60));
-        PageActions.Add(new PageActionViewModel(PageActionKind.EditDecoration, "编辑装饰 Mod", EditDecorationCommand, order: 70));
+        // 名字改成「生成sectional版」：产出不再只是一具自定义素体，而是**带 section 组的**产物
+        // （7 标准槽 × 身形，每块几何能在游戏里单独开关），生成完直接进库。
+        // 原来那套"只转自定义素体"的用法已被它完全覆盖，所以不再另留入口。
+        PageActions.Add(new PageActionViewModel(PageActionKind.CustomModel, "生成sectional版", ConvertToCustomModelCommand, tone: PageActionTone.Primary, order: 60));
+        // 「用来源重构建」从 VPK 动作卡移到这里：它是 patch 级动作，而动作卡留给"这个 Mod 有什么"。
+        // 只有**根上有来源 .vpk** 的 Mod 才有它 —— 转出来的分件模组没有来源包，重构建无从谈起。
+        PageActions.Add(new PageActionViewModel(PageActionKind.RebuildVpk, "用来源重构建", RebuildVpkCommand, order: 40));
         PageActions.Add(new PageActionViewModel(PageActionKind.PatchRebuild, "重构 patch", RebuildSameKeyCommand, order: 71));
+        // 复制成独立命名空间的变体：两套外观能同时部署。只对 sectional / vpk2patch 类有意义。
+        PageActions.Add(new PageActionViewModel(PageActionKind.CloneVariant, "复制为变体", CloneVariantCommand, order: 72));
 
         SyncActionVisibility();
         // 状态一变就重算可见性与文案；动作集合本身不动，所以不会触发重排动画。
@@ -65,11 +70,23 @@ public partial class ModDetailsPageViewModel
             action.IsVisible = action.Kind switch
             {
                 PageActionKind.Table => CanUsePatchTools,
+                // 重构建对两档 sectional 系列都成立：有来源 .vpk 走 VPK 转换机，
+                // 有转换依据（sectional-source.json）走 legacy2sectional。
+                PageActionKind.RebuildVpk => HasRebuildSource,
                 PageActionKind.Fix or PageActionKind.CrossArmor or PageActionKind.Compact
                     or PageActionKind.Package or PageActionKind.Helmet or PageActionKind.Merge
-                    or PageActionKind.CustomModel => ShowPatchSettingsCard,
-                PageActionKind.BatchDecoration or PageActionKind.DecorationPlan => CanShowDecorationPlan,
-                PageActionKind.EditDecoration or PageActionKind.PatchRebuild => IsDecoration,
+                    => ShowPatchTools,
+                // 「生成sectional版」的来源集是 legacy 系列，但**宿主可以是逻辑容器**
+                // （把一个系列包起来、成员都是 legacy 的那种）。所以它的判据不是"自己有 patch"。
+                // 容器里到底有没有可用来源，由底栏在点击时判断——这里只负责让按钮出现。
+                //
+                // 可见性和可点性用**同一个属性**，这是刻意的：动作按钮走 Command 绑定，
+                // WPF 的 IsEnabledCore 会把 PageActionViewModel.IsEnabled 与 Command.CanExecute
+                // 相与，两套判据一旦不一致，就会出现"按钮显示着、但是灰的"（这里就发生过一次：
+                // 命令那边借了 CanPlanCrossArmorTransfer，逻辑容器上永远点不动）。
+                PageActionKind.CustomModel => CanConvertToSectional,
+                PageActionKind.PatchRebuild => IsDecoration,
+                PageActionKind.CloneVariant => CanCloneVariant,
                 _ => true,
             };
 

@@ -119,9 +119,6 @@ namespace HD2ModManager.ViewModels
         public bool CanPlanHelmetToArmorMerge => !_disposed && CanUsePatchTools && TryGetCurrentNode(out _);
         public bool CanToggleHelmetToArmorMerge => !_disposed && CanUsePatchTools && !_helmetMergeRunning && TryGetCurrentNode(out _);
         public bool IsDecoration => Mod?.IsDecoration == true;
-        public bool CanPlanDecoration => !_disposed && CanShowDecorationPlan && TryGetCurrentNode(out _);
-        public bool CanEditDecoration => !_disposed && IsDecoration && TryGetCurrentNode(out _);
-        public string DecorationSummary { get; private set; } = "正在读取装饰计划。";
         public ModListProjectionSource<ModCardViewModel> HostDecorations => _hostAttachments.Items;
         // Both a normal Mod and a logical/patch-bearing Option may own direct
         // options.  Empty options are valid structural parents, so their child
@@ -157,9 +154,6 @@ namespace HD2ModManager.ViewModels
         public RelayCommand ConvertToCustomModelCommand { get; }
         public RelayCommand PlanHelmetToArmorMergeCommand { get; }
         public RelayCommand ToggleHelmetToArmorMergeCommand { get; }
-        public RelayCommand PlanDecorationCommand { get; }
-        public RelayCommand PlanBatchDecorationCommand { get; }
-        public RelayCommand EditDecorationCommand { get; }
         public RelayCommand RunAdvancedAnalysisCommand { get; }
 		public RelayCommand RunDependencyGraphTestCommand { get; }
         public RelayCommand CompareDependencyGraphCommand { get; }
@@ -203,12 +197,9 @@ namespace HD2ModManager.ViewModels
             RebuildSameKeyCommand = new RelayCommand(_ => OpenSameKeyRebuild(), _ => CanRebuildSameKey);
             NormalizeArmorCommand = new RelayCommand(_ => OpenArmorNormalization(), _ => CanNormalizeArmor);
             PlanCrossArmorTransferCommand = new RelayCommand(async _ => await PlanCrossArmorTransferAsync(), _ => CanPlanCrossArmorTransfer);
-            ConvertToCustomModelCommand = new RelayCommand(async _ => await OpenCustomModelConversionAsync(), _ => CanPlanCrossArmorTransfer);
+            ConvertToCustomModelCommand = new RelayCommand(async _ => await OpenCustomModelConversionAsync(), _ => CanConvertToSectional);
             PlanHelmetToArmorMergeCommand = new RelayCommand(_ => OpenHelmetToArmorMergePlan(), _ => CanPlanHelmetToArmorMerge);
             ToggleHelmetToArmorMergeCommand = new RelayCommand(async _ => await ToggleHelmetToArmorMergeAsync(), _ => CanToggleHelmetToArmorMerge);
-            PlanDecorationCommand = new RelayCommand(_ => OpenDecorationPlan(), _ => CanPlanDecoration);
-            PlanBatchDecorationCommand = new RelayCommand(_ => OpenBatchDecorationPlan(), _ => CanPlanDecoration);
-            EditDecorationCommand = new RelayCommand(_ => OpenDecorationEditor(), _ => CanEditDecoration);
             RunAdvancedAnalysisCommand = new RelayCommand(async _ => await RunAdvancedAnalysisAsync(), _ => CanRunAdvancedAnalysis);
 			RunDependencyGraphTestCommand = new RelayCommand(async _ => await RunDependencyGraphTestAsync(), _ => CanRunDependencyGraphTest);
 			CompareDependencyGraphCommand = new RelayCommand(async _ => await CompareDependencyGraphAsync(), _ => CanCompareDependencyGraph);
@@ -222,7 +213,6 @@ namespace HD2ModManager.ViewModels
             _derivedState.SnapshotChanged += _snapshotChangedHandler;
             if (_selection is not null) _selection.SelectionChanged += OnSelectionChanged;
             Refresh();
-            if (IsDecoration) RefreshDecorationSummary();
             if (CanUsePatchTools) _ = RefreshInformationProductsAsync();
             RegisterPageActions();
         }
@@ -770,6 +760,7 @@ namespace HD2ModManager.ViewModels
             RefreshDerivedStatus();
             RefreshHostDecorations();
             RefreshVpk();
+            RefreshMaterialOptions();
             OnPropertyChanged(nameof(ProfileStatus));
             OnPropertyChanged(nameof(FileIntegritySummary));
             OnPropertyChanged(nameof(ConflictSummary));
@@ -795,7 +786,6 @@ namespace HD2ModManager.ViewModels
 			OnPropertyChanged(nameof(HelmetMergeToggleText));
 			OnPropertyChanged(nameof(CanPlanHelmetToArmorMerge));
 			OnPropertyChanged(nameof(CanToggleHelmetToArmorMerge));
-			OnPropertyChanged(nameof(CanPlanDecoration));
 			OnPropertyChanged(nameof(IsDecoration));
             OnPropertyChanged(nameof(IsOption));
             OnPropertyChanged(nameof(IsReShade));
@@ -1091,28 +1081,19 @@ namespace HD2ModManager.ViewModels
             shell.OpenSameKeyRebuild(new SameKeyRebuildBottomBarViewModel(RebuildSameKeyAsync));
         }
 
+        /// <summary>
+        /// 在宿主附件列表上启用/停用某个附件。<b>现在只剩选项</b>：装饰包已不再支持。
+        /// <para>
+        /// 方法名与行动作名里的 "Decoration" 是历史命名（那个列表以前同时列装饰与选项）；
+        /// 改名会波及 XAML 的 RowActions 与行动作表，收益不值那个风险。
+        /// </para>
+        /// </summary>
         public async Task ToggleDecorationForCurrentHostAsync(ModCardViewModel? card)
         {
-            if (card is null || Mod is null || !CanHostAttachments || (!card.Mod.IsDecoration && !card.Mod.IsOption)) return;
-            if (card.Mod.IsOption)
-            {
-                var optionMessage = await _library.ToggleOptionForHostAsync(card.Mod.Guid, Mod.Guid).ConfigureAwait(true);
-                _notifications?.Show(optionMessage);
-                RefreshHostDecorations();
-                return;
-            }
-            try
-            {
-                var enabled = _library.IsDecorationEnabledForHost(card.Mod.Guid, Mod.Guid);
-                var result = await _library.SetDecorationEnabledForHostAsync(card.Mod.Guid, Mod.Guid, !enabled).ConfigureAwait(true);
-                _notifications?.Show(result.StatusText);
-                RefreshHostDecorations();
-            }
-            catch (Exception exception)
-            {
-                LogService.Error($"主体详情启用装饰失败：主体={Mod.Guid}，装饰={card.Mod.Guid}，异常={exception}");
-                _notifications?.Show($"启用装饰失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(8));
-            }
+            if (card is null || Mod is null || !CanHostAttachments || !card.Mod.IsOption) return;
+            var optionMessage = await _library.ToggleOptionForHostAsync(card.Mod.Guid, Mod.Guid).ConfigureAwait(true);
+            _notifications?.Show(optionMessage);
+            RefreshHostDecorations();
         }
 
         public async Task ReorderHostOptionsAsync(IReadOnlyList<string> draggedKeys, int insertionIndex)
@@ -1187,8 +1168,8 @@ namespace HD2ModManager.ViewModels
                 : ProfileOptionRouteResolution.Empty;
             EnsureDisplayedHostOptionOrders(Mod.Guid, directOptions);
             _directHostOptionCount = directOptions.Count;
-            var decorations = _library.GetDecorationsForHost(Mod.Guid);
-            var attachmentStates = new List<HostAttachmentListState>(directOptions.Count + decorations.Count);
+            // 装饰包已不再支持：宿主附件列表只剩选项。
+            var attachmentStates = new List<HostAttachmentListState>(directOptions.Count);
 
             for (var index = 0; index < directOptions.Count; index++)
             {
@@ -1203,15 +1184,6 @@ namespace HD2ModManager.ViewModels
                     activationLabel: routePresentation.ActivationLabel,
                     activationTone: routePresentation.ActivationTone,
                     activationSummary: routePresentation.Summary));
-            }
-
-            foreach (var decoration in decorations)
-            {
-                attachmentStates.Add(HostAttachmentListState.Create(
-                    decoration,
-                    IsHostDecorationSelected(decoration.Guid),
-                    _library.IsDecorationEnabledForHost(decoration.Guid, Mod.Guid),
-                    directOptionCount: directOptionCounts.GetValueOrDefault(decoration.Guid)));
             }
 
             _hostAttachmentStates = attachmentStates;
@@ -1630,8 +1602,9 @@ namespace HD2ModManager.ViewModels
 			PlanCrossArmorTransferCommand.RaiseCanExecuteChanged();
 			PlanHelmetToArmorMergeCommand.RaiseCanExecuteChanged();
 			ToggleHelmetToArmorMergeCommand.RaiseCanExecuteChanged();
-			PlanDecorationCommand.RaiseCanExecuteChanged();
-			PlanBatchDecorationCommand.RaiseCanExecuteChanged();
+			// 「生成sectional版」的判据里也有 Mod 本身（HasPatchContent / 逻辑容器），
+			// 换条目时必须跟着重算，否则灰掉的按钮再也亮不回来。
+			RaiseCanConvertToSectionalChanged();
         }
 
         private static string SanitizeFileName(string name) => string.Concat(name.Select(character => System.IO.Path.GetInvalidFileNameChars().Contains(character) ? '_' : character)).Trim();
@@ -1650,12 +1623,6 @@ namespace HD2ModManager.ViewModels
             }
         }
 
-        private void OpenDecorationPlan()
-        {
-            if (Mod is null || !CanShowDecorationPlan) return;
-            if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
-                shell.OpenDecorationPlan(Mod.Guid);
-        }
 
         private void OpenHelmetToArmorMergePlan()
         {
@@ -1720,31 +1687,8 @@ namespace HD2ModManager.ViewModels
             }
         }
 
-        private void OpenBatchDecorationPlan()
-        {
-            if (Mod is null || !CanShowDecorationPlan) return;
-            if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
-                shell.OpenBatchDecorationPlan(Mod.Guid);
-        }
 
-        private void OpenDecorationEditor()
-        {
-            if (Mod is null || !CanEditDecoration) return;
-            if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell) shell.OpenDecorationEditor(Mod.Guid);
-        }
 
-        private void RefreshDecorationSummary()
-        {
-            try
-            {
-                var path = Path.Combine(_library.ResolveAbsolutePath(Mod?.SourcePath), "decoration.json");
-                var plan = JsonSerializer.Deserialize<DecorationPlanDocument>(File.ReadAllText(path), new JsonSerializerOptions(JsonSerializerDefaults.Web));
-                if (plan is null) return;
-                DecorationSummary = $"来源快照：{plan.SourceUnits.Count} 个 Unit，{FileGroupCount} 个 Patch 组。\n目标部位：{plan.Plan.TargetPart}；目标身形：{plan.Plan.TargetBodyVariant}；双身形：{plan.Plan.DualVariantMode}。\n来源层级：{(plan.Plan.SourcePartLayers.Count == 0 ? "未记录" : string.Join("、", plan.Plan.SourcePartLayers))}；来源目标一致时{(plan.Plan.ReplaceWhenSourcePartLayerMatches ? "替换主体几何" : "直接注入")}。\n目标主体：{plan.Plan.TargetModGuids.Count} 个。";
-                OnPropertyChanged(nameof(DecorationSummary));
-            }
-            catch { DecorationSummary = "装饰计划无法读取。"; OnPropertyChanged(nameof(DecorationSummary)); }
-        }
 
         private async Task DeleteAsync()
         {

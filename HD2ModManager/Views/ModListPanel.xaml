@@ -47,14 +47,31 @@
                          Style="{StaticResource AppSearchBox}"
                          Margin="0,0,8,0"
                          VerticalAlignment="Center"
-                         Visibility="Collapsed"
                          Opacity="0"
+                         IsHitTestVisible="False"
+                         Focusable="False"
                          Text="{Binding SearchText, ElementName=Root, UpdateSourceTrigger=PropertyChanged}"
                          ToolTip="搜索名称或备注"/>
-                <Button Grid.Column="1"
-                        Style="{StaticResource AppSearchToggleButton}"
-                        ToolTip="显示或隐藏搜索"
-                        Click="OnToggleSearchClick"/>
+                <!-- 引用方注册的额外状态（分类就是其中一个）挂在这一层上：
+                     Grid.RowSpan=2 让它同时占掉标题行和摘要行。面板负责互斥与交叉淡入淡出，
+                     见 ModListPanel.xaml.cs 的 ApplyHeaderContent。 -->
+                <Grid x:Name="HeaderModeLayer"
+                      Grid.RowSpan="2"
+                      Grid.Column="0"
+                      Panel.ZIndex="1"
+                      Margin="0,0,8,0"
+                      VerticalAlignment="Center"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <!-- 注册状态的切换按钮由代码生成（见 RebuildHeaderModeToggles）：
+                         注册项本身是 UIElement，放进 ItemsControl 会被当成容器使用，
+                         而它已经挂在 HeaderModeLayer 上了。搜索键永远排在最后。 -->
+                    <StackPanel x:Name="HeaderModeToggles"
+                                Orientation="Horizontal"
+                                VerticalAlignment="Center"/>
+                    <Button Style="{StaticResource AppSearchToggleButton}"
+                            ToolTip="显示或隐藏搜索"
+                            Click="OnToggleSearchClick"/>
+                </StackPanel>
                 <TextBlock x:Name="HeaderSummaryElement"
                            Grid.Row="1"
                            Grid.ColumnSpan="2"
@@ -62,14 +79,17 @@
                            Style="{StaticResource AppSupportingText}"
                            VerticalAlignment="Center"
                            TextTrimming="CharacterEllipsis"/>
+                <!-- 搜索动作区：Content 与 Visibility 都由 ApplyHeaderContent 管。
+                     不能在这里常驻可见——它的 Content 是宿主页面的 DataContext，
+                     在没有 SearchActionsTemplate 的宿主上会被隐式 DataTemplate 整页再渲染一遍，
+                     而页面里往往又有 ModListPanel，于是无限递归（StackOverflow）。
+                     所以只有"真的要用它"时才给它 Content 并参与布局。 -->
                 <ContentPresenter x:Name="HeaderSearchActions"
                                   Grid.Row="1"
                                   Grid.ColumnSpan="2"
-                                  Content="{Binding DataContext, ElementName=Root}"
                                   ContentTemplate="{Binding SearchActionsTemplate, ElementName=Root}"
                                   VerticalAlignment="Center"
-                                  Visibility="Collapsed"
-                                  Opacity="0"/>
+                                  Visibility="Collapsed"/>
             </Grid>
         </Border>
         <Border Style="{StaticResource CardContainer}" Padding="0">
@@ -199,6 +219,8 @@
                                                 <Binding Path="RowActions" ElementName="Root"/>
                                                 <Binding/>
                                                 <Binding ElementName="Root"/>
+                                                <!-- 分类开关变化时重新生成行动作（"设置分类"按钮随之出现/消失）。 -->
+                                                <Binding Path="CategoryFilter.IsEnabled" ElementName="Root" FallbackValue="False"/>
                                             </MultiBinding>
                                         </ItemsControl.ItemsSource>
                                         <ItemsControl.ItemsPanel>

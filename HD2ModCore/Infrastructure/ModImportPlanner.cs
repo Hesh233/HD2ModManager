@@ -229,6 +229,7 @@ public sealed class ModImportPlanner : IModImportPlanner
 				&& node.PatchGroups.Count == 0
 				&& sourcePaths.Length == 0;
 			var itemDiagnostics = new List<ImportPlanDiagnostic>();
+
 			if (isLogicalNode)
 				itemDiagnostics.Add(new ImportPlanDiagnostic("LogicalOption", "该条目只承载选项关系，不直接包含 patch。", sourcePath));
 			foreach (var conflict in planned.OptionPathConflicts.Where(conflict => conflict.AffectedParentOptionIds.Contains(node.Id)))
@@ -289,7 +290,7 @@ public sealed class ModImportPlanner : IModImportPlanner
 		=> node.Metadata.Kind switch
 		{
 			ModNodeKind.Option => ImportPlanItemRole.Option,
-			ModNodeKind.Decoration => ImportPlanItemRole.Decoration,
+
 			ModNodeKind.ReShade => ImportPlanItemRole.ReShade,
 			_ when node.Id == rootId && node.PatchGroups.Count == 0 => ImportPlanItemRole.PlaceholderHost,
 			_ => ImportPlanItemRole.Host,

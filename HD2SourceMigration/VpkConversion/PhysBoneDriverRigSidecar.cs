@@ -113,7 +113,7 @@ public static class PhysBoneDriverRigSidecar
 
 	/// <summary>
 	/// 在 mod 目录的几个约定位置找 driver rig 文件，找不到返回 <c>null</c>。
-	/// 顺序与 <see cref="PhysBoneRigSidecar.Locate"/> 一致：根 → <c>vpk2patch/</c> → <c>Overwrite/</c>。
+	/// 顺序与 <see cref="PhysBoneRigSidecar.Locate"/> 一致：根 → <c>sectional/</c> → <c>vpk2patch/</c> → <c>Overwrite/</c>。
 	/// </summary>
 	public static string? Locate(string modDirectory)
 	{
@@ -121,8 +121,10 @@ public static class PhysBoneDriverRigSidecar
 		foreach (var directory in new[]
 		{
 			modDirectory,
-			Path.Combine(modDirectory, "vpk2patch"),
-			Path.Combine(modDirectory, "Overwrite"),
+			// Keep the spring and driver sidecars on the same import-layer search path.
+			Path.Combine(modDirectory, HD2ModAdaptation.PatchReconstruction.ModContentLayerNames.Sectional),
+			Path.Combine(modDirectory, HD2ModAdaptation.PatchReconstruction.ModContentLayerNames.LegacySectional),
+			Path.Combine(modDirectory, HD2ModAdaptation.PatchReconstruction.ModContentLayerNames.Overwrite),
 		})
 		{
 			var path = Path.Combine(directory, FileName);

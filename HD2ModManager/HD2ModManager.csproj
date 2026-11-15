@@ -1,11 +1,21 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <!-- 程序版本号（SemVer）。骨架测试设置页显示“基于此版本 骨架测试”；后续同步上游代码需更新此处 Version。
+         发布脚本也据此给压缩包命名。骨架测试分支停用应用内更新，不另行硬编码界面版本。 -->
+    <Version>1.5.17</Version>
     <ApplicationIcon>Resources\helldivers2.ico</ApplicationIcon>
   </PropertyGroup>
+  <!-- Upstream replaced the legacy decoration screens with sectional models.
+       Keep the local reference sources, but do not reconnect unsupported legacy UI. -->
+  <ItemGroup>
+    <Compile Remove="ViewModels\DecorationPlanPageViewModel.cs" />
+    <Compile Remove="ViewModels\BatchDecorationPlanPageViewModel.cs" />
+    <Compile Remove="Services\DecorationPatchSnapshotService.cs" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\HD2ModCore\HD2ModCore.csproj" />
     <!-- Build the headless companion with the desktop application, without
@@ -14,6 +24,7 @@
   </ItemGroup>
   <ItemGroup>
     <Resource Include="Resources\helldivers2.ico" />
+    <Content Include="..\tools\manager-packaging\生成链版本.txt" Link="生成链版本.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\..\config.toml" Link="config.toml" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest">
       <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
     </Content>
@@ -47,12 +58,17 @@
        intentionally relocates the published CLI into bin and validates it
        against the matching release layout. -->
   <Target Name="ValidateNativeRuntimeForPublish" BeforeTargets="PrepareForPublish">
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)\..\tools\native-python\anim_batch_mod\presets\single-normal-reference\playback.zip')"
+           Text="缺少已验收 R2 回放模板。请恢复 presets/single-normal-reference/playback.zip，不能发布缺少单骨架模板的包。" />
+    <GetFileHash Files="$(MSBuildProjectDirectory)\..\tools\native-python\anim_batch_mod\presets\single-normal-reference\playback.zip" Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="AcceptedSingleTemplateWithHash" />
+    </GetFileHash>
+    <Error Condition="'%(AcceptedSingleTemplateWithHash.FileHash)' != '5DF2F22B11BBA8B30FFA4A231C6C56949ADA67B66D56B429482E260E052DDC5A'"
+           Text="R2 回放模板 SHA256 不匹配已验收版本，拒绝发布。" />
     <Error Condition="!Exists('$(MSBuildProjectDirectory)\..\tools\native-python\anim_batch_mod\runtime\python.exe')"
            Text="先运行 tools/BuildNativeRuntime.ps1，再发布包含原生骨架转换的管理器。" />
   </Target>
   <Target Name="CopyHd2ModCliArtifacts" AfterTargets="Build">
-    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\HD2ModCli\Armor-Diagnostics.cmd" DestinationFolder="$(TargetDir)" />
-    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\HD2ModCli\ARMOR-DIAGNOSTICS.md" DestinationFolder="$(TargetDir)hd2mod-docs" />
     <MSBuild Projects="$(MSBuildProjectDirectory)\..\HD2ModCli\HD2ModCli.csproj" Targets="GetHd2ModCliArtifactFiles" Properties="Configuration=$(Configuration);Platform=$(Platform);BaseOutputPath=$(BaseOutputPath)">
       <Output TaskParameter="TargetOutputs" ItemName="Hd2ModCliArtifact" />
     </MSBuild>
@@ -71,5 +87,12 @@
   <Target Name="PublishHd2ModCliArtifacts" AfterTargets="Publish" DependsOnTargets="CopyHd2ModCliArtifacts">
     <Copy SourceFiles="@(Hd2ModCliArtifact)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
     <Error Condition="!Exists('$(PublishDir)hd2mod.dll')" Text="发布目录缺少 hd2mod.dll，不能交付无法启动的 CLI。" />
+  </Target>
+  <!-- Both GUI root and Python bundle must use the same explicit baseline.
+       Existing user/mod snapshots are not overwritten by this build guard. -->
+  <Target Name="ValidateAnimationConfigurationBaseline" BeforeTargets="PrepareForBuild;Publish">
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)\..\tools\native-python\anim_batch_mod\runtime\python.exe')" Text="Official animation Python is missing; run tools/BuildNativeRuntime.ps1 first." />
+    <Exec Command="&quot;$(MSBuildProjectDirectory)\..\tools\native-python\anim_batch_mod\runtime\python.exe&quot; -X utf8 &quot;$(MSBuildProjectDirectory)\..\tools\check_animation_config.py&quot; --source-config &quot;$(MSBuildProjectDirectory)\..\..\config.toml&quot; --bundle-root &quot;$(MSBuildProjectDirectory)\..\tools\native-python\anim_batch_mod&quot;" />
+    <Exec Command="&quot;$(MSBuildProjectDirectory)\..\tools\native-python\anim_batch_mod\runtime\python.exe&quot; -X utf8 &quot;$(MSBuildProjectDirectory)\..\tools\check_attachment_profile.py&quot; --bundle-root &quot;$(MSBuildProjectDirectory)\..\tools\native-python\anim_batch_mod&quot; --source-policy &quot;$(MSBuildProjectDirectory)\..\HD2PhysBoneCompat\src\production\attachment_repair_policy.json&quot;" />
   </Target>
 </Project>

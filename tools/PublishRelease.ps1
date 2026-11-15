@@ -1,8 +1,11 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string] $OutputDirectory = "artifacts\publish",
     [switch] $KeepExistingOutput,
-    [switch] $CompatibilityMode
+    [switch] $CompatibilityMode,
+    # Release version baked into the archive names and update-package.json. Defaults to <Version> of HD2ModManager.csproj,
+    # which is also the version the running app reports, so the in-app updater can compare the two.
+    [string] $Version
 )
 
 $ErrorActionPreference = 'Stop'
@@ -19,6 +22,14 @@ $OutputEncoding = $publishUtf8
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $managerProject = Join-Path $repoRoot 'HD2ModManager\HD2ModManager.csproj'
 $cliProject = Join-Path $repoRoot 'HD2ModCli\HD2ModCli.csproj'
+
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    [xml] $managerXml = Get-Content -LiteralPath $managerProject -Raw
+    $Version = @($managerXml.Project.PropertyGroup | ForEach-Object { $_.Version } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1)[0]
+}
+if ($Version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
+    throw "Release version '$Version' is not a SemVer x.y.z[-pre]. Set <Version> in HD2ModManager.csproj or pass -Version."
+}
 $cliBuildOutput = Join-Path $repoRoot 'HD2ModCli\bin\Release\net10.0\win-x64'
 $cliDocumentationSource = Join-Path $repoRoot 'HD2ModCli'
 $releaseReadmeSource = Join-Path $repoRoot 'tools\ReleasePackageReadme.md'
@@ -235,11 +246,20 @@ function Assert-ReleaseLayout {
         [pscustomobject] $RuntimeLayout
     )
 
+    & (Join-Path $PackageDirectory 'anim_batch_mod\runtime\python.exe') -X utf8 (Join-Path $repoRoot 'tools\check_animation_config.py') --manager-root $PackageDirectory
+    if ($LASTEXITCODE -ne 0) { throw 'Animation configuration drift in release stage; do not publish stale defaults.' }
+
+    & (Join-Path $PackageDirectory 'anim_batch_mod\runtime\python.exe') -X utf8 (Join-Path $repoRoot 'tools\check_attachment_profile.py') --manager-root $PackageDirectory --source-policy (Join-Path $repoRoot 'HD2PhysBoneCompat\src\production\attachment_repair_policy.json')
+    if ($LASTEXITCODE -ne 0) { throw 'Release profile/version/skeleton configuration drift.' }
+    & dotnet build (Join-Path $repoRoot 'tools\ManagerPackageSupport\ManagerPackageSupport.csproj') -c Release --no-restore -v quiet
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot build production profile release verifier.' }
+    & dotnet (Join-Path $repoRoot 'tools\ManagerPackageSupport\bin\Release\net10.0\ManagerPackageSupport.dll') companion-check $PackageDirectory
+    if ($LASTEXITCODE -ne 0) { throw 'Release Core/profile/skeleton mismatch.' }
+
     $requiredFiles = @(
         'HD2ModManager.exe',
         'README.md',
         'hd2mod.cmd',
-        'Armor-Diagnostics.cmd',
         'data\resources\archivehashes.json',
         'data\resources\asset-metadata-manifest.json',
         'data\resources\bonehash.txt',
@@ -289,6 +309,30 @@ function Assert-ReleaseLayout {
         Where-Object { Test-Path -LiteralPath (Join-Path $PackageDirectory $_) }
     if ($legacyRootArtifacts.Count -gt 0) {
         throw "Legacy CLI artifacts leaked into the release root: $($legacyRootArtifacts -join ', ')"
+    }
+}
+
+# The in-app updater only replaces these shipped locations and refuses any package that carries anything else
+# (settings.json, mods, config, data\indexes, ...), so a stray user file in the stage fails the release here.
+function Assert-UpdatablePackage {
+    param([string] $PackageDirectory, [string] $Version)
+
+    $allowedFiles = @('HD2ModManager.exe', 'README.md', 'hd2mod.cmd', 'update-package.json')
+    $allowedDirectories = @('bin\', 'third_party\', 'hd2mod-docs\', 'data\resources\')
+    $root = (Resolve-Path -LiteralPath $PackageDirectory).Path.TrimEnd('\')
+    foreach ($file in Get-ChildItem -LiteralPath $PackageDirectory -Recurse -File) {
+        $relative = $file.FullName.Substring($root.Length + 1)
+        $ok = $allowedFiles -contains $relative
+        foreach ($directory in $allowedDirectories) {
+            if ($relative.StartsWith($directory, [StringComparison]::OrdinalIgnoreCase)) { $ok = $true }
+        }
+        if (-not $ok) { throw "Release package contains a path the in-app updater would refuse: $relative" }
+    }
+
+    # The version the app reports must be the version in the marker and the archive name.
+    $reported = [System.Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $PackageDirectory 'HD2ModManager.exe')).ProductVersion
+    if ($null -eq $reported -or -not ($reported -eq $Version -or $reported.StartsWith("$Version+"))) {
+        throw "HD2ModManager.exe reports version '$reported' but the release is '$Version'."
     }
 }
 
@@ -356,6 +400,8 @@ function Publish-ReleaseVariant {
         '-p:IncludeNativeLibrariesForSelfExtract=true',
         '-p:DebugType=None',
         '-p:DebugSymbols=false',
+        # The running app reports this as its version; the in-app updater compares it with the release tag.
+        "-p:Version=$Version",
         # The CLI ProjectReference is build-only (ReferenceOutputAssembly=false)
         # and is published independently below, so SDK executable-reference
         # self-contained validation is not relevant for this layout.
@@ -429,12 +475,17 @@ function Publish-ReleaseVariant {
     Write-RootReadme -PackageDirectory $stageDirectory -IncludesPrivateRuntime $IncludesPrivateRuntime -RuntimeLayout $RuntimeLayout -CompatibilityMode $CompatibilityMode
     Write-CliLauncher -PackageDirectory $stageDirectory
     Copy-MaterialToolchain -PackageDirectory $stageDirectory
-    Copy-Item -LiteralPath (Join-Path $cliDocumentationSource 'Armor-Diagnostics.cmd') -Destination $stageDirectory -Force
-    Copy-Item -LiteralPath (Join-Path $cliDocumentationSource 'ARMOR-DIAGNOSTICS.md') -Destination $documentationDirectory -Force
-    Assert-ReleaseLayout -PackageDirectory $stageDirectory -IncludesPrivateRuntime $IncludesPrivateRuntime -RuntimeLayout $RuntimeLayout
-
     $variantLabel = if ($CompatibilityMode) { "compat-$VariantName" } else { $VariantName }
-    $archivePath = Join-Path $archiveDirectory "HD2ModManager-win-x64-$Timestamp-$variantLabel.zip"
+    # The in-app updater reads this marker to learn which package variant it is running from; a package whose
+    # version/variant does not match what the release announced is refused before anything is replaced.
+    $markerJson = [ordered]@{ version = $Version; variant = $variantLabel } | ConvertTo-Json -Compress
+    [System.IO.File]::WriteAllText((Join-Path $stageDirectory 'update-package.json'), $markerJson, (New-Object System.Text.UTF8Encoding($false)))
+    Assert-ReleaseLayout -PackageDirectory $stageDirectory -IncludesPrivateRuntime $IncludesPrivateRuntime -RuntimeLayout $RuntimeLayout
+    Assert-UpdatablePackage -PackageDirectory $stageDirectory -Version $Version
+
+    # The updater looks packages up by exactly this name: HD2ModManager-<version>-win-x64-<variant>.zip.
+    $archivePath = Join-Path $archiveDirectory "HD2ModManager-$Version-win-x64-$variantLabel.zip"
+    if (Test-Path -LiteralPath $archivePath) { Remove-Item -LiteralPath $archivePath -Force }
     Compress-ReleaseStage -StageDirectory $stageDirectory -ArchivePath $archivePath
     Remove-PublishOwnedPath $stageDirectory
     return $archivePath
@@ -463,6 +514,14 @@ if ((Get-ChildItem -LiteralPath $stagingDirectory -Force | Measure-Object).Count
     Remove-PublishOwnedPath $stagingDirectory
 }
 
+# SHA256SUMS (sha256sum format) next to the archives; the in-app updater checks every download against it. It lists
+# every archive of this version in the directory, so publishing the compat variants into the same directory
+# (publish-compat.ps1 -OutputDirectory <same dir>) produces one file covering all four packages.
+$sumLines = @(Get-ChildItem -LiteralPath $archiveDirectory -Filter "HD2ModManager-$Version-win-x64-*.zip" -File | Sort-Object Name |
+    ForEach-Object { '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name })
+[System.IO.File]::WriteAllText((Join-Path $archiveDirectory 'SHA256SUMS'), (($sumLines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+Write-Host "Checksums: $(Join-Path $archiveDirectory 'SHA256SUMS')"
+Write-Host "Release version: $Version"
 Write-Host "Complete package: $completeArchive"
 Write-Host "Requires .NET package: $requiresDotNetArchive"
 Write-Host "Shared private runtime: .NET $($privateRuntimeLayout.RuntimeVersion)"

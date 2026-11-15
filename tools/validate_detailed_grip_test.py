@@ -1,7 +1,7 @@
 """Read-back validation of test Lua, exact existing rigs and model bindings."""
 from pathlib import Path
 import json,sys,zipfile,hashlib,struct
-ROOT=Path(__file__).resolve().parents[1];OUT=ROOT/'outputs/grip-rollback-ragdoll-test-20261108-v7';BASE=ROOT/'outputs/native-v34-b23-integrated-20261105/manager-1.0.7'
+ROOT=Path(__file__).resolve().parents[1];OUT=ROOT/'outputs/grip-equipment-perf-test-20261108-v9';BASE=ROOT/'outputs/native-v34-b23-integrated-20261105/manager-1.0.7'
 sys.path.insert(0,str(ROOT.parents[1]));sys.path.insert(0,str(BASE))
 import lz4;sys.modules['utils.lz4_311']=lz4
 from anim_batch_mod.archive import TocArchive
@@ -18,8 +18,8 @@ def main():
   name=row['model'];base=BASE/f'test-library/[骨骼挂点修正]{name}'
   with zipfile.ZipFile(row['package']) as z:
    assert z.testzip() is None;p=json.loads(z.read('attachment-profile.json'));manifest=json.loads(z.read('manifest.json'))
-   assert '测试' in manifest['Name'] and '详细' in manifest['Name'] and VERSION in manifest['Description']
-   assert p['testRepairs']['version']==VERSION and p['logging']['compact'] is False and p['logging']['detailed'] is True
+   assert '测试' in manifest['Name'] and '低负载' in manifest['Name'] and VERSION in manifest['Description']
+   assert p['testRepairs']['version']==VERSION and p['logging']['compact'] is True and p['logging']['detailed'] is False
    beacon=p['testRepairs']['beacon'];fixtures=json.loads((OUT/'equipment-fixtures.json').read_text(encoding='utf-8'));bf=fixtures[beacon['resource']]
    assert beacon['count']==bf['count']==37 and beacon['neverWriteBeaconOrEffects'] is True
    for node in p['consumers'][beacon['resource']]['nodes']:
@@ -28,9 +28,30 @@ def main():
    for node in beacon['probeNodes']:assert bf['hashes'][node['index']]==node['hash']
    assert p['testRepairs']['aimDiagnostics']['readOnly'] is True
    assert 'nativeReverse' not in p['testRepairs'] and p['testRepairs']['reverseExperimentRemoved']
-   assert p['testRepairs']['bodyDiagnostics']['readOnly'] and p['testRepairs']['bodyDiagnostics']['bypassNoAnimationStateMachine']
+   assert p['testRepairs']['bodyDiagnostics']['readOnly'] and not p['testRepairs']['bodyDiagnostics']['bypassNoAnimationStateMachine']
    assert p['testRepairs']['bodyDiagnostics']['requireObservedStateMachinePresent']
+   assert p['testRepairs']['dualRagdollOriginal'] and not p['testRepairs']['bodyDiagnostics']['enabled']
+   assert not p['testRepairs']['aimDiagnostics']['enabled'] and not p['testRepairs']['gripTracking']['enabled']
+   assert p['leftGrip']['weaponTargets']['80f1a156d9fa1e36']['leftPolicy']=='always'
+   assert p['testRepairs']['heldEquipment']['nativeRightFallback']['64cdb52aca152be1']['count']==24
+   assert p['leftGrip']['weaponTargets']['51f50d6321f52f3d']['leftPolicy']=='none'
    assert p['testRepairs']['bodyDiagnostics']['maxUnownedModels']==6
+   fk=p['testRepairs']['sourceFkRefresh'];assert fk['sameLocalValuesOnly'] and fk['nativeBonesReadOnly']
+   assert fk['enabled'] and fk['entryRootsOnly'] and fk['stages']==['after_body_sync','after_restore']
+   assert len(fk['levels'])==1 and len(fk['levels'][0])==3
+   assert all(n['index']>=107 for g in fk['levels'] for n in g)
+   assert p['logging']['maxBytes']==8*1024*1024 and p['logSeconds']==1
+   assert not p['sidearmDiagnostics']['enabled'] and not p['diagnostics']['consumers']
+   for rid in ('b98f2b3d1bde24b0','bf7082f0287c254f','9c22a90da9c79de3','411c4fd07740a7dd','51f50d6321f52f3d','9b75217d8312dd67','14368dc8784220b0','68513d59bafa8c7a','7f19d05cd188c768'):
+    spec=p['consumers'][rid];f=fixtures[rid]
+    assert spec['verifiedComponent'] and spec['count']==f['count']
+    for node in spec['nodes']:
+     assert f['hashes'][node['index']]==bone_name_hash(node['name'])
+     assert f['parents'][node['index']]==node['parent']
+   foregrip=p['consumers']['411c4fd07740a7dd']
+   assert foregrip['linkRootIndex']==2 and foregrip['linkRootHash']==fixtures['411c4fd07740a7dd']['hashes'][2]
+   assert sum(n['parent']==2 for n in foregrip['nodes'])>=2
+
    tracking=p['testRepairs']['gripTracking'];assert tracking['readOnly'] and tracking['solverUnchangedFromV4']
    assert tracking['resources']=={'dbb6c961c59fadc1':True}
    assert tracking['stages']==['final_output','next_render_input']
@@ -49,6 +70,7 @@ def main():
    raw=TocArchive.parse_parts(z.read('9ba626afa44a3aa3.patch_0'),load_external_data=False);data=bytes(next(iter(raw.entries.values())).toc_data);n,v=struct.unpack_from('<II',data)
    assert v==2 and data[8:8+n]==source and n+8==len(data)
    ok,error=LuaRuntime().eval('function(s)local f,e=loadstring(s);return f~=nil,e end')(source.decode());assert ok,error
+   assert b'TEST_ONLY_PERF' in source and b'hd2_grip_TEST_PERF_' in source
    assert b'TEST_ONLY_DETAILED' in source and b'hd2_grip_TEST_DETAILED_' in source and b'test_grip_tracking_probe' in source
    for suffix in ('','.gpu_resources','.stream'):assert z.read('9ba626afa44a3aa3.patch_1'+suffix)==(base/('9ba626afa44a3aa3.patch_1'+suffix)).read_bytes()
    rig=TocArchive.parse_parts(z.read('9ba626afa44a3aa3.patch_1'),load_external_data=False)
@@ -56,6 +78,7 @@ def main():
    nodes=list(p['avatar']['nodes'])+p['leftGrip']['nodes']+p['leftGrip']['outputs']+p['rightGrip']['nodes']+p['rightGrip']['outputs']+p['testRepairs']['poseProbes']
    for pair in p['testRepairs']['bodyDiagnostics']['pairs']:
     nodes += [pair[k] for k in ('source','native','reference') if pair.get(k)]
+   nodes += [n for g in p['testRepairs']['sourceFkRefresh']['levels'] for n in g]
    nodes += list(p['testRepairs']['gripTracking']['actorNodes'].values())
    nodes += [p[k] for k in ('sourceRight','sourceLeft','nativeRight','nativeLeft','target','originalMount','sourceRightMount') if p.get(k)]
    for a in p['attachments']:nodes += [a[k] for k in ('node','source','native','reference','sourceMount') if a.get(k)]

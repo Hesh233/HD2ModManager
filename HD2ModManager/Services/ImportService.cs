@@ -32,6 +32,10 @@ namespace HD2ModManager.Services
         /// 这次导入如果是 VPK 来源，这里就是转换报告（每个 VPK 转了/跳过了/为什么）。
         /// <c>null</c> 表示这次导入与 VPK 无关。
         /// </summary>
+        // The protected three-route import already builds and validates its staged payload.
+        // Do not schedule upstream's source-only second build over a calibrated model/companion set.
+        public IReadOnlyList<string> LastVpkImportTargets { get; private set; } = Array.Empty<string>();
+
         public VpkImportReport? LastVpkImportReport { get; private set; }
 
         public ImportService(ModLibraryService library, Action<string>? onInfo = null, Action<string>? onError = null, IModInformationCenter? informationCenter = null, Action<string, double?>? onProgress = null)
@@ -239,7 +243,8 @@ namespace HD2ModManager.Services
                             _onProgress?.Invoke(
                                 text,
                                 queueTotal == 0 ? null : (queueDone + innerFraction) / queueTotal);
-                        }, ModelScalePrompt.ShowAsync, VpkModelDecisionPrompt.ShowAsync)
+                        }, ModelScalePrompt.ShowAsync, (model, token) => VpkModelDecisionPrompt.ShowWithTargetArmorAsync(
+                            model, token, (name, choiceToken) => VpkTargetArmorPrompt.RequestAsync(name, _paths, choiceToken)))
                     .ConfigureAwait(false);
                 LastVpkImportReport = report;
                 _onInfo?.Invoke(report.ToSummary());
@@ -254,6 +259,7 @@ namespace HD2ModManager.Services
                 // 每个 VPK 一个文件夹，逐个走常规导入。派生数据在整批之后再算一次，
                 // 否则每个 VPK 都要重算一遍全库内容事实。
                 var guids = new List<string>();
+                var existingBatchIds = _library.Snapshot.Nodes.Keys.Select(id => id.Value).ToHashSet();
                 // guid → 它属于哪个主体组、是主体还是材质包（挂选项关系时要用）。
                 var groupOf = new Dictionary<string, VpkProducedPackage>(StringComparer.OrdinalIgnoreCase);
                 var affected = new List<ModNodeId>();
@@ -302,7 +308,7 @@ namespace HD2ModManager.Services
                         LogVpkCustomModelImported(guid);
                 }
 
-                // 「原比例」路线的后半程：模型已入库，先问要不要替换哪件甲（候选与详情页下拉同源），
+                // 「原比例」路线的后半程：模型已入库，只应用打包前已确认的护甲目标，
                 // 再按意愿全量构建骨架动画并作为 [原比例混合动画] Mod 入库。
                 // 动画失败/取消 → 整批回滚本批导入的 Mod（用户定的策略：不留半套原比例产物）。
                 var nativePackages = produced
@@ -327,44 +333,12 @@ namespace HD2ModManager.Services
                             var modDirectory = modelGuid is null ? null : TryGetModDirectory(modelGuid);
                             if (modDirectory is null) continue;   // 这个主体转换失败，没入库，跳过
 
-                            await PromptAndApplyTargetArmorAsync(modelGuid!, modDirectory, ct)
-                                .ConfigureAwait(false);
+                            if (package.TargetArmor is { } targetArmor)
+                                await ApplyTargetArmorAsync(modelGuid!, modDirectory, targetArmor, ct).ConfigureAwait(false);
 
                             var modelBaseName = Path.GetFileName(modDirectory);
-                            // Only dual Source/HD2 models need the model-specific attachment Lua companion.
-                            if (!package.SingleHd2Skeleton)
+                            if (package.WantsNativeAnimation)
                             {
-                                // 双骨架路线：同时产出
-                                // [骨骼挂点修正] 独立 lua 包并作为独立 Mod 入库（与 [原比例混合动画]
-                                // 同一套命名/回滚语义）。它对应的是原骨架模型本身，不依赖是否
-                                // 生成骨架动画。配置与 Avatar/Bones 补丁按本模型生成，复用 B23 运行时。
-                                var gripFixName = VpkImportService.NativeGripFixPrefix
-                                    + (modelBaseName.StartsWith(VpkImportService.NativeModelPrefix, StringComparison.Ordinal)
-                                        ? modelBaseName[VpkImportService.NativeModelPrefix.Length..]
-                                        : modelBaseName);
-                                var gripFixRoot = Path.Combine(Path.GetTempPath(),
-                                    "hd2gripx-" + Guid.NewGuid().ToString("N")[..8]);
-                                Directory.CreateDirectory(gripFixRoot);
-                                var gripFixExported = await VpkAnimationBuildService.BuildAttachmentFixAsync(
-                                    modDirectory, gripFixRoot, ct).ConfigureAwait(false);
-                                var gripFixPackageDirectory = Path.Combine(gripFixRoot, gripFixName);
-                                Directory.Move(Path.Combine(gripFixExported, "patch版"), gripFixPackageDirectory);
-                                RewriteLuaPackageIdentity(gripFixPackageDirectory, gripFixName);
-                                var gripFixGuids = await ImportPathAsync(
-                                    gripFixPackageDirectory,
-                                    ct,
-                                    notifyLibraryChanged: false,
-                                    refreshDerivedData: false,
-                                    allowVpkConversion: false).ConfigureAwait(false);
-                                guids.AddRange(gripFixGuids);
-                                affected.AddRange(LastAffectedNodeIds);
-                                conflicts |= LastImportHasOptionPathConflicts;
-                                VpkImportService.DeleteQuietly(gripFixRoot);
-                                LogService.Info($"骨骼挂点修正包「{gripFixName}」已作为独立 Mod 导入"
-                                    + "（包含本模型的 Lua 与配套骨架；头部子节点保留原生行为）。");
-
-                            }
-                            if (!package.WantsNativeAnimation) continue;
                             var animationKind = package.SingleHd2Skeleton ? "单骨架" : "原比例混合";
                             _onProgress?.Invoke($"正在为 {Path.GetFileName(modDirectory)} 生成{animationKind}动画", null);
                             // Both routes feed the same progress bar. Unknown-size phases are
@@ -401,19 +375,71 @@ namespace HD2ModManager.Services
                             conflicts |= LastImportHasOptionPathConflicts;
                             VpkImportService.DeleteQuietly(animationBuildRoot);
                             LogService.Info($"骨架动画「{animationName}」已作为独立 Mod 导入，与 {modelBaseName} 成套启用/停用。");
+                            }
+
+                            // Only dual Source/HD2 models need the model-specific attachment Lua companion.
+                            if (!package.SingleHd2Skeleton)
+                            {
+                                // 双骨架路线：同时产出
+                                // 基础运行时/开关面板分别入库（与 [原比例混合动画]
+                                // 同一套命名/回滚语义）。它对应的是原骨架模型本身，不依赖是否
+                                // 生成骨架动画。配套最后导入，不能让动画 Avatar/Bones 覆盖多骨骼运行时骨架。
+                                _onProgress?.Invoke($"正在为 {modelBaseName} 生成 B3 基础运行时与开关面板", null);
+                                // Generate into a durable export location. The compiler publishes both ZIPs
+                                // together; a subsequent library rollback must not remove the deliverables.
+                                var companionExport = Path.Combine(SettingsService.GetResolvedDefaultExportPath(), "RuntimeCompanions",
+                                    DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..8]);
+                                var companions = await VpkAnimationBuildService.BuildAttachmentFixAsync(
+                                    modDirectory, companionExport, ct, modelLabel: modelBaseName).ConfigureAwait(false);
+                                var beforeCompanions = _library.Snapshot.Nodes.Keys.ToHashSet();
+                                var companionPackageGuids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                                foreach (var directory in new[] { NativeRuntimeCompanionPackageExport.BaseDirectoryName,
+                                    NativeRuntimeCompanionPackageExport.PanelDirectoryName })
+                                {
+                                    using var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(companions.Directory, directory, "manifest.json")));
+                                    companionPackageGuids.Add(manifest.RootElement.GetProperty("Guid").GetString()
+                                        ?? throw new InvalidDataException("配套包缺少模型身份。"));
+                                }
+                                try
+                                {
+                                    foreach (var zip in new[] { companions.BaseZip, companions.PanelZip })
+                                    {
+                                        ct.ThrowIfCancellationRequested();
+                                        // Same archive/manifest path as a user dropping these ZIPs.
+                                        var imported = await ImportPathAsync(zip, ct,
+                                            notifyLibraryChanged: false, refreshDerivedData: false,
+                                            allowVpkConversion: false).ConfigureAwait(false);
+                                        if (imported.Count == 0) throw new InvalidDataException("配套 ZIP 没有导入任何节点：" + zip);
+                                        guids.AddRange(imported);
+                                        affected.AddRange(LastAffectedNodeIds);
+                                        conflicts |= LastImportHasOptionPathConflicts;
+                                    }
+                                }
+                                catch
+                                {
+                                    // Include this pair's just-committed nodes even if UI default-state/notification
+                                    // initialization failed before ImportPathAsync could return their GUIDs.
+                                    guids.AddRange(_library.Snapshot.Nodes.Values.Where(node => !beforeCompanions.Contains(node.Id)
+                                        && node.Metadata.SourcePackageGuid is { } sourceGuid && companionPackageGuids.Contains(sourceGuid))
+                                        .Select(node => node.Id.Value.ToString("N")));
+                                    throw;
+                                }
+                                LogService.Info($"本模型基础运行时与开关面板已分别导入；两份正式 ZIP 保留在：{companions.Directory}。");
+
+                            }
                         }
                     }
                     catch (OperationCanceledException)
                     {
-                        RollbackVpkBatch(guids);
+                        RollbackVpkBatch(guids, existingBatchIds);
                         throw;
                     }
                     catch (Exception exception) when (exception is IOException or InvalidOperationException
                         or InvalidDataException or UnauthorizedAccessException or JsonException)
                     {
-                        RollbackVpkBatch(guids);
+                        RollbackVpkBatch(guids, existingBatchIds);
                         throw new InvalidOperationException(
-                            $"骨架动画生成失败，本批 VPK 导入的 Mod 已全部回滚：{exception.Message}", exception);
+                            $"模型配套生成或导入失败，本批新建 Mod 已回滚（既有模型更新保留）：{exception.Message}", exception);
                     }
                 }
 
@@ -479,7 +505,7 @@ namespace HD2ModManager.Services
         {
             try
             {
-                var payload = Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName);
+                var payload = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(modDirectory) ?? ModNodePayloadLayout.GetVpkPatchDirectory(modDirectory);
                 var backupRoot = Path.Combine(
                     _paths.ModsDirectory,
                     ".hd2modmanager-swap-backups",
@@ -555,89 +581,19 @@ namespace HD2ModManager.Services
         }
 
         /// <summary>
-        /// 把 [骨骼挂点修正] 包的 manifest 改写成"每个模型一份身份"：
-        /// Name 用带前缀的包名，Guid 由包名确定性派生——同一模型重复导入会替换旧包，
-        /// 不同模型的包互不冲突（目录里的固定 GUID 只是导出功能的身份）。
-        /// </summary>
-        private static void RewriteLuaPackageIdentity(string packageDirectory, string name)
-        {
-            var manifestPath = Path.Combine(packageDirectory, "manifest.json");
-            var manifest = JsonDocument.Parse(File.ReadAllText(manifestPath));
-            using var output = new MemoryStream();
-            using (var writer = new Utf8JsonWriter(output, new JsonWriterOptions { Indented = true }))
-            {
-                writer.WriteStartObject();
-                foreach (var property in manifest.RootElement.EnumerateObject())
-                {
-                    if (property.Name == "Name") continue;
-                    if (property.Name == "Guid") continue;
-                    property.WriteTo(writer);
-                }
-                writer.WriteString("Guid", FormatDeterministicGuid(name));
-                writer.WriteString("Name", name);
-                writer.WriteEndObject();
-            }
-            File.WriteAllBytes(manifestPath, output.ToArray());
-        }
-
-        /// <summary>包名 → 稳定 GUID（MD5 前 16 字节；只用于避免导入冲突，非安全用途）。</summary>
-        private static string FormatDeterministicGuid(string name)
-        {
-            using var md5 = System.Security.Cryptography.MD5.Create();
-            var hash = md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes("hd2-gripx:" + name));
-            return new Guid(hash).ToString();
-        }
-
-        /// <summary>
-        /// 导入末尾询问"这个原比例模型替换哪件甲"。候选与 Mod 详情页的护甲下拉同源
+        /// 应用倍率确认后已选好的替换目标。候选与 Mod 详情页的护甲下拉同源
         /// （游戏护甲 + 已注册自定义素体），应用走同一个 <see cref="VpkRekeyService"/>。
         /// <para>
         /// <b>失败只记日志、不拦导入。</b>换甲是"装完就能用"的便利步；换不动的产物本身是好的，
         /// 用户可以在详情页重试——那页有完整的状态与警告展示。只有用户明确取消整个导入才向上抛。
         /// </para>
         /// </summary>
-        private async Task PromptAndApplyTargetArmorAsync(
-            string guid, string modDirectory, CancellationToken ct)
+        private async Task ApplyTargetArmorAsync(
+            string guid, string modDirectory, VpkTargetArmorOption target, CancellationToken ct)
         {
-            IReadOnlyList<VpkTargetArmorOption> options;
-            try
-            {
-                var catalog = new EquipmentUnitCatalogService(_paths);
-                options = (await catalog.GetEntriesAsync().ConfigureAwait(false))
-                    .Where(entry => entry.Category.Equals("Armor", StringComparison.OrdinalIgnoreCase))
-                    .GroupBy(entry => entry.ArchiveId, StringComparer.OrdinalIgnoreCase)
-                    .Select(group => new VpkTargetArmorOption(group.Key, group.First().DisplayName))
-                    .OrderBy(option => option.DisplayName, StringComparer.CurrentCulture)
-                    .ToArray();
-                try
-                {
-                    var registry = CoreServices.CreateRuntimeArmorRegistryService(_paths);
-                    var customModels = (await registry.ReadCustomModelCatalogAsync().ConfigureAwait(false))
-                        .Where(entry => entry.Parts.Count != 0)
-                        .Select(entry => new VpkTargetArmorOption(
-                            entry.ArchiveId, entry.DisplayName + "（自定义素体）", VpkTargetArmorKind.CustomModel))
-                        .OrderBy(option => option.DisplayName, StringComparer.CurrentCulture)
-                        .ToArray();
-                    options = options.Concat(customModels).ToArray();
-                }
-                catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
-                {
-                    // 注册表坏了不能连带把游戏护甲列表一起废掉（与详情页同样的独立降级）。
-                    LogService.Warn($"读取已注册自定义素体失败，换甲候选只列游戏护甲：{exception.Message}");
-                }
-            }
-            catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
-            {
-                LogService.Warn($"读取护甲列表失败，跳过导入末尾的换甲询问：{exception.Message}");
-                return;
-            }
-
-            // 「跳过」= 保持自定义素体模式（不自动换甲是既有设计）；选了目标才落一次换甲。
-            var target = await VpkTargetArmorPrompt.ShowAsync(
-                Path.GetFileName(modDirectory), options, null, ct).ConfigureAwait(false);
-            if (target is null) return;
+            // 只应用打包前已确认的目标；模型完成后绝不再次弹出选择窗口。
             var outcome = await VpkRekeyService
-                .RunAsync(guid, modDirectory, new[] { target.ArchiveId }, null,
+                .RunAsync(guid, modDirectory, new VpkHostContext(SettingsService.GetGameDataFolder(), _paths), new[] { target.ArchiveId }, null,
                     stage => _onProgress?.Invoke(stage, null), ct)
                 .ConfigureAwait(false);
             if (!outcome.Ok)
@@ -663,15 +619,15 @@ namespace HD2ModManager.Services
         /// 动画失败/取消后的整批回滚：把这次 VPK 导入新建的 Mod 全部移除。
         /// 回滚自身失败只记日志——真正的失败原因已经在往上抛的那条异常里。
         /// </summary>
-        private void RollbackVpkBatch(List<string> guids)
+        private void RollbackVpkBatch(List<string> guids, IReadOnlySet<Guid> existingBatchIds)
         {
-            var ids = guids.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            var ids = VpkImportRollbackPolicy.NewlyCreatedModGuids(guids, existingBatchIds);
             if (ids.Length == 0) return;
             try
             {
                 var deletion = _library.RemoveManyAsync(ids, CancellationToken.None)
                     .GetAwaiter().GetResult();
-                LogService.Warn($"骨架动画失败，已回滚本批导入的 {deletion.RemovedNodeIds.Count} 个 Mod"
+                LogService.Warn($"模型配套失败，已回滚本批新建的 {deletion.RemovedNodeIds.Count} 个 Mod"
                     + (deletion.HasFailures ? "（部分未能移除，请在库里手动删除）" : "。"));
             }
             catch (Exception exception)
@@ -766,7 +722,7 @@ namespace HD2ModManager.Services
                 first ??= guid;
                 var directory = TryGetModDirectory(guid);
                 if (directory is null) continue;
-                if (File.Exists(Path.Combine(directory, ModNodePayloadLayout.VpkPatchDirectoryName, "sections.json")))
+                if (File.Exists(Path.Combine(ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(directory) ?? ModNodePayloadLayout.GetVpkPatchDirectory(directory), "sections.json")))
                     return guid;
             }
             return first;
@@ -793,7 +749,7 @@ namespace HD2ModManager.Services
                 || !_library.Snapshot.Nodes.TryGetValue(new ModNodeId(id), out var node))
                 return;
             var modDirectory = Path.Combine(_paths.ModsDirectory, node.RelativePath);
-            if (!File.Exists(Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName, "sections.json")))
+            if (!File.Exists(Path.Combine(ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(modDirectory) ?? ModNodePayloadLayout.GetVpkPatchDirectory(modDirectory), "sections.json")))
                 return;
 
             LogService.Info($"VPK 转换产物「{node.Metadata.Name}」已作为自定义素体导入（未替换任何原版护甲）。"

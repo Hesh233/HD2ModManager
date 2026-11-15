@@ -16,12 +16,70 @@ public static class VpkCustomModelFile
 	/// <summary>文件名（写在 Mod 目录里，实测位于 <c>vpk2patch/</c> 下；扫描是递归的）。</summary>
 	public const string FileName = "custom-model.json";
 
-	/// <summary>读一个 Mod 目录登记的素体 key；没有或读不懂返回 <c>null</c>。</summary>
+	/// <summary>
+	/// 读一个 Mod 目录登记的素体 key；没有或读不懂返回 <c>null</c>。
+	/// <para>
+	/// <b>两处都要看。</b>转换产物把这份文件写在 <c>vpk2patch/</c> 下（内容层），
+	/// 手写的或早期的写在根上。只认根目录的话，VPK 类 Mod 会读不到自己的素体 ——
+	/// 表现是详情页的"默认目标"选不中自己的素体、重构建拿不到 key。
+	/// </para>
+	/// </summary>
 	public static string? TryReadKey(string modDirectory)
 	{
 		if (string.IsNullOrWhiteSpace(modDirectory))
 			return null;
-		var path = Path.Combine(modDirectory, FileName);
+		return ReadKeyAt(Path.Combine(modDirectory, FileName))
+			?? ReadKeyAt(Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName, FileName))
+			// 老库里它在旧名目录下。漏了这一条，全库素体都会被判成孤儿，护甲映射页会把记录删掉。
+			?? ReadKeyAt(Path.Combine(modDirectory, ModNodePayloadLayout.LegacyVpkPatchDirectoryName, FileName))
+			// 编译产物里的那份：**只作兜底**。它是从 sectional 算出来的派生物，
+			// 定义"这具素体是谁、叫什么"的是来源产物（sectional / 根），不是它。
+			?? ReadKeyAt(Path.Combine(modDirectory, ModNodePayloadLayout.OverwriteDirectoryName, FileName));
+	}
+
+	/// <summary>
+	/// 读这个 Mod 自己登记的**素体定义**（key / 名字 / 件）。
+	/// <para>
+	/// <b>为什么需要它：文件才是归属凭证，注册表只是投影。</b>转换刚写完这份文件时，工作区注册表里
+	/// 可能还没有这具素体（它的同步时机由 app 启动/库刷新决定）。此时若只查注册表，
+	/// "这个 Mod 是一具自定义素体"这件事就答不出来——资产标签会退回原版护甲名，
+	/// 而产物本身明明已经是素体了。
+	/// </para>
+	/// <para>读法与写它的人一致（<see cref="JsonSerializerDefaults.Web"/>）；读不出来返回 <c>null</c>，不猜。</para>
+	/// </summary>
+	public static RuntimeArmorRegistryModel? TryReadModel(string modDirectory)
+	{
+		if (string.IsNullOrWhiteSpace(modDirectory))
+			return null;
+		foreach (var directory in new[]
+		{
+			modDirectory,
+			Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName),
+			Path.Combine(modDirectory, ModNodePayloadLayout.LegacyVpkPatchDirectoryName),
+			Path.Combine(modDirectory, ModNodePayloadLayout.OverwriteDirectoryName),
+		})
+		{
+			var path = Path.Combine(directory, FileName);
+			if (!File.Exists(path))
+				continue;
+			try
+			{
+				var json = File.ReadAllText(path);
+				var model = JsonSerializer.Deserialize<RuntimeArmorRegistryModel>(json, JsonOptions);
+				if (model is not null && !string.IsNullOrWhiteSpace(model.Key))
+					return model;
+			}
+			catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException)
+			{
+				// 这一份坏了就试下一处（根上那份可能是手写的残片，payload 里那份才是产物）。
+			}
+		}
+
+		return null;
+	}
+
+	private static string? ReadKeyAt(string path)
+	{
 		if (!File.Exists(path))
 			return null;
 		try
@@ -64,6 +122,9 @@ public static class VpkCustomModelFile
 			if (string.Equals(model.Name, name, StringComparison.Ordinal))
 				return true;
 			var renamed = model with { Name = name.Trim() };
+			// 库里的产物是只读的：不清属性就写不进去，异常被下面的 catch 吞掉，
+			// 调用方只能看到 false——于是"改名失败"看起来像"找不到这个素体"。
+			VpkPayloadSwap.ClearReadOnlyForWrite(path);
 			File.WriteAllText(path, JsonSerializer.Serialize(renamed, JsonOptions));
 			return true;
 		}
@@ -71,6 +132,24 @@ public static class VpkCustomModelFile
 		{
 			return false;
 		}
+	}
+
+
+	/// <summary>
+	/// 这份 <c>custom-model.json</c> 是不是**编译产物**（在 <c>Overwrite/</c> 下）。
+	/// <para>
+	/// 派生文件不能当"归属凭证"：改名写进它，下一次编译又会从 <c>sectional/</c> 重新生成，
+	/// 用户看到的是"改完过一会又被还原"。所以按 key 找持有者时要跳过它。
+	/// </para>
+	/// </summary>
+	private static bool IsDerivedCopy(string filePath)
+	{
+		var directory = Path.GetDirectoryName(filePath);
+		if (directory is null) return false;
+		return string.Equals(
+			Path.GetFileName(directory),
+			ModNodePayloadLayout.OverwriteDirectoryName,
+			StringComparison.OrdinalIgnoreCase);
 	}
 
 	/// <summary>按 key 找到持有它的那份 <c>custom-model.json</c> 的完整路径。</summary>
@@ -90,6 +169,7 @@ public static class VpkCustomModelFile
 
 		foreach (var file in files)
 		{
+			if (IsDerivedCopy(file)) continue;
 			if (string.Equals(TryReadKey(Path.GetDirectoryName(file)!), modelKey, StringComparison.Ordinal))
 				return file;
 		}
@@ -119,6 +199,22 @@ public static class VpkCustomModelFile
 	public static IReadOnlyDictionary<string, string> ReadOwners(string modsDirectory)
 	{
 		var owners = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		foreach (var (key, directory) in ReadOwnerDirectories(modsDirectory))
+			owners[key] = TryReadName(directory) ?? Path.GetFileName(directory);
+		return owners;
+	}
+
+	/// <summary>
+	/// 素体 key → 登记它的那份 <c>custom-model.json</c> 所在目录（通常是 Mod 目录下的 <c>vpk2patch</c>）。
+	/// <para>
+	/// 为什么要单独给目录：<c>custom-model.json</c> 里的 <c>name</c> 是转换时写的名字，
+	/// 用户在库里把 Mod 改名之后两者就不一样了（库里叫"布莱默顿"，素体仍叫目录名"2505895990"）。
+	/// 想告诉用户"该去库里移除哪个 Mod"，要靠目录去库里反查<b>现在的</b>名字。
+	/// </para>
+	/// </summary>
+	public static IReadOnlyDictionary<string, string> ReadOwnerDirectories(string modsDirectory)
+	{
+		var owners = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 		if (string.IsNullOrWhiteSpace(modsDirectory) || !Directory.Exists(modsDirectory))
 			return owners;
 		IEnumerable<string> files;
@@ -133,24 +229,38 @@ public static class VpkCustomModelFile
 
 		foreach (var file in files)
 		{
+			if (IsDerivedCopy(file)) continue;
 			var directory = Path.GetDirectoryName(file)!;
 			var key = TryReadKey(directory);
 			if (string.IsNullOrWhiteSpace(key))
 				continue;
-			var name = TryReadName(directory) ?? Path.GetFileName(directory);
 			// 同一个 key 出现在两个 Mod 里说明库里有重复项：保留第一个，行为可预期。
-			owners.TryAdd(key, name);
+			owners.TryAdd(key, directory);
 		}
 
 		return owners;
 	}
 
-	/// <summary>读 <c>custom-model.json</c> 的 <c>name</c>（转换时写进去的 Mod 名）。</summary>
+	/// <summary>
+	/// 读 <c>custom-model.json</c> 的 <c>name</c>（转换时写进去的 Mod 名）。
+	/// <para>
+	/// <b>和 <see cref="TryReadKey"/> 找同样三处。</b>转换产物把这份文件写在 <c>vpk2patch/</c>
+	/// （现在是 <c>sectional/</c>）下；只读根目录的话 VPK 类 Mod 永远读不到名字，
+	/// 界面就退回显示 <c>custom-xxxx</c>——用户报的"素体名变乱码"就是这么来的。
+	/// </para>
+	/// </summary>
 	public static string? TryReadName(string modDirectory)
 	{
 		if (string.IsNullOrWhiteSpace(modDirectory))
 			return null;
-		var path = Path.Combine(modDirectory, FileName);
+		return ReadNameAt(Path.Combine(modDirectory, FileName))
+			?? ReadNameAt(Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName, FileName))
+			?? ReadNameAt(Path.Combine(modDirectory, ModNodePayloadLayout.LegacyVpkPatchDirectoryName, FileName))
+			?? ReadNameAt(Path.Combine(modDirectory, ModNodePayloadLayout.OverwriteDirectoryName, FileName));
+	}
+
+	private static string? ReadNameAt(string path)
+	{
 		if (!File.Exists(path))
 			return null;
 		try

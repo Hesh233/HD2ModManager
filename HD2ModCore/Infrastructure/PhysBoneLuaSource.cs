@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using System.Text;
 
 namespace HD2ModCore.Infrastructure;
@@ -24,6 +24,10 @@ public static class PhysBoneLuaSource
 
 	public static string LoadRuntime() => Read(RuntimeSuffix);
 
+	public static string LoadDirectCompat() => Read("PhysBone.Direct.physbone_compat.lua");
+	public static string LoadDirectRuntime() => Read("PhysBone.Direct.physbone_runtime.lua");
+	public static string LoadPhysicsRoutes() => Read("PhysBone.physbone_routes.lua");
+
 	public static string LoadAttachmentFix() => Read(AttachmentFixSuffix);
 
 	/// <summary>
@@ -42,7 +46,10 @@ public static class PhysBoneLuaSource
 	{
 		var compat = LoadCompat();
 		var runtime = LoadRuntime();
-		var builder = new StringBuilder(compat.Length + runtime.Length + 2048);
+		var directCompat = LoadDirectCompat();
+		var directRuntime = LoadDirectRuntime();
+		var routes = LoadPhysicsRoutes();
+		var builder = new StringBuilder(compat.Length + runtime.Length + directCompat.Length + directRuntime.Length + routes.Length + 4096);
 		if (!string.IsNullOrWhiteSpace(addonId))
 		{
 			builder.Append("-- HD2-Addon: ").Append(addonId).Append('\n');
@@ -59,9 +66,19 @@ public static class PhysBoneLuaSource
 		builder.AppendLine(compat);
 		builder.AppendLine("end)()");
 		builder.AppendLine("-- ==== physbone_runtime.lua ====");
-		builder.AppendLine("local PhysBoneRuntime = (function()");
+		builder.AppendLine("local SkeletonRuntime = (function()");
 		builder.AppendLine(runtime);
 		builder.AppendLine("end)()");
+		builder.AppendLine("local DirectCompat = (function()");
+		builder.AppendLine(directCompat);
+		builder.AppendLine("end)()");
+		builder.AppendLine("local DirectRuntime = (function()");
+		builder.AppendLine(directRuntime);
+		builder.AppendLine("end)()");
+		builder.AppendLine("local PhysicsRoutes = (function()");
+		builder.AppendLine(routes);
+		builder.AppendLine("end)()");
+		builder.AppendLine("local PhysBoneRuntime = PhysicsRoutes.new(PhysBoneCompat, SkeletonRuntime, DirectCompat, DirectRuntime)");
 		builder.AppendLine();
 		builder.AppendLine("-- ==== 自动安装 ====");
 		builder.AppendLine("-- 游戏自身的 VM 里 `stingray` 一定存在；外部加载器环境下同样如此。");
@@ -117,6 +134,7 @@ public static class PhysBoneLuaSource
 			"-- HD2-Addon: mods/hd2modmanager/attachment_fix", "-- HD2-Addon: " + addonId, StringComparison.Ordinal);
 	}
 
+
 	private static string Read(string suffix)
 	{
 		var assembly = typeof(PhysBoneLuaSource).Assembly;
@@ -128,4 +146,44 @@ public static class PhysBoneLuaSource
 		using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
 		return reader.ReadToEnd();
 	}
+    /// <summary>Production B3: one runtime, one model-calibrated FP domain, independent marker options.</summary>
+    public static string ComposeB3AttachmentFixPackage(string profileSource)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(profileSource);
+        var legacy = Read("PhysBone.native_attachments.lua");
+        var compat = LoadCompat();
+        static string Block(string text, string begin, string finish)
+        {
+            var start = text.IndexOf(begin, StringComparison.Ordinal);
+            var end = start < 0 ? -1 : text.IndexOf(finish, start, StringComparison.Ordinal);
+            if (start < 0 || end <= start) throw new InvalidDataException("B3 quaternion/arm math resource contract changed.");
+            return text[start..end];
+        }
+        static string ProductionModule(string file, string? expectedVersion = null)
+        {
+            var text = Read("PhysBone.Production." + file).Replace("\r\n", "\n", StringComparison.Ordinal);
+            if (expectedVersion is not null && !System.Text.RegularExpressions.Regex.IsMatch(text,
+                @"\bVERSION\s*=\s*['""]" + System.Text.RegularExpressions.Regex.Escape(expectedVersion) + @"['""]"))
+                throw new InvalidDataException("B3 production module version mismatch: " + file);
+            return text;
+        }
+        var math = Block(legacy, "local M={VERSION='0.12.1'}", "-- Source mstudioquatinterpbone_t:")
+            + Block(compat, "local function stored9_quaternion(r)", "local function quaternion_axis_angle(")
+            + "\nM.quaternion=function(r)return {stored9_quaternion(r)}end\nM.rotate=rot\nreturn M\n";
+        var source = ProductionModule("native_grip_entry.lua")
+            .Replace("-- INSERT LEGACY ARM MATH", math, StringComparison.Ordinal)
+            .Replace("-- INSERT TRANSFER MODULE", ProductionModule("native_grip_transfer.lua", NativeRuntimeCompanionPackageExport.RuntimeVersion), StringComparison.Ordinal)
+            .Replace("-- INSERT FIRST PERSON GUARD", ProductionModule("native_first_person_guard.lua", "1.0.0"), StringComparison.Ordinal)
+            .Replace("-- INSERT ATTACHMENT ADAPTER", ProductionModule("attachment_fix_runtime.lua", NativeRuntimeCompanionPackageExport.RuntimeVersion), StringComparison.Ordinal)
+            .Replace("-- INSERT FIRST PERSON SOURCE MODULE", ProductionModule("first_person_source.lua", NativeRuntimeCompanionPackageExport.FirstPersonSourceVersion), StringComparison.Ordinal)
+            .Replace("-- INSERT OPTION SWITCH MODULE", ProductionModule("attachment_option_switches.lua"), StringComparison.Ordinal)
+            .Replace("-- INSERT HIDDEN FIRST PERSON MODULE", ProductionModule("fp_arm_hidden_mode.lua", "1.0.0"), StringComparison.Ordinal)
+            .Replace("-- INSERT TRANSFER PROFILE", profileSource, StringComparison.Ordinal)
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+        if (source.Contains("-- INSERT ", StringComparison.Ordinal)
+            || !source.Contains("local testRun=false", StringComparison.Ordinal)
+            || !source.Contains("assert(profile.testRepairs==nil", StringComparison.Ordinal))
+            throw new InvalidDataException("Incomplete or non-production B3 runtime template.");
+        return source;
+    }
 }

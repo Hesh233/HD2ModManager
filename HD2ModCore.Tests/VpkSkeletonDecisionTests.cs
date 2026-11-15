@@ -41,4 +41,25 @@ public sealed class VpkSkeletonDecisionTests
     {
         Assert.Null(typeof(VpkModelDecision).GetProperty("MergeWristWeights"));
     }
+
+    [Theory]
+    [InlineData(VpkImportRoute.OriginalFormat, false, false, false)]
+    [InlineData(VpkImportRoute.SingleSkeleton, false, true, true)]
+    [InlineData(VpkImportRoute.DualSkeletonWithLua, true, false, true)]
+    public void ImportRouteHasExplicitIndependentDecision(VpkImportRoute route,
+        bool native, bool single, bool animation)
+    {
+        var d = VpkModelDecision.ForImportRoute(route, 1.08, 4);
+        Assert.Equal(native, d.UseNativeSkeleton);
+        Assert.Equal(single, d.SingleHd2Skeleton);
+        Assert.Equal(animation, d.GenerateAnimation);
+        Assert.Equal(native || single, d.BuildsSkeletonPackage);
+        Assert.Equal(1.08, d.ModelScale);
+        Assert.Equal(animation ? 4 : AnimationThreadCount.Default, d.AnimationThreads);
+    }
+
+    [Fact]
+    public void InvalidImportRouteCannotFallBackToSkeletonConversion()
+        => Assert.Throws<ArgumentOutOfRangeException>(() =>
+            VpkModelDecision.ForImportRoute((VpkImportRoute)999, 1));
 }

@@ -1,3 +1,4 @@
+using HD2ModCore.Infrastructure;
 using System.Collections.Concurrent;
 using System.Text.Json;
 using HD2ModManager.Services;

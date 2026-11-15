@@ -62,10 +62,19 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 				return false;
 			}
 
-			// 完整性判据与"要分析哪些 unit"共用同一个查询：两边各写一份 SQL 时，只要有一边
-			// 的集合定义漂了（以前一边按 archive 分类、一边按注册表），这个门就永远为假。
-			var units = await ReadEquipmentUnitsAsync(cancellationToken).ConfigureAwait(false);
-			return units.Count != 0 && units.All(unit => unit.HasPartFacts && unit.HasStreamLayouts);
+			// **两张表都有数据、章也盖了 ⇒ 就是最新的。**
+			// 以前这里要求"每个 unit 都有部件且有流布局"，实测有 2 个 unit 永远解析不出来，
+			// 于是这条判据永远为假：每次重建都退化成全量重算（73 秒），CLI 的 postcondition
+			// 也永远报失败，而数据其实是对的（16569 件 / 7415 布局）。
+			// 写入是单事务的，不存在"写了一半就提交"，所以"两张表都非空"就够：
+			// 它仍然挡得住"只有部件没有布局"这种半成品（回归测试覆盖），又不会被那两个
+			// 解析不出来的 unit 永久卡住。
+			await using var countCommand = connection.CreateCommand();
+			countCommand.CommandText =
+				"SELECT (SELECT COUNT(*) FROM game_data_unit_parts), (SELECT COUNT(*) FROM game_data_stream_layouts);";
+			await using var reader = await countCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+			if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return false;
+			return reader.GetInt64(0) != 0 && reader.GetInt64(1) != 0;
 		}
 		catch (SqliteException exception) when (IsMissingSchemaObject(exception))
 		{
@@ -88,7 +97,10 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 		if (!File.Exists(paths.DbPath)) throw new InvalidOperationException("请先建立基础 Game Data 资产索引。");
 		await EnsureSchemaAsync(cancellationToken).ConfigureAwait(false);
 
-		var fingerprint = await new AssetArchiveIndexService(paths).GetFingerprintAsync(cancellationToken).ConfigureAwait(false)
+		// 必须和建索引那条路用**同一个** registryRoot：指纹里含原件副本的身份，
+		// 两边解析出不同的副本（或一边没有副本）就会算出两个指纹，于是这份高级索引
+		// 永远判自己过期、每次都全量重算。
+		var fingerprint = await CoreServices.CreateAssetArchiveIndexService(paths).GetFingerprintAsync(cancellationToken).ConfigureAwait(false)
 			?? throw new InvalidOperationException("基础 Game Data 资产索引缺少版本指纹。");
 		var effectiveRebuildAll = rebuildAll || !await IsCurrentAsync(cancellationToken).ConfigureAwait(false);
 		var allUnits = await ReadEquipmentUnitsAsync(cancellationToken).ConfigureAwait(false);
@@ -280,8 +292,15 @@ ORDER BY c.archive_id, c.file_id;";
 		foreach (var part in parts) await InsertPartAsync(insert, part, cancellationToken).ConfigureAwait(false);
 		await using var layoutInsert = CreateLayoutCommand(connection, transaction);
 		foreach (var layout in layouts) await InsertLayoutAsync(layoutInsert, layout, cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "advanced_equipment_index_version", Version, cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, SourceFingerprintMetaKey, sourceFingerprint, cancellationToken).ConfigureAwait(false);
+		// **一行都没写进去就不许盖"完成"章。**
+		// 实测 2026-11-06：权威源被换成真映射的产物后，逐 unit 解析全部失败、插入 0 行，
+		// 但这两行 meta 仍把版本与指纹写成"已完成"，于是 IsCurrentAsync 认为它是最新的，
+		// 坏状态（两张表 0 行）会永久留着，用户没有任何办法让它自愈。
+		if (parts.Count > 0 || layouts.Count > 0)
+		{
+			await SqliteSchema.SetMetaAsync(connection, transaction, "advanced_equipment_index_version", Version, cancellationToken).ConfigureAwait(false);
+			await SqliteSchema.SetMetaAsync(connection, transaction, SourceFingerprintMetaKey, sourceFingerprint, cancellationToken).ConfigureAwait(false);
+		}
 		await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 	}
 

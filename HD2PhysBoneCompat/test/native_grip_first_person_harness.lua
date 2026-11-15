@@ -293,6 +293,36 @@ do
   model.alive=false;local before=visibilityWrites;viewCamera=transform(0,10,18,30);step(runtime,'update',8552,855.2)
   check(runtime.fpHidden[model]==nil and visibilityWrites==before+2,'destroyed model was written or other arm not restored')
  end)
+ -- FP Source's show permission is consumed by THIS same original-visibility ledger.
+ run_case(function(right)
+  viewCamera=transform(0,10,20,30);step(runtime,'render',8560,856)
+  check(not model.meshes[1] and not right.meshes[1],'FP permit case did not start hidden')
+  fpContext.fpSourcePermit=function(u,world,frame)return u==right and frame==8561 end
+  step(runtime,'render',8561,856.1)
+  check(right.meshes[1] and right.meshes[2] and not model.meshes[1],'FP verified source permit not isolated to right receiver')
+  step(runtime,'render',8562,856.2);check(not right.meshes[1] and not model.meshes[1],'FP expired permit remained visible')
+  viewCamera=transform(0,10,18,30);step(runtime,'update',8563,856.3)
+  check(right.meshes[1] and model.meshes[1] and not model.meshes[2] and model.meshes[3],'FP permit ledger damaged TP original visibility')
+  fpContext.fpSourcePermit=nil
+ end)
+ -- Permission is not proof of a visible mesh when the captured mask is all false.
+ run_case(function(right)
+  right.meshes={false,false};viewCamera=transform(0,10,20,30)
+  step(runtime,'render',8564,856.4)
+  fpContext.fpSourcePermit=function(u,world,frame)return u==right and frame==8565 end
+  step(runtime,'render',8565,857.5)
+  check(not right.meshes[1] and not right.meshes[2],'FP permit blindly showed originally hidden meshes')
+  local reported=false
+  for _,line in ipairs(logs)do
+   if line:find('"event":"fp_arm_source_receiver_not_visible"',1,true) and line:find('"actualVisibleMeshes":0',1,true) and line:find('"savedVisibleMeshes":0',1,true)then reported=true end
+  end
+  check(reported,'all-hidden source receiver falsely reported visible')
+  viewCamera=transform(0,10,18,30);step(runtime,'update',8566,857.6)
+  check(not right.meshes[1] and not right.meshes[2] and model.meshes[1] and not model.meshes[2],'all-hidden FP mask damaged TP original visibility')
+  fpContext.fpSourcePermit=nil
+ end)
+ fixedFP.allHiddenMeshMaskReportedNotVisible=true
+ fixedFP.sourceReceiverPermitUsesOriginalLedger=true
  U.num_meshes=baseCount;U.mesh=baseMesh;S.Mesh.visibility=baseVisible;U.set_mesh_visibility=baseSetter
  fixedFP.temporaryArmHide=true;fixedFP.perMeshOriginalVisibilityRestored=true
  fixedFP.ambiguousReceiverFailsClosed=true;fixedFP.otherPlayerPreviewTorsoWeaponUnaffected=true;fixedFP.visibilityFailuresRetry=true

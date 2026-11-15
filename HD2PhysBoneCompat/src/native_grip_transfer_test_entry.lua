@@ -15,39 +15,49 @@ end)()
 local AttachmentRuntime=(function()
 -- INSERT ATTACHMENT ADAPTER
 end)()
+local FirstPersonSource=(function()
+-- INSERT FIRST PERSON SOURCE MODULE
+end)()
 local profile=(function()
 -- INSERT TRANSFER PROFILE
 end)()
 -- A new latest-session file leaves the old multi-day evidence untouched.
 local directory=assert(loader.log_directory,'Chef log directory unavailable')
 local detailed=profile.testRepairs and profile.testRepairs.enabled and profile.logging.detailed==true
-local stem=detailed and ('hd2_grip_TEST_DETAILED_'..profile.testRepairs.modelLabel..(profile.testRepairs.logTag and ('_'..profile.testRepairs.logTag) or '')..'_'..os.date('%Y%m%d_%H%M%S')) or 'hd2_grip_b23_compact'
+local testRun=profile.testRepairs and profile.testRepairs.enabled
+local stem=testRun and ((detailed and 'hd2_grip_TEST_DETAILED_' or 'hd2_grip_TEST_PERF_')..profile.testRepairs.modelLabel..(profile.testRepairs.logTag and ('_'..profile.testRepairs.logTag) or '')..'_'..os.date('%Y%m%d_%H%M%S')) or 'hd2_grip_b23_compact'
 local part,partBytes=1,0
-local function logPath() return directory..'/'..stem..(detailed and string.format('.part%02d',part) or '')..'.log' end
+local function logPath() return directory..'/'..stem..(testRun and string.format('.part%02d',part) or '')..'.log' end
 local handle,why=io.open(logPath(),'w');assert(handle,'Cannot open B23 log: '..tostring(why))
 local closed,frame,lastFlush=false,0,0
 local log,logContext=Transfer.newLogSink(function(line,urgent)
     if handle then
-        if detailed and partBytes+#line+64>(profile.logging.segmentBytes or 16777216) then
+        if testRun and partBytes+#line+64>(profile.logging.segmentBytes or 16777216) then
             handle:flush();handle:close();part=part+1;partBytes=0
             handle,why=io.open(logPath(),'w');assert(handle,'Cannot rotate TEST log: '..tostring(why))
         end
-        handle:write(os.date('%Y-%m-%d %H:%M:%S'),detailed and ' [TEST_ONLY_DETAILED] ' or ' [grip_b23] ',line,'\n')
+        handle:write(os.date('%Y-%m-%d %H:%M:%S'),testRun and (detailed and ' [TEST_ONLY_DETAILED] ' or ' [TEST_ONLY_PERF] ') or ' [grip_b23] ',line,'\n')
         partBytes=partBytes+#line+64
         local now=stingray.Application.time_since_launch()
         if urgent or now-lastFlush>=2 then handle:flush();lastFlush=now end
     end
 end,function()return stingray.Application.time_since_launch()end,profile.logging)
 local sceneContext={inMission=loader.in_mission,world=loader.world}
-local viewGuard=FirstPersonGuard.new(stingray,sceneContext)
+local viewGuard=FirstPersonGuard.new(stingray,sceneContext,profile.firstPersonSource and profile.firstPersonSource.avatar)
 sceneContext.firstPerson=viewGuard.sample
 sceneContext.fpWorld=viewGuard.world
 sceneContext.fpActor=viewGuard.actor
 local made,runtime=pcall(AttachmentRuntime.install,stingray,{profile=profile,logger=log,armMath=ArmMath,transfer=Transfer,sceneContext=sceneContext})
 if not made then handle:close();error(runtime) end
+local fpSource
+if profile.firstPersonSource and FirstPersonSource then
+ fpSource=FirstPersonSource.new(stingray,profile.firstPersonSource,ArmMath,viewGuard,function(row)log(Transfer.encodeDiagnostic(row,false))end,sceneContext)
+ sceneContext.fpSourcePermit=function(unit,world,frame)return fpSource:permit(unit,world,frame)end
+end
 __hd2_grip_b23=runtime
 local function stop(reason)
     if closed then return end
+    if fpSource then fpSource:stop()end
     local ok,err=pcall(runtime.stop,runtime,reason or 'shutdown')
     if not ok then log('{"event":"shutdown_error","variant":"'..profile.variant..'"}') end
     handle:flush();handle:close();handle=nil;closed=true;__hd2_grip_b23=nil
@@ -56,11 +66,13 @@ end
 local function step(phase)
     if closed then return end
     if phase=='update' then frame=frame+1 end
-    local ok,err=pcall(runtime.tick,runtime,phase,frame,stingray.Application.time_since_launch())
+    local now=stingray.Application.time_since_launch()
+    if fpSource then fpSource:tick(phase,frame,now)end
+    local ok,err=pcall(runtime.tick,runtime,phase,frame,now)
     if not ok then
         log('{"event":"callback_error","phase":"'..phase..'","variant":"'..profile.variant..'"}')
         stop('callback_error');error(err)
     end
 end
-return {version=detailed and profile.testRepairs.version or Transfer.VERSION,update=function()step('update')end,render=function()step('render')end,
+return {version=testRun and profile.testRepairs.version or Transfer.VERSION,update=function()step('update')end,render=function()step('render')end,
     shutdown=function()stop('shutdown')end,on_stop=function()stop('on_stop')end}

@@ -8,6 +8,9 @@ using HD2ModCore.Infrastructure;
 
 namespace HD2ModManager.Services
 {
+    // 用户自建的分类：Id 稳定不变，Name 可改。
+    public sealed record CustomCategoryRecord(string Id, string Name);
+
     public static class SettingsService
     {
         private static readonly string SettingsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json");
@@ -29,20 +32,100 @@ namespace HD2ModManager.Services
             public DateTime? LastGameDataIndexCheckUtc { get; set; }
             public int GameDataIndexCheckIntervalHours { get; set; } = 24;
             public bool AutoImportToActiveProfile { get; set; } = true;
+            // 缺失字段的旧设置也按关闭处理；读取不会自动改写 settings.json。
+            public bool AskToInstallSkeletonAnimation { get; set; } = false;
+            public bool EnableDualSkeletonAnimationVersion { get; set; } = false;
+            // 列表顶部的自动分类筛选条是否显示。默认开。
+            public bool CategoryFilterEnabled { get; set; } = true;
+            // 用户自建分类，以及"某个 Mod 手动归到哪个分类"的覆盖（Mod Guid → 分类键）。
+            public List<CustomCategoryRecord>? CustomCategories { get; set; }
+            public Dictionary<string, string>? CategoryOverrides { get; set; }
         // 旧的二态开关。保留字段只为读取历史设置并迁移，新代码一律读写 ArmorMappingMode。
         public bool DeployLuaMods { get; set; } = true;
         // 护甲映射模式（ArmorMappingMode 的整数值）。null 表示尚未迁移。
         public int? ArmorMappingMode { get; set; }
+        // 上面那个数字用的是哪一套口径。**改枚举数值时必须靠它区分新旧**：
+        // 旧口径 0=独占 / 1=外置 / 2=真映射；新口径 0=关闭 / 1=独占 / 2=外置。
+        // 没有这个字段（null/0）的存档一律按旧口径翻译，见 ArmorMappingModes.MigrateStoredValue。
+        public int? MappingModeSchema { get; set; }
         // 总开关：是否启用「管理器内置 lua 类功能」。关闭时管理器永不占用 boot 入口。
         // 可空是为了区分"从没存过"（老配置，按默认开）与"显式关掉"。
         public bool? BuiltInLuaEnabled { get; set; }
         // 物理骨骼模式（PhysicsMode 的整数值）。null 表示尚未设置 ⇒ 默认关闭。
         public int? PhysicsMode { get; set; }
             public string? DefaultExportPath { get; set; }
+            // VPK 构建时的角色头部缩放比例。null = 从没设过 ⇒ 用 DefaultHeadScale。
+            //
+            // 为什么可空而不是给个默认值：默认值 8/7 是个无限小数，
+            // 存成 JSON 会变成 1.1428571428571428；可空能让"没动过"这件事保持可辨认，
+            // 也就不会因为一次读写的往返把它截断成别的数。
+            public double? HeadScale { get; set; }
         }
 
         public const string DefaultAssetMetadataRepository = GitHubAssetMetadataSyncService.DefaultRepositoryRawBaseUrl;
         public const string DefaultExportPath = "Output";
+
+        /// <summary>
+        /// 头部缩放比例的默认值 = <b>现行比例</b> <c>8/7 ≈ 1.142857</c>。
+        /// <para>
+        /// 这个值来自 <c>RetargetOptions.HeadScale</c>（当初对着一批模型实机调出来的经验值），
+        /// 两边必须一致：设置里没存过时管理器不会传 <c>--head-scale</c>，
+        /// 转换器就用它自己的 8/7。改动这里等于改动"默认观感"，别只改一边。
+        /// </para>
+        /// </summary>
+        public const double DefaultHeadScale = 8.0 / 7.0;
+
+        public const double MinHeadScale = 0.5;
+        public const double MaxHeadScale = 2.0;
+
+        /// <summary>
+        /// 读取头部缩放比例（已收敛到 <see cref="MinHeadScale"/>..<see cref="MaxHeadScale"/>）。
+        /// 坏值一律退回默认值，不抛——设置项读失败不该让整页打不开。
+        /// </summary>
+        public static double GetHeadScale()
+        {
+            try
+            {
+                var stored = LoadAll()?.HeadScale;
+                return stored is { } value && double.IsFinite(value)
+                    ? Math.Clamp(value, MinHeadScale, MaxHeadScale)
+                    : DefaultHeadScale;
+            }
+            catch { return DefaultHeadScale; }
+        }
+
+        /// <summary>
+        /// 写头部缩放比例。超出范围<b>拒绝</b>（返回 false，界面把输入框回滚），
+        /// 不做静默夹取 —— 静默夹取会让用户以为自己填的值生效了。
+        /// </summary>
+        public static bool SetHeadScale(double value)
+        {
+            if (!double.IsFinite(value) || value < MinHeadScale || value > MaxHeadScale) return false;
+            try
+            {
+                Update(model => model.HeadScale = value);
+                ApplyToVpkBuild();
+                return true;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// 把建包用的全局几何参数同步到 <see cref="VpkRebuildService"/>。
+        /// <para>
+        /// 与 <see cref="ApplyToLuaDeployment"/> 同一套理由：Core 不读管理器设置，
+        /// 所以每次改值（以及启动那一次）都得把它推进静态字段，否则"改了没生效"，
+        /// 而日志里什么线索都没有。
+        /// </para>
+        /// </summary>
+        public static void ApplyToVpkBuild()
+        {
+            VpkRebuildService.PrepareNativeSkeletonAsync = NativeSkeletonRebuildAdapter.PrepareAsync;
+            // 没设过就不传（null）：让转换器用它自己的 8/7，命令行参数也就与以前完全一致。
+            VpkRebuildService.HeadScale = LoadAll()?.HeadScale is { } stored && double.IsFinite(stored)
+                ? Math.Clamp(stored, MinHeadScale, MaxHeadScale)
+                : null;
+        }
 
         public static string GetDefaultExportPath()
         {
@@ -186,6 +269,51 @@ namespace HD2ModManager.Services
             catch { return false; }
         }
 
+        public static bool GetCategoryFilterEnabled() => LoadAll()?.CategoryFilterEnabled ?? true;
+
+        public static bool SetCategoryFilterEnabled(bool enabled)
+        {
+            try { Update(model => model.CategoryFilterEnabled = enabled); return true; }
+            catch { return false; }
+        }
+
+        public static (IReadOnlyList<CustomCategoryRecord> Custom, IReadOnlyDictionary<string, string> Overrides) GetCategoryUserData()
+        {
+            var model = LoadAll();
+            return (model?.CustomCategories ?? new List<CustomCategoryRecord>(),
+                model?.CategoryOverrides ?? new Dictionary<string, string>());
+        }
+
+        public static bool SetCategoryUserData(IReadOnlyList<CustomCategoryRecord> custom, IReadOnlyDictionary<string, string> overrides)
+        {
+            try
+            {
+                Update(model =>
+                {
+                    model.CustomCategories = custom.ToList();
+                    model.CategoryOverrides = new Dictionary<string, string>(overrides, StringComparer.OrdinalIgnoreCase);
+                });
+                return true;
+            }
+            catch { return false; }
+        }
+
+        public static bool GetEnableDualSkeletonAnimationVersion() => LoadAll()?.EnableDualSkeletonAnimationVersion ?? false;
+
+        public static bool SetEnableDualSkeletonAnimationVersion(bool enabled)
+        {
+            try { Update(model => model.EnableDualSkeletonAnimationVersion = enabled); return true; }
+            catch { return false; }
+        }
+
+        public static bool GetAskToInstallSkeletonAnimation() => LoadAll()?.AskToInstallSkeletonAnimation ?? false;
+
+        public static bool SetAskToInstallSkeletonAnimation(bool enabled)
+        {
+            try { Update(model => model.AskToInstallSkeletonAnimation = enabled); return true; }
+            catch { return false; }
+        }
+
         public static bool GetAutoImportToActiveProfile() => LoadAll()?.AutoImportToActiveProfile ?? true;
 
         public static bool SetAutoImportToActiveProfile(bool enabled)
@@ -195,27 +323,46 @@ namespace HD2ModManager.Services
         }
 
         /// <summary>
+        /// 上次 <see cref="GetArmorMappingMode"/> 是否把存档里的旧口径翻译成了新口径。
+        /// 只用来决定"要不要在启动时告诉用户一声"，不参与任何决策——实际生效模式永远是
+        /// <see cref="LuaDeploymentService.MappingMode"/>。
+        /// </summary>
+        public static bool LastMappingModeWasMigrated { get; private set; }
+
+        /// <summary>
         /// 读取护甲映射模式，并同步到 <see cref="LuaDeploymentService.MappingMode"/>——
         /// 计划阶段只读静态字段，不读磁盘。
         /// </summary>
         public static ArmorMappingMode GetArmorMappingMode()
         {
             ArmorMappingMode mode;
+            LastMappingModeWasMigrated = false;
             try
             {
                 var model = LoadAll();
-                mode = model?.ArmorMappingMode is int stored
-                    ? ArmorMappingModes.Normalize(stored)
-                    // 迁移：旧开关关闭时是把脚本交给外置加载器，对应外置入口模式。
-                    : model?.DeployLuaMods == false
+                if (model?.ArmorMappingMode is int stored)
+                {
+                    // **必须带 schema 读。** 旧口径 0=独占 / 1=外置 / 2=真映射，
+                    // 新口径 0=关闭 / 1=独占 / 2=外置。直接当新值读会把"开着独占"的用户
+                    // 悄悄变成"关闭"。
+                    var schema = model.MappingModeSchema ?? 0;
+                    mode = ArmorMappingModes.MigrateStoredValue(stored, schema);
+                    LastMappingModeWasMigrated = schema < ArmorMappingModes.CurrentSchema
+                        && stored != (int)mode;
+                }
+                else
+                {
+                    // 没有这两个字段的更早版本：旧开关关闭时是把脚本交给外置加载器。
+                    mode = model?.DeployLuaMods == false
                         ? ArmorMappingMode.ExternalLuaEntry
                         : ArmorMappingModes.Default;
+                }
                 // 总开关关闭时「独占」不可选 ⇒ 收敛到外置，避免存着一个用不了的档。
                 mode = ArmorMappingModes.Normalize((int)mode, GetBuiltInLuaEnabled());
             }
             catch
             {
-                mode = ArmorMappingModes.Default;
+                mode = ArmorMappingModes.Normalize((int)ArmorMappingModes.Default, GetBuiltInLuaEnabled());
             }
             LuaDeploymentService.MappingMode = mode;
             return mode;
@@ -223,12 +370,16 @@ namespace HD2ModManager.Services
 
         public static bool SetArmorMappingMode(ArmorMappingMode mode)
         {
+            // 收敛到真正会生效的档：存得下、读出来却被收敛，会让设置页上的数字和实际行为对不上。
+            mode = ArmorMappingModes.Normalize((int)mode, GetBuiltInLuaEnabled());
+            LastMappingModeWasMigrated = false;
             LuaDeploymentService.MappingMode = mode;
             try
             {
                 Update(model =>
                 {
                     model.ArmorMappingMode = (int)mode;
+                    model.MappingModeSchema = ArmorMappingModes.CurrentSchema;
                     // 同步旧字段，便于回退到旧版本时行为不突变。
                     model.DeployLuaMods = mode.UsesRuntimeLua();
                 });

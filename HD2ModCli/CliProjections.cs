@@ -1,4 +1,4 @@
-﻿using HD2ModCore.Domain;
+using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 
 namespace HD2ModCli;
@@ -6,6 +6,10 @@ namespace HD2ModCli;
 public static class CliProjections
 {
 	public const string ProtocolVersion = "1.27";
+
+	// 存储形态判定的唯一入口（P2-1）。每个节点现算一次目录，代价就是一次目录枚举。
+	private static readonly HD2ModCore.Application.IModStorageKindResolver StorageKindResolver =
+		HD2ModCore.Infrastructure.CoreServices.CreateModStorageKindResolver();
 
 	public static object CreateCapabilities()
 		=> new
@@ -278,7 +282,6 @@ public static class CliProjections
 		ArgumentNullException.ThrowIfNull(graph);
 		var id = FormatId(node.Id);
 		var optionStates = ReadOptionStates(node.Id, state.OptionActivations);
-		var decorationHosts = ReadDecorationHosts(node.Id, state.DecorationActivations);
 		var hostKey = node.Id.Value.ToString("N");
 		var directOptions = graph.GetDirectOptions(node.Id)
 			.Select(option => new
@@ -299,6 +302,10 @@ public static class CliProjections
 		{
 			id,
 			kind = node.Metadata.Kind.ToString().ToLowerInvariant(),
+			// 存储形态：logical / legacy / sectional / vpk2patch。
+			// 与上面的 kind（节点角色）是两个正交的轴——以前只有 kind，于是
+			// 一个标准的 vpk2patch Mod 被报成 option，"它是怎么来的"完全看不出来。
+			storageKind = FormatStorageKind(workspace.LibraryRoot, node.RelativePath),
 			name = node.Metadata.Name,
 			notes = node.Metadata.Notes,
 			relativePath = node.RelativePath,
@@ -318,12 +325,15 @@ public static class CliProjections
 			parentOptionIds = graph.GetParents(node.Id).Select(FormatId).ToArray(),
 			declaredChildIds = node.Children.Select(FormatId).ToArray(),
 			optionActivation = node.Metadata.Kind == ModNodeKind.Option ? optionStates : Array.Empty<object>(),
-			decorationEnabledHostIds = node.Metadata.Kind == ModNodeKind.Decoration ? decorationHosts : Array.Empty<string>(),
+			// 装饰包已不再支持：这个字段恒为空，保留是为兼容读取该 JSON 的脚本。
+			decorationEnabledHostIds = Array.Empty<string>(),
 			sourcePackage = new
 			{
 				guid = node.Metadata.SourcePackageGuid,
 				path = node.Metadata.SourcePackagePath,
 			},
+			// 材质选项表：每个选项一个 patch，用户可以任意启用几个。
+			materialOptions = ReadMaterialOptions(node, workspace),
 			helmetsMergedIntoArmor = node.Metadata.HelmetToArmorMerged,
 			contentFingerprint = node.ContentFingerprint,
 			createdUtc = node.Metadata.CreatedUtc,
@@ -401,7 +411,7 @@ public static class CliProjections
 			mods,
 			profiles,
 			orphanedOptionActivationIds = GetOrphanedActivationIds(state.OptionActivations.Options.Keys, state.Snapshot.Nodes),
-			orphanedDecorationActivationIds = GetOrphanedActivationIds(state.DecorationActivations.Keys, state.Snapshot.Nodes),
+			// 装饰包已不再支持：`orphanedDecorationActivationIds` 已删除。
 			issues = state.ReadIssues,
 		};
 	}
@@ -445,17 +455,43 @@ public static class CliProjections
 	public static ModNode ResolveMod(IReadOnlyDictionary<ModNodeId, ModNode> nodes, string selector)
 	{
 		if (string.IsNullOrWhiteSpace(selector))
-			throw new CliUserException("ModSelectorRequired", "请提供 Mod 的完整 GUID 或唯一 GUID 前缀。");
+			throw new CliUserException("ModSelectorRequired",
+				"请提供 Mod 的名字、完整 GUID 或唯一 GUID 前缀。");
+
+		// **名字优先，与 ResolveProfile 同一套口径**（完全匹配 → 歧义 → GUID 前缀）。
+		//
+		// 为什么必须支持名字：别的命令（例如 `vpk rekey`）早就接受名字，于是"同一个 Mod、
+		// 换个命令就得换一种写法"。而用名字时收到的是 `ModSelectorInvalid`（"必须是 GUID"），
+		// 人只会读成"这个 Mod 不存在"—— 一次误判能烧掉半小时。
+		var byName = nodes.Values
+			.Where(node => string.Equals(node.Metadata.Name, selector, StringComparison.OrdinalIgnoreCase))
+			.OrderBy(node => node.Id.Value)
+			.ToArray();
+		if (byName.Length == 1) return byName[0];
+		if (byName.Length > 1)
+		{
+			throw new CliUserException("ModSelectorAmbiguous",
+				$"存在多个同名 Mod：{selector}。请改用 GUID 或前缀。候选："
+				+ string.Join(", ", byName.Select(match => FormatId(match.Id))));
+		}
+
 		var normalized = NormalizeGuidPrefix(selector);
 		if (normalized is null)
-			throw new CliUserException("ModSelectorInvalid", $"Mod 标识必须是 GUID 或 GUID 前缀：{selector}");
+		{
+			throw new CliUserException("ModSelectorInvalid",
+				$"Mod 标识既不是库里的名字，也不是 GUID/GUID 前缀：{selector}。"
+				+ $"库里现有 {nodes.Count} 个 Mod；名字可以用 `hd2mod library list --json` 查。");
+		}
 		var matches = nodes.Values
 			.Where(node => node.Id.Value.ToString("N").StartsWith(normalized, StringComparison.OrdinalIgnoreCase))
 			.OrderBy(node => node.Id.Value)
 			.ToArray();
 		return matches.Length switch
 		{
-			0 => throw new CliUserException("ModNotFound", $"未找到 Mod：{selector}"),
+			// 这里**只能**说"快照里没有"。快照本身过没过期要拿磁盘比，那需要库根目录，
+			// 由调用方补（见 CliLibraryStateDiagnostics）。
+			0 => throw new CliUserException("ModNotFound",
+				$"Mod 库快照里没有这个 Mod：{selector}（快照共 {nodes.Count} 个 Mod）。"),
 			1 => matches[0],
 			_ => throw new CliUserException("ModSelectorAmbiguous", $"Mod GUID 前缀不唯一：{selector}。候选：{string.Join(", ", matches.Select(match => FormatId(match.Id)))}"),
 		};
@@ -522,14 +558,6 @@ public static class CliProjections
 			.ToArray();
 	}
 
-	private static string[] ReadDecorationHosts(ModNodeId decorationId, IReadOnlyDictionary<string, IReadOnlySet<string>> states)
-	{
-		var key = decorationId.Value.ToString("N");
-		return states.TryGetValue(key, out var hosts)
-			? hosts.OrderBy(host => host, StringComparer.OrdinalIgnoreCase).Select(FormatRawGuid).ToArray()
-			: Array.Empty<string>();
-	}
-
 	private static string[] NormalizeIds(IEnumerable<string>? values)
 		=> (values ?? Array.Empty<string>())
 			.Where(value => !string.IsNullOrWhiteSpace(value))
@@ -562,6 +590,40 @@ public static class CliProjections
 
 	private static string FormatRawGuid(string raw)
 		=> Guid.TryParse(raw, out var value) ? value.ToString("D") : raw;
+
+	private static string FormatStorageKind(string? libraryRoot, string relativePath)
+	{
+		var full = ResolveNodePath(libraryRoot, relativePath);
+		return string.IsNullOrWhiteSpace(full)
+			? ModStorageKind.Unknown.ToString().ToLowerInvariant()
+			: StorageKindResolver.Resolve(full).ToString().ToLowerInvariant();
+	}
+
+	/// <summary>
+	/// 一个 Mod 的材质选项表：来自基底目录里的 <c>patches.json</c>，启用状态来自 Mod 自己的设置文件。
+	/// 读不到就返回空表——这只是给人看的清单，不值得为它报错。
+	/// </summary>
+	/// <summary>
+	/// 一个 Mod 的材质选项表：顺序、名字、备注、配图、启用状态。
+	/// 走 <see cref="MaterialOptionSettings.Read"/>，与详情页那张卡是同一份读法——
+	/// 两个界面各写一份的话，同一个库会显示成两种样子。
+	/// </summary>
+	private static IReadOnlyList<object> ReadMaterialOptions(ModNode node, CliWorkspace workspace)
+	{
+		var directory = ResolveNodePath(workspace.LibraryRoot, node.RelativePath);
+		if (string.IsNullOrWhiteSpace(directory)) return Array.Empty<object>();
+		return MaterialOptionSettings.Read(directory)
+			.Select(option => (object)new
+			{
+				patchFileName = option.PatchFileName,
+				optionName = option.Name,
+				notes = option.Notes,
+				imageFileName = option.ImageFileName,
+				order = option.Order,
+				enabled = option.Enabled,
+			})
+			.ToArray();
+	}
 
 	private static string? ResolveNodePath(string? libraryRoot, string relativePath)
 	{

@@ -66,6 +66,7 @@ public sealed class Hd2MaterialAsset
 		[9576304397847579354] = "translucent",
 		[8580182439406660688] = "basic+",
 		[0xc6042e3403385d40] = "alphaclip+",
+
 	};
 
 	public byte[] Undat1 { get; set; } = new byte[12];

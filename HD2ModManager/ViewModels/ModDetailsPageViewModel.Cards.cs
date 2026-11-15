@@ -15,7 +15,6 @@ namespace HD2ModManager.ViewModels;
 public sealed record ModDetailsCardState(
     bool HasDescription,
     bool CanUsePatchTools,
-    bool ShowPatchSettingsCard,
     bool IsDecoration,
     bool CanShowDecorationPlan,
     bool IsVpkMod,
@@ -27,9 +26,8 @@ public static class ModDetailsCardLayout
 {
     public const string HeaderCardId = "mod-header";
     public const string DescriptionCardId = "mod-description";
-    public const string VpkActionsCardId = "vpk-actions";
+    public const string SectionalActionsCardId = "sectional-actions";
     public const string VpkComponentsCardId = "vpk-components";
-    public const string DecorationCardId = "decoration-details";
     public const string UserStatusCardId = "user-status";
     public const string AssetTagsCardId = "asset-tags";
     public const string CompatibilityCardId = "model-compatibility";
@@ -42,14 +40,15 @@ public static class ModDetailsCardLayout
         {
             new CardDescriptor(HeaderCardId, CardKind.ModHeader, data) { Order = 10 },
             new CardDescriptor(DescriptionCardId, CardKind.ModDescription, data) { Order = 20, Title = "备注" },
-            new CardDescriptor(VpkActionsCardId, CardKind.VpkActions, data) { Order = 40, Title = "VPK 动作" },
+            // 这张卡里放的是"这个 Mod 能做什么"，与 VPK 无关（sectional 类 Mod 也在用它）。
+            // 标题只在需要区分时才给，这里不给——它上面那张已经是 ModHeader 了。
+            new CardDescriptor(SectionalActionsCardId, CardKind.SectionalActions, data) { Order = 40 },
             new CardDescriptor(VpkComponentsCardId, CardKind.VpkComponents, data)
             {
                 Order = 50,
                 Title = "衣物装饰组件",
                 HeaderContent = new CardHeaderAction("应用", applyVpkComponentsCommand)
             },
-            new CardDescriptor(DecorationCardId, CardKind.DecorationDetails, data) { Order = 60, Title = "装饰详情" },
             new CardDescriptor(UserStatusCardId, CardKind.UserStatus, data) { Order = 70, Title = "当前状态" },
             new CardDescriptor(AssetTagsCardId, CardKind.AssetTags, data) { Order = 80, Title = "资产标签" },
             new CardDescriptor(CompatibilityCardId, CardKind.ModelCompatibility, data) { Order = 90, Title = "模型兼容性" },
@@ -68,9 +67,8 @@ public static class ModDetailsCardLayout
             {
                 HeaderCardId => true,
                 DescriptionCardId => state.HasDescription,
-                VpkActionsCardId => state.IsVpkMod,
+                SectionalActionsCardId => state.IsVpkMod,
                 VpkComponentsCardId => state.ShowVpkComponentCard,
-                DecorationCardId => state.IsDecoration,
                 UserStatusCardId => state.ShowUserStatusCard,
                 AssetTagsCardId => state.CanUsePatchTools,
                 CompatibilityCardId => state.ShowOutdatedCompatibility,
@@ -111,7 +109,6 @@ public partial class ModDetailsPageViewModel
     private ModDetailsCardState BuildCardState() => new(
         HasDescription: HasDescription,
         CanUsePatchTools: CanUsePatchTools,
-        ShowPatchSettingsCard: ShowPatchSettingsCard,
         IsDecoration: IsDecoration,
         CanShowDecorationPlan: CanShowDecorationPlan,
         IsVpkMod: IsVpkMod,

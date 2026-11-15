@@ -292,4 +292,34 @@ public sealed class Hd2MaterialTemplateTests
 		Assert.True(errors.IsEmpty,
 			"HasTextureSlot 并发调用抛异常：" + string.Join("；", errors.Select(error => error.GetType().Name + ": " + error.Message)));
 	}
+
+	/// <summary>
+	/// <b>模板必须是"子材质"，不是"根材质"。</b>
+	///
+	/// <para>
+	/// 钉住一次真实事故（2026-11-08）：<c>cutoutmetal</c> 是**从游戏根材质整块拷贝**再改父 id 生成的，
+	/// 于是把根材质的 <c>Undat2</c> 一起继承了 —— 那个值恰好等于根材质自己的 <c>gpu_resources</c>
+	/// 字节数（本例 <c>0x19330</c> = 103,216，与根材质的 gpu 段长度逐字节相等）。
+	/// 而**所有子材质这个字段都是 0**：9 个 SDK 模板是 0，游戏里 154 个真实子材质也是 0。
+	/// </para>
+	/// <para>
+	/// 后果：新造出的材质对外宣称"我带了 103 KB GPU 数据"，可它的条目根本没有 gpu 段。
+	/// 引擎据此判材质无效、**直接结束进程** —— 用户看到的是"进游戏一闪就退"，
+	/// 而 Windows 事件查看器里**没有任何应用程序崩溃报告**（因为它不是异常退出）。
+	/// 这条断言就是那次排查的最后一步，留着防止再犯。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void EveryTemplateIsAChildMaterialSoItsGpuClaimIsZero()
+	{
+		var library = Locate();
+		if (library is null)
+			return;
+
+		foreach (var name in library.Names)
+		{
+			var template = library.Load(name);
+			Assert.Equal(0UL, template.Undat2);
+		}
+	}
 }

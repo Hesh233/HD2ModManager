@@ -58,7 +58,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 
 		var units = await DiscoverFolderUnitsAsync(full, cancellationToken).ConfigureAwait(false);
 		if (units.Count == 0)
-			throw new InvalidDataException("所选文件夹里没有可导入的内容（没有 patch，也没有装饰包或 ReShade 文件）。");
+			throw new InvalidDataException("所选文件夹里没有可导入的内容（没有 patch，也没有 ReShade 文件）。装饰包已不再支持，请改用分件模组。");
 		return await ImportUnitsAsync(units, cancellationToken).ConfigureAwait(false);
 	}
 
@@ -177,9 +177,30 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 
 	internal static bool ContainsImportablePayload(ImportedObjectTree tree, string sourceRootDirectory)
 		=> tree.Nodes.Values.Any(node => node.PatchGroups.Count > 0
-			|| node.Metadata.Kind == ModNodeKind.Decoration
 			|| node.Metadata.IsLogicalContainer)
-			|| ExternalInstallFileFactsService.HasRecognizedFiles(sourceRootDirectory);
+			|| ExternalInstallFileFactsService.HasRecognizedFiles(sourceRootDirectory)
+			// **只有来源 VPK 的条目也是合法的。**
+			//
+			// vpk2patch 类的"来源"本身就是权威事实：`sectional/` 与 `Overwrite/` 是派生物，
+			// 由重构建（转换 + 编译）产出，导入阶段用不着它们已经存在。
+			// 以前这里要求"根上或载荷层里已经有 patch"，于是"先建条目、再重构建"这条链
+			// 在第一步就被判成"没有可导入内容"。
+			|| HasSourceVpk(sourceRootDirectory);
+
+	private static bool HasSourceVpk(string directory)
+	{
+		try
+		{
+			return Directory.Exists(directory)
+				&& Directory.EnumerateFiles(directory, "*.vpk", SearchOption.TopDirectoryOnly).Any();
+		}
+		catch (Exception exception) when (exception is IOException
+			or UnauthorizedAccessException
+			or DirectoryNotFoundException)
+		{
+			return false;
+		}
+	}
 
 	/// <summary>数一数目录里（含子目录）有几个 <c>.vpk</c>。只用于给出"这包其实是 VPK 来源"的提示。</summary>
 	private static int CountVpkFiles(string directory)
@@ -377,6 +398,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			CopyResolvedIcon(sourceRoot, destDir, node, manifest, cancellationToken);
 			ModNodeStorageProtocol.SynchronizeNodeMetadata(destDir, node, cancellationToken);
 			NormalizePatchDirectories(destDir, cancellationToken);
+			WriteSectionalPatchManifest(destDir, cancellationToken);
 
 			nodes[kvp.Key] = node with
 			{
@@ -615,7 +637,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			StringComparer.OrdinalIgnoreCase);
 		var conflictingPayloadNodes = new List<ManifestPayloadConflict>();
 		foreach (var sourceNode in tree.Nodes.Values
-			.Where(node => node.Metadata.Kind != ModNodeKind.Decoration)
+
 			.Where(node => node.PatchGroups.Count > 0)
 			.OrderBy(node => NormalizeRelativePath(node.RelativePath), StringComparer.OrdinalIgnoreCase))
 		{
@@ -701,7 +723,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 
 		var physicalPayloadNodes = compatibilityMode
 			? tree.Nodes.Values
-				.Where(node => node.Metadata.Kind != ModNodeKind.Decoration)
+
 				.Where(node => node.PatchGroups.Count > 0)
 				.OrderBy(node => NormalizeRelativePath(node.RelativePath), StringComparer.OrdinalIgnoreCase)
 			.ToArray()
@@ -738,13 +760,6 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 				physicalSource.PatchGroups,
 				Array.Empty<ModNodeId>());
 			sourcePaths[physicalId] = [physicalPath];
-		}
-
-		foreach (var decoration in tree.Nodes.Values.Where(node => node.Metadata.Kind == ModNodeKind.Decoration))
-		{
-			if (nodes.ContainsKey(decoration.Id)) continue;
-			nodes[decoration.Id] = decoration;
-			sourcePaths[decoration.Id] = [NormalizeRelativePath(decoration.RelativePath)];
 		}
 
 		return new PlannedImportTree(tree with { RootId = rootId, Nodes = nodes }, sourcePaths)
@@ -795,10 +810,11 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	{
 		var payloadNodes = tree.Nodes.Values
 			.Where(node => node.PatchGroups.Count > 0
-				|| node.Metadata.Kind == ModNodeKind.Decoration
 				|| node.Metadata.IsLogicalContainer
 				|| (string.IsNullOrEmpty(NormalizeRelativePath(node.RelativePath))
-					&& ExternalInstallFileFactsService.HasRecognizedFiles(sourceRootDirectory)))
+					&& (ExternalInstallFileFactsService.HasRecognizedFiles(sourceRootDirectory)
+						// 根上只有来源 VPK 也是合法条目：载荷由重构建产出（转换 → 编译）。
+						|| ObjectTreeImporter.HasSourceVpk(sourceRootDirectory))))
 			.OrderBy(node => NormalizeRelativePath(node.RelativePath), StringComparer.OrdinalIgnoreCase)
 			.ToArray();
 		if (payloadNodes.Length == 0)
@@ -814,7 +830,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		}
 
 		var patchNodes = payloadNodes
-			.Where(node => node.PatchGroups.Count > 0 && node.Metadata.Kind is not (ModNodeKind.Decoration or ModNodeKind.ReShade))
+			.Where(node => node.PatchGroups.Count > 0 && node.Metadata.Kind is not ModNodeKind.ReShade)
 			.ToArray();
 		if (patchNodes.Length == 0)
 		{
@@ -856,7 +872,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			sourcePathsByNode[rootId] = Array.Empty<string>();
 		}
 
-		foreach (var auxiliary in payloadNodes.Where(node => node.Id != rootCandidate?.Id && (node.Metadata.Kind is ModNodeKind.Decoration or ModNodeKind.ReShade)))
+		foreach (var auxiliary in payloadNodes.Where(node => node.Id != rootCandidate?.Id && node.Metadata.Kind is ModNodeKind.ReShade))
 		{
 			nodes[auxiliary.Id] = auxiliary;
 			sourcePathsByNode[auxiliary.Id] = [NormalizeRelativePath(auxiliary.RelativePath)];
@@ -911,9 +927,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	}
 
 	private static ModNodeKind GetHeuristicStandaloneKind(ModNode node, string sourceRootDirectory)
-		=> node.Metadata.Kind == ModNodeKind.Decoration
-			? ModNodeKind.Decoration
-			: string.IsNullOrEmpty(NormalizeRelativePath(node.RelativePath))
+		=> string.IsNullOrEmpty(NormalizeRelativePath(node.RelativePath))
 				&& node.PatchGroups.Count == 0
 				&& ExternalInstallFileFactsService.HasRecognizedFiles(sourceRootDirectory)
 				? ModNodeKind.ReShade
@@ -1133,10 +1147,30 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	/// 结果就是「导入成功、库里这个 Mod 一个 patch 都没有」。
 	/// </para>
 	/// </summary>
-	private static void CopyVpkPatchPayload(string sourceDir, string destDir, bool preferHardLinks, CancellationToken cancellationToken)
+	/// <summary>
+	/// 在基底目录里写一份 <c>patches.json</c>，说明每个 patch 组是"谁"。
+	/// <para>
+	/// 写完就没必要每次再去解析根上的转换报告、也不必靠文件名猜角色。写不出来只记一条诊断，
+	/// 不影响导入：这份清单是派生的便利信息，读不到时下游会回退到按目录列举。
+	/// </para>
+	/// </summary>
+	private static void WriteSectionalPatchManifest(string destDir, CancellationToken cancellationToken)
 	{
-		var source = ModNodePayloadLayout.GetVpkPatchDirectory(sourceDir);
-		if (!Directory.Exists(source)) return;
+		var payload = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(destDir);
+		if (payload is null) return;
+		var report = VpkConversionReport.TryRead(destDir);
+		// 归档段直接取自目录里的文件名：报告可能缺失，而文件名永远在。
+		var archive = SectionalPatchManifestFile.ReadArchiveHex16(payload);
+
+		var document = SectionalPatchManifestFile.Build(payload, archive, report, DateTimeOffset.UtcNow);
+		if (document.Patches.Count == 0) return;
+		_ = SectionalPatchManifestFile.TryWrite(payload, document);
+	}
+
+	private static void CopyVpkPatchPayload(string sourceDir, string destDir, bool preferHardLinks, CancellationToken cancellationToken)	{
+		// 来源可能是老库布局（vpk2patch/），所以读侧两个名字都认；写侧一律落新名。
+		var source = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(sourceDir);
+		if (source is null) return;
 		var destination = ModNodePayloadLayout.GetVpkPatchDirectory(destDir);
 		Directory.CreateDirectory(destination);
 		foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.TopDirectoryOnly))

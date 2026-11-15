@@ -6,7 +6,7 @@ local M={VERSION='1.0.0'}
 local RESOURCE='content/fac_helldivers/fp_cha_avatar/fp_cha_avatar'
 local RESOURCE_HEX='d0cf4d493ca08bed'
 local function finite(x)return type(x)=='number' and x==x and math.abs(x)<1e12 end
-function M.new(S,context)
+function M.new(S,context,contract)
  local U,W,A,X,I=S.Unit,S.World,S.Application,S.Matrix4x4,S.IdString64
  local held=false;local currentFpWorld=nil;local currentFpActor=nil
  local function pose(fn,...)
@@ -25,13 +25,25 @@ function M.new(S,context)
     if not seen[u] and U.alive(u)==true then
      seen[u]=true
      assert(I.to_hex(U.resource_name(u)):lower()==RESOURCE_HEX,'view_fp_identity')
-     assert(U.num_scene_graph_items(u)==63,'view_fp_layout')
+     local count=U.num_scene_graph_items(u)
+     if count~=63 then
+      assert(contract and contract.resource==RESOURCE_HEX and count==contract.count and contract.nativeCount==63,'view_fp_layout')
+      for _,n in ipairs(contract.nativeGraph or {})do
+       if n.name then local id=A.string_to_id32(n.name);assert(U.has_node(u,id)and U.node(u,A.string_to_id32(n.name))==n.index+1,'view_fp_native_prefix')end
+       if n.parent~=nil then assert(U.scene_graph_parent(u,n.index+1)==n.parent+1,'view_fp_native_parent')end
+      end
+      for _,n in ipairs(contract.outputs or {})do
+       assert(n.index>=63,'view_fp_output_index');local id=A.string_to_id32(n.name)
+       assert(U.has_node(u,id)and U.node(u,A.string_to_id32(n.name))==n.index+1,'view_fp_source_identity')
+       assert(U.scene_graph_parent(u,n.index+1)==n.parent+1,'view_fp_source_parent')
+      end
+     end
      -- Verified serialized FP layout: root[4], camera[50] (zero-based).
      for _,row in ipairs({{'root',5},{'camera',51}})do
       local id=A.string_to_id32(row[1])
       assert(U.has_node(u,id)==true and U.node(u,id)==row[2],'view_fp_camera_identity')
      end
-     graphs[#graphs+1]={unit=u,world=world}
+     graphs[#graphs+1]={unit=u,world=world,count=count,layoutVerified=true}
     end
    end
   end
@@ -48,7 +60,7 @@ function M.new(S,context)
    local d=math.sqrt((camera[10]-fp[10])^2+(camera[11]-fp[11])^2+(camera[12]-fp[12])^2)
    nearest=math.min(nearest,d)
    if d<=limit then
-    held=true;currentFpWorld=row.world;currentFpActor={unit=row.unit,world=row.world}
+    held=true;currentFpWorld=row.world;currentFpActor={unit=row.unit,world=row.world,count=row.count,layoutVerified=row.layoutVerified}
     return true,{reason='fp_camera_matches_main_view',distance=d,limit=limit,
      camera={camera[10],camera[11],camera[12]},fpCamera={fp[10],fp[11],fp[12]},fpWorld=tostring(row.world)}
    end

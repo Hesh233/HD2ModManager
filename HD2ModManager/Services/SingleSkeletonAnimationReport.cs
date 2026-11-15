@@ -17,9 +17,11 @@ internal static class SingleSkeletonAnimationReport
         {value=0;return root.TryGetProperty(name,out var item) && item.ValueKind==JsonValueKind.Number && item.TryGetInt32(out value);}
         var built=root.TryGetProperty("animations",out var animations) && animations.ValueKind==JsonValueKind.Array?animations.GetArrayLength():-1;
         var sampleOnly=root.TryGetProperty("sampleOnly",out var sample) && sample.ValueKind==JsonValueKind.True;
-        var optimized=Text("pipelineVersion","1.0.21");
+        var fingerSafe=Text("pipelineVersion","1.0.22");
+        var optimized=Text("pipelineVersion","1.0.21") || fingerSafe;
         var legacy=Text("pipelineVersion","1.0.20") && !root.TryGetProperty("outputEncodingProfile",out _);
-        var valid=Text("status","complete") && (legacy || optimized) && Text("skeleton","hd2")
+        var valid=Text("status","complete") && (legacy || optimized)
+            && (!fingerSafe || Text("fingerSegmentPolicy","native-axis-source-length-finger-chain-v1")) && Text("skeleton","hd2")
             && Text("processor","anim_batch_mod.batch.build_batch_entries") && Text("processingProfile","standard-single-v3-normal-reference")
             && Text("playbackRevision","normal-reference-r2") && Text("frameTimePolicy","user-normal-pack-template")
             && Flag("preservePlaybackTiming",false) && Flag("preserveReferencePlayback",true)
@@ -91,6 +93,6 @@ internal static class SingleSkeletonAnimationReport
             || !root.TryGetProperty("armRequestedTargetMaxDistance", out var displacement)
             || displacement.ValueKind != JsonValueKind.Number || !displacement.TryGetDouble(out var deviation) || !double.IsFinite(deviation) || deviation < 0) valid = false;
         if(!Number("ikEvaluations",out var evaluations) || evaluations<0 || (ikEnabled && evaluations==0))valid=false;
-        if(!valid)throw new InvalidDataException("单骨架动画缺少正常包R2播放模板、标准手脚IK或已验收体积优化的字节保留/播放边界契约；旧版错误绑定和不完整动画不能入库。");
+        if(!valid)throw new InvalidDataException("单骨架动画缺少正常包R2播放模板、原生手指轴、标准手脚IK或已验收体积优化的字节保留/播放边界契约；旧版错误绑定和不完整动画不能入库。");
     }
 }

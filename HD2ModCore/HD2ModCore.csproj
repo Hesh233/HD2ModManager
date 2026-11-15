@@ -136,6 +136,13 @@
                       Link="PhysBone\physbone_compat.lua" />
     <EmbeddedResource Include="..\HD2PhysBoneCompat\src\physbone_runtime.lua"
                       Link="PhysBone\physbone_runtime.lua" />
+    <!-- Route isolation: legacy single/native resources above stay byte-identical. -->
+    <EmbeddedResource Include="..\HD2PhysBoneCompat\src\direct\physbone_compat.lua"
+                      Link="PhysBone\Direct\physbone_compat.lua" />
+    <EmbeddedResource Include="..\HD2PhysBoneCompat\src\direct\physbone_runtime.lua"
+                      Link="PhysBone\Direct\physbone_runtime.lua" />
+    <EmbeddedResource Include="..\HD2PhysBoneCompat\src\physbone_routes.lua"
+                      Link="PhysBone\physbone_routes.lua" />
     <EmbeddedResource Include="..\HD2PhysBoneCompat\src\native_attachments.lua"
                       Link="PhysBone\native_attachments.lua" />
     <EmbeddedResource Include="..\HD2PhysBoneCompat\src\native_attachment_profile.lua"
@@ -153,6 +160,14 @@
                       Link="PhysBone\native_grip_transfer_test.lua" />
     <EmbeddedResource Include="..\HD2PhysBoneCompat\src\native_grip_transfer_test_entry.lua"
                       Link="PhysBone\native_grip_transfer_test_entry.lua" />
+    <EmbeddedResource Include="..\HD2PhysBoneCompat\src\production\native_grip_transfer.lua" Link="PhysBone\Production\native_grip_transfer.lua" />
+    <EmbeddedResource Include="..\HD2PhysBoneCompat\src\production\native_grip_entry.lua" Link="PhysBone\Production\native_grip_entry.lua" />
+    <EmbeddedResource Include="..\HD2PhysBoneCompat\src\production\native_first_person_guard.lua" Link="PhysBone\Production\native_first_person_guard.lua" />
+    <EmbeddedResource Include="..\HD2PhysBoneCompat\src\production\attachment_fix_runtime.lua" Link="PhysBone\Production\attachment_fix_runtime.lua" />
+    <EmbeddedResource Include="..\HD2PhysBoneCompat\src\production\first_person_source.lua" Link="PhysBone\Production\first_person_source.lua" />
+    <EmbeddedResource Include="..\HD2PhysBoneCompat\src\production\attachment_option_switches.lua" Link="PhysBone\Production\attachment_option_switches.lua" />
+    <EmbeddedResource Include="..\HD2PhysBoneCompat\src\production\fp_arm_hidden_mode.lua" Link="PhysBone\Production\fp_arm_hidden_mode.lua" />
+    <EmbeddedResource Include="..\HD2PhysBoneCompat\src\production\attachment_repair_policy.json" LogicalName="HD2ModCore.PhysBone.Production.attachment_repair_policy.json" />
   </ItemGroup>
 
 </Project>

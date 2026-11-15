@@ -4,12 +4,40 @@ local function repaired_start(id,lines)
  new_start(id);runtime:stop()
  integratedProfile.testRepairs=copy(test_repair_configuration)
  integratedProfile.testRepairs.poseProbes={}
+ if integratedProfile.testRepairs.bodyDiagnostics then integratedProfile.testRepairs.bodyDiagnostics.enabled=true;integratedProfile.testRepairs.bodyDiagnostics.bypassNoAnimationStateMachine=true end
+ if integratedProfile.testRepairs.aimDiagnostics then integratedProfile.testRepairs.aimDiagnostics.enabled=true end
+ if integratedProfile.testRepairs.gripTracking then integratedProfile.testRepairs.gripTracking.enabled=true end
  local aimNodes={}
  for key,node in pairs(integratedProfile.testRepairs.aimNodes or {})do
   local n=A.names[node.hash]
   if n then local copyNode=copy(node);copyNode.index=n-1;copyNode.parent=A.parents[n];aimNodes[key]=copyNode end
  end
  integratedProfile.testRepairs.aimNodes=aimNodes
+ if integratedProfile.testRepairs.heldEquipment then
+  local p=integratedProfile.testRepairs.heldEquipment
+  integratedProfile.leftGrip.weaponTargets['51f50d6321f52f3d']={rootName='boss',linkNodes={'skeleton','boss'},leftPolicy='none',rootToIKRight=copy(integratedProfile.weaponRight)}
+  integratedProfile.gripFixes.sidearms['51f50d6321f52f3d']=true
+  integratedProfile.gripFixes.sidearms['64cdb52aca152be1']=true
+  integratedProfile.leftGrip.weaponTargets['80f1a156d9fa1e36'].leftPolicy='always'
+  integratedProfile.leftGrip.intent.weaponThresholds=integratedProfile.leftGrip.intent.weaponThresholds or {}
+  integratedProfile.leftGrip.intent.weaponThresholds['80f1a156d9fa1e36']={enterMetres=.18,leaveMetres=.22}
+ end
+
+ if integratedProfile.testRepairs.sourceFkRefresh then
+  local levels={}
+  for _,group in ipairs(integratedProfile.testRepairs.sourceFkRefresh.levels)do
+   local g={}
+   for _,node in ipairs(group)do
+    local i=A.names[node.hash]
+    if i then local n=copy(node);n.index=i-1;n.parent=A.parents[i];g[#g+1]=n end
+   end
+   levels[#levels+1]=g
+  end
+  integratedProfile.testRepairs.sourceFkRefresh.levels=levels
+  -- Historical fixtures remain the baseline; the lazy-cache suite opts in.
+  integratedProfile.testRepairs.sourceFkRefresh.enabled=false
+ end
+
  if integratedProfile.testRepairs.bodyDiagnostics then
   local pairs={}
   for _,pair in ipairs(integratedProfile.testRepairs.bodyDiagnostics.pairs or {})do

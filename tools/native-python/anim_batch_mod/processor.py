@@ -49,6 +49,10 @@ class IKChainConfig:
         self.target_multiplier = values
 
 
+FINGER_AXIS_POLICY = "native-axis-source-length-finger-chain-v1"
+IK_BEND_PLANE_REVISION = "relative-normal-reject-r1"
+
+
 @dataclass
 class ModConfig:
     offsets: dict[str, list[float]]
@@ -57,8 +61,11 @@ class ModConfig:
     rotate_multipliers: dict[str, float] = field(default_factory=dict)
     rotation_compensations: dict[str, list[float]] = field(default_factory=dict)
     ik_chains: dict[str, IKChainConfig] = field(default_factory=dict)
+    finger_axis_policy: str | None = None
 
     def __post_init__(self):
+        if self.finger_axis_policy not in (None, FINGER_AXIS_POLICY):
+            raise ValueError("Unsupported single HD2 finger axis policy")
         missing_offsets = sorted(set(self.distance_multipliers) - set(self.offsets))
         if missing_offsets:
             raise ValueError(
@@ -145,6 +152,9 @@ class ModConfig:
             raise ValueError(
                 "Config must contain at least one bone offset, rotation compensation, or IK chain"
             )
+        contract = data.get("single_skeleton_contract", {})
+        if not isinstance(contract, dict) or set(contract) - {"finger_axis_policy"}:
+            raise ValueError("Invalid single_skeleton_contract")
         required_bone = str(data.get("filter", {}).get("required_bone", "cape4"))
         return cls(
             offsets=offsets,
@@ -153,6 +163,7 @@ class ModConfig:
             rotation_compensations=rotation_compensations,
             ik_chains=ik_chains,
             required_bone=required_bone,
+            finger_axis_policy=contract.get("finger_axis_policy"),
         )
 
 
@@ -279,6 +290,33 @@ class Track:
         return self.interpolate(left_value, right_value, factor)
 
 
+def validate_native_finger_axes(unit: UnitData, bones: BonesData, config: ModConfig):
+    """Single-only gate: unchanged native rotations require native finger segments.
+
+    MCP placement is source-sized and may differ freely. Validate the two
+    phalanx segments, not wrist-to-MCP vectors; changing those root vectors is
+    not itself an axis error. Dual/native and ordinary batch configs opt out.
+    """
+    names = {n: h for n, h in zip(bones.names, bones.hashes)}
+    required = {f"{side}_{stem}_finger{k}" for side in ("l", "r")
+                for stem in ("thumb", "index", "middle", "ring", "pinky") for k in (1, 2, 3)}
+    if not required.intersection(names): return
+    if not required.issubset(names):
+        raise ValueError("Incomplete single HD2 finger skeleton")
+    indices = {n: unit.name_hashes.index(names[n]) for n in required}
+    for n in sorted(required):
+        if n.endswith("1"): continue
+        i = indices[n]; expected_parent = indices[n[:-1] + str(int(n[-1]) - 1)]
+        if unit.parents[i] != expected_parent:
+            raise ValueError(f"Single HD2 finger {n} topology is incompatible")
+        original = unit.transforms[i].position
+        changed = vec_add(original, config.offsets.get(n, [0., 0., 0.]))
+        changed = [v * config.distance_multipliers.get(n, 1.) for v in changed]
+        length = sqrt(sum(v*v for v in original) * sum(v*v for v in changed))
+        if length < 1e-12 or sum(x*y for x,y in zip(original,changed))/length < 1-1e-6:
+            raise ValueError(f"Single HD2 finger {n} is off the native rotation axis: reimport the VPK with the finger-safe converter and rebuild both packages")
+
+
 def modify_animation_with_world_compensation(
     animation: AnimationData,
     bones: BonesData,
@@ -296,6 +334,8 @@ def modify_animation_with_world_compensation(
     preserve_playback_timing: bool = False,
     playback_reference: AnimationData | None = None,
 ) -> ModificationResult:
+    if config.finger_axis_policy is not None:
+        validate_native_finger_axes(unit, bones, config)
     if any(not isinstance(v, bool) for v in (preserve_hand_bend_frame, preserve_source_key_times, preserve_unmodified_channels, source_arm_constraints, preserve_playback_timing)):
         raise ValueError("Processing profile switches must be booleans")
     if animation.is_additive and not allow_additive:
@@ -637,6 +677,7 @@ def modify_animation_with_world_compensation(
                     preserve_bend_frame=constrained_arm or (preserve_hand_bend_frame and target_name in ('l_hand', 'r_hand')),
                     hinge_axis=hinge_axis,
                     reference_direction=reference_direction,
+                    reject_unreliable_bend_normal=constrained_arm,
                 )
                 current_world = _calculate_world_transforms(local_transforms, unit.parents)
                 if constrained_arm:
@@ -687,6 +728,8 @@ def modify_animation_with_world_compensation(
     if reference_dense:
         # The user-accepted playback pack is the authority for untouched rotation
         # channels and the boundary scale pose, not the sparse game-source layout.
+        # Single configs first enforce the native finger-axis contract; only
+        # then is retaining these finger rotations geometrically safe.
         # Keep model-dependent IK / explicit rotation edits; copy other reference
         # controls verbatim so their start/end interpolation is exactly comparable.
         changed_rotations = set(ik_changed_animation_indices)
@@ -890,6 +933,7 @@ def _apply_two_bone_ik(
     preserve_bend_frame=False,
     hinge_axis=None,
     reference_direction=None,
+    reject_unreliable_bend_normal=False,
 ):
     """Adjust a direct two-bone chain while preserving position and end rotation."""
     current = _calculate_world_transforms(local_transforms, parents, (root_index, mid_index, target_index))
@@ -1010,6 +1054,10 @@ def _apply_two_bone_ik(
                 pole_state['hinge_normal'] = quat_inverse_rotate(root.rotation, input_normal)
         elif pole_state is not None and 'hinge_normal' in pole_state:
             input_normal = quat_rotate(root.rotation, pole_state['hinge_normal'])
+        elif reject_unreliable_bend_normal:
+            # Single/source-constrained opt-in only; retain the legacy default.
+            # Do not normalize rejected bind roundoff into a full axial roll.
+            input_normal = [0.0, 0.0, 0.0]
         desired_normal = _cross(desired_first_vector, desired_second_vector)
         if (_distance(input_normal, [0., 0., 0.]) > 1e-8
                 and _distance(desired_normal, [0., 0., 0.]) > 1e-8):

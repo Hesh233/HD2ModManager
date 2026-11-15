@@ -8,7 +8,8 @@ namespace HD2SourceMigration.Retarget;
 public sealed record SingleHd2BindManifest(int Version, string Policy, double ModelScale,
     IReadOnlyList<uint> DriverHashes, IReadOnlyList<float[]> DriverWorld,
     bool MeshOnlyPostprocessing = false, string ControlMarkerPolicy = "original-hd2-local-v1",
-    string ArmSegmentPolicy = "native-axis-source-length-hand-follow-v2");
+    string ArmSegmentPolicy = "native-axis-source-length-hand-follow-v2",
+    string FingerSegmentPolicy = "native-axis-source-length-finger-chain-v1");
 
 public sealed record SingleHd2Conversion(RetargetResult Result, SingleHd2BindManifest Manifest)
 {
@@ -65,6 +66,7 @@ public static class SingleHd2Skeleton
 
         var driverParentRest = result.ShippedRest;
         result = NormalizeArmSegments(inputs, result, rig);
+        result = NormalizeFingerSegments(inputs, result, rig);
         // World/local tables must both change. Reusing the original avatar here makes
         // generated animation offsets zero while the geometry has already moved/scaled.
         var worlds = Enumerable.Range(0, avatar.NameHashes.Count)
@@ -170,6 +172,70 @@ public static class SingleHd2Skeleton
                 corrections[bone.Index] = Below(bone.Index, elbow.Index) ? lower : upper;
             }
         }
+        return ApplyBindCorrections(inputs, result, rig, corrections);
+    }
+
+    // Unlike Retargeter.ApplyFingerPose, this is NOT mesh-only. Joint heads,
+    // mesh deformation and appended helpers share the same per-joint FK frame.
+    // Keep the palm, MCP roots, source lengths and native bind axes unchanged so
+    // both accepted normal-reference rotations and additive deltas remain valid.
+    internal static RetargetResult NormalizeFingerSegments(RetargetInputs inputs,
+        RetargetResult result, Hd2Rig rig)
+    {
+        var frames = new Dictionary<int, Mat4>();
+        var byIndex = rig.Bones.ToDictionary(b => b.Index);
+        foreach (var side in new[] { "l", "r" })
+        foreach (var stem in new[] { "thumb", "index", "middle", "ring", "pinky" })
+        {
+            var chain = Enumerable.Range(1, 3).Select(k => rig.Find($"{side}_{stem}_finger{k}")).ToArray();
+            if (chain.All(b => b is null)) continue;
+            if (chain.Any(b => b is null))
+                throw new InvalidDataException($"Incomplete single HD2 finger chain {side}_{stem}.");
+            var bones = chain.Select(b => b!).ToArray();
+            if (bones[1].ParentIndex != bones[0].Index || bones[2].ParentIndex != bones[1].Index)
+                throw new InvalidDataException($"Invalid single HD2 finger topology {side}_{stem}.");
+            var joints = bones.Select(b => result.ShippedRest[b.Index].Origin).ToArray();
+            var segments = new[] { joints[1] - joints[0], joints[2] - joints[1], joints[2] - joints[1] };
+            var last = bones[2].WorldBind;
+            var targets = new[] {
+                bones[1].WorldOrigin - bones[0].WorldOrigin,
+                bones[2].WorldOrigin - bones[1].WorldOrigin,
+                new Vec3(last.M11, last.M21, last.M31),
+            };
+            var frame = Mat4.Identity;
+            for (var k = 0; k < 3; k++)
+            {
+                if (segments[k].Length < 1e-8 || targets[k].Length < 1e-8)
+                    throw new InvalidDataException($"Degenerate single HD2 finger {side}_{stem}/{k + 1}.");
+                // Pivots are frozen in the input frame; the accumulated parent
+                // frame moves them exactly once. The terminal phalanx has no
+                // child: use its incoming direction, targeting native +X, as in
+                // the existing finger FK solver (not a world-space rotation).
+                var parentRotation = Mat3.FromMat4(frame);
+                var local = RetargetMath.MinArcRotation(segments[k], parentRotation.Transposed().Transform(targets[k]));
+                frame = frame * RetargetMath.Trans(joints[k]) * local.ToMat4()
+                    * RetargetMath.Trans(joints[k] * -1);
+                frames[bones[k].Index] = frame;
+            }
+        }
+        var corrections = new Dictionary<int, Mat4>();
+        var visiting = new HashSet<int>();
+        Mat4 Inherited(int i)
+        {
+            if (corrections.TryGetValue(i, out var cached)) return cached;
+            if (!visiting.Add(i)) throw new InvalidDataException("Cyclic single HD2 skeleton.");
+            var parent = byIndex[i].ParentIndex;
+            var value = frames.TryGetValue(i, out var direct) ? direct
+                : parent >= 0 && parent != i && byIndex.ContainsKey(parent) ? Inherited(parent) : Mat4.Identity;
+            visiting.Remove(i); return corrections[i] = value;
+        }
+        foreach (var b in rig.Bones) Inherited(b.Index);
+        return ApplyBindCorrections(inputs, result, rig, corrections);
+    }
+
+    private static RetargetResult ApplyBindCorrections(RetargetInputs inputs, RetargetResult result,
+        Hd2Rig rig, IReadOnlyDictionary<int, Mat4> corrections)
+    {
         var worlds = result.ShippedRest.ToDictionary(x => x.Key, x =>
             RetargetMath.Trans(corrections[x.Key].TransformPoint(x.Value.Origin) - x.Value.Origin) * x.Value);
         var deform = result.Deform.ToDictionary(x => x.Key, x => corrections[x.Key] * x.Value);

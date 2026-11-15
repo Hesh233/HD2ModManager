@@ -12,13 +12,13 @@ from .constants import UNIT_TYPE_ID,BONE_TYPE_ID,STATE_MACHINE_TYPE_ID,ANIMATION
 from .formats import UnitData,BonesData
 from .playback_reference import NormalPlaybackReference,PLAYBACK_REVISION,FRAME_TIME_POLICY
 from .single_animation_compaction import compact_single_animation,OUTPUT_ENCODING_PROFILE,BOUNDARY_FRAMES_EACH_END
-from .processor import ModConfig
+from .processor import ModConfig,FINGER_AXIS_POLICY,IK_BEND_PLANE_REVISION,validate_native_finger_axes
 from .batch import discover_batch_jobs,build_batch_entries
 from .cli import parse_thread_count,calculate_bone_offsets,calculate_bone_rotation_compensations,write_generated_config,write_output_patch,verify_patch
 
 REFERENCE_UNIT=0x4d1c334d294dfa97
 REFERENCE_ARCHIVE='18235e0c9ec0e636'
-PIPELINE_VERSION='1.0.21'
+PIPELINE_VERSION='1.0.22'
 PROCESSING_PROFILE='standard-single-v3-normal-reference'
 BIND_POLICY='hd2-source-sized-shared-bind-v1'
 CONTROL_MARKERS={'attach_hand_l','attach_hand_r','weapon_aim','attach_weapon','aim_weapon','head_aim','boss_aim'}
@@ -176,6 +176,12 @@ def _derive_calibration(units,original,bones):
                 raise ValueError(f'Single HD2 arm {name} is off the native animation axis: reimport the VPK with the axis-safe converter')
     offsets,deltas=calculate_bone_offsets(projected,bones,original,bones,1e-6)
     rotations=calculate_bone_rotation_compensations(projected,bones,original,bones,1e-6)
+    validate_native_finger_axes(original,bones,ModConfig(offsets))
+    for name,h in zip(bones.names,bones.hashes):
+        if 'finger' not in name:continue
+        i=original.name_hashes.index(h)
+        if abs(sum(x*y for x,y in zip(original.transforms[i].rotation,projected.transforms[i].rotation)))<1-1e-6:
+            raise ValueError(f'Single HD2 finger {name} has an incompatible bind rotation: reimport with the finger-safe converter')
     return offsets,deltas,rotations
 
 
@@ -195,7 +201,7 @@ def _compose_config(calibration,standard,original,bones):
         if not set([target,*chain.chain]).issubset(names):raise ValueError('Standard IK references a missing single HD2 bone')
         r,m,h=[indices[n] for n in [*chain.chain,target]]
         if original.parents[m]!=r or original.parents[h]!=m:raise ValueError('Standard IK must be a direct two-bone HD2 chain')
-    config=ModConfig(offsets,required_bone=required,distance_multipliers=dict(distances),rotate_multipliers=dict(rotates),rotation_compensations=rotations,ik_chains=copy.deepcopy(standard['chains']))
+    config=ModConfig(offsets,required_bone=required,distance_multipliers=dict(distances),rotate_multipliers=dict(rotates),rotation_compensations=rotations,ik_chains=copy.deepcopy(standard['chains']),finger_axis_policy=FINGER_AXIS_POLICY if any('finger' in n for n in bones.names) else None)
     return config,deltas
 
 
@@ -209,6 +215,8 @@ def _write_effective_config(path,config,deltas):
     if config.rotate_multipliers:
         text+='\n[bone_rotate_multipliers]\n'
         for name,value in sorted(config.rotate_multipliers.items()):text+=json.dumps(name)+' = '+repr(value)+'\n'
+    if config.finger_axis_policy is not None:
+        text+='\n[single_skeleton_contract]\nfinger_axis_policy = '+json.dumps(config.finger_axis_policy)+'\n'
     path.write_text(text,encoding='utf-8')
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -220,7 +228,7 @@ def _chain_rows(config):
 def _standard_manifest(folder,certificate,units,bones,config,standard,config_sha):
     return dict(version=4,bindPolicy=BIND_POLICY,modelFingerprint='toc-and-referenced-payloads-v1',modelScale=certificate['modelScale'],
         bindSha256=hashlib.sha256((Path(folder)/'single-hd2-bind.json').read_bytes()).hexdigest(),modelFiles=_model_files(folder),
-        pipelineVersion=PIPELINE_VERSION,processingProfile=PROCESSING_PROFILE,skeleton='hd2',sourceRigRetained=False,
+        pipelineVersion=PIPELINE_VERSION,fingerSegmentPolicy=FINGER_AXIS_POLICY,processingProfile=PROCESSING_PROFILE,skeleton='hd2',sourceRigRetained=False,
         referenceUnit=f'0x{REFERENCE_UNIT:016x}',referenceArchive=REFERENCE_ARCHIVE,modelResources=[f'{i:016x}' for i,_ in units],
         boneCount=len(bones.names),config='single-config.toml',configSha256=config_sha,options=standard['options'],
         standardConfigPath=str(standard['path']),standardConfigSha256=standard['sha256'],ikChains=_chain_rows(config),
@@ -286,7 +294,7 @@ def build_project(folder,game_data,output,sample_count=None,threads=2,config_pat
     output.mkdir(parents=True,exist_ok=True)
     store=PackageStore(Path(game_data));index=ResourceIndex(store,output/'resource-index.sqlite3',{UNIT_TYPE_ID,BONE_TYPE_ID,STATE_MACHINE_TYPE_ID,ANIMATION_TYPE_ID})
     playback=None
-    report=dict(status='building',pipelineVersion=PIPELINE_VERSION,processingProfile=PROCESSING_PROFILE,skeleton='hd2',processor='anim_batch_mod.batch.build_batch_entries',
+    report=dict(status='building',pipelineVersion=PIPELINE_VERSION,fingerSegmentPolicy=FINGER_AXIS_POLICY,ikBendPlaneRevision=IK_BEND_PLANE_REVISION,processingProfile=PROCESSING_PROFILE,skeleton='hd2',processor='anim_batch_mod.batch.build_batch_entries',
         standardConfigPath=str(standard['path']),standardConfigSha256=standard['sha256'],options=standard['options'],
         preserveHandBendFrame=False,preserveSourceKeyTimes=False,preserveUnchangedBytes=True,preserveUnmodifiedChannels=False,preservePlaybackTiming=False,preserveReferencePlayback=True,playbackRevision=PLAYBACK_REVISION,frameTimePolicy=FRAME_TIME_POLICY,controlMarkerPolicy="original-hd2-local-v1",attachmentLua=False,attachmentSwap=False,sourceRigRetained=False,
         inputModelManifestVersion=marker['version'],legacyModelConfigurationIgnored=marker['version']<4,animations=[],gameTested=False,progressProtocol='stderr-v1')
@@ -334,7 +342,7 @@ def build_project(folder,game_data,output,sample_count=None,threads=2,config_pat
         (staging/'single-config.toml').write_bytes(effective.read_bytes());(staging/'standard-input.toml').write_bytes(standard['raw'])
         certificate=json.loads((folder/'single-hd2-bind.json').read_text(encoding='utf-8-sig'))
         runtime_marker=_standard_manifest(folder,certificate,units,bones,config,standard,digest)
-        runtime_marker.update(playback.report());runtime_marker.update(_output_compaction_contract())
+        runtime_marker.update(playback.report());runtime_marker.update(_output_compaction_contract());runtime_marker["ikBendPlaneRevision"]=IK_BEND_PLANE_REVISION
         runtime_marker.update(inputModelManifestVersion=marker['version'],inputModelConfigSha256=marker.get('configSha256'),legacyModelConfigurationIgnored=marker['version']<4)
         (staging/'single-skeleton.json').write_text(json.dumps(runtime_marker,ensure_ascii=False,indent=2),encoding='utf-8')
         staging.rename(output/'runtime')

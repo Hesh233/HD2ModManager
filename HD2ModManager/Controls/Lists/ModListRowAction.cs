@@ -17,6 +17,10 @@ public enum ModListRowAction
     RemoveFromProfile = 1 << 6,
     DeleteFromLibrary = 1 << 7,
     ToggleDecoration = 1 << 8,
+    // 启用/停用"这一项参不参与部署"。和 ToggleDecoration 分开：
+    // 后者是装饰包专用（挂在某个主体的选项上），这里是"本体的一部分被打开/关掉"。
+    // 图例与提示沿用同一种电源图形——在这个应用里它已经等于"开关"。
+    ToggleEnabled = 1 << 16,
     ArmorAssign = 1 << 9,
     ArmorRelease = 1 << 10,
     ArmorOpenDetails = 1 << 11,
@@ -24,6 +28,14 @@ public enum ModListRowAction
     ArmorDeleteCustomModel = 1 << 13,
     ArmorRenameCustomModel = 1 << 14,
     ExportMod = 1 << 15,
+    // 设置这一行（或选中的这几行）属于哪个分类。只在面板拿到 CategoryFilter 且分类已启用时才出现。
+    Category = 1 << 17,
+}
+
+// 面板自己知道某些动作"此刻不可用"（比如分类被关掉）时，通过它告诉行动作生成器。
+public interface IRowActionAvailability
+{
+    ModListRowAction UnavailableActions { get; }
 }
 
 // 行级动作抑制。某些动作对特定行没有意义（自定义素体不能"解除"、非装饰不能

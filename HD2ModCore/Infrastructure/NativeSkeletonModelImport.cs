@@ -49,7 +49,7 @@ internal static class NativeSkeletonModelImport
 			RuntimeArmorRegistryService.ValidateWorkspaceDocument(new(0, false, [], [model]));
 
 			var units = new HashSet<ulong>();
-			var payloadDirectories = new[] { directory, Path.Combine(directory, "vpk2patch") }.Where(Directory.Exists);
+			var payloadDirectories = ModNodePayloadLayout.EnumeratePayloadDirectories(directory).Where(Directory.Exists);
 			foreach (var payload in payloadDirectories)
 			foreach (var path in Directory.EnumerateFiles(payload))
 			{

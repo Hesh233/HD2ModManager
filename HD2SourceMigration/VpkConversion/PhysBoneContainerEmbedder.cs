@@ -127,6 +127,7 @@ public static class PhysBoneContainerEmbedder
 		// Driver rig（VRD 姿态驱动）是**可选**第二条记录：转换期没产出它（旧双链线 / 无 driver 骨
 		// 的模型）就完全不写，容器与历史字节一致。有它才追加，且 Strip→重加保证幂等。
 		byte[]? driverRig = null;
+		var physicsRoute = PhysBoneRouteSidecar.Read(modDirectory);
 		var driverSidecarPath = PhysBoneDriverRigSidecar.Locate(modDirectory);
 		if (driverSidecarPath is not null)
 		{
@@ -163,6 +164,8 @@ public static class PhysBoneContainerEmbedder
 			var entries = new List<PhysBoneContainer.Entry> { new(RigRecordName, rig) };
 			if (driverRig is not null)
 				entries.Add(new PhysBoneContainer.Entry(DriverRecordName, driverRig));
+			if (physicsRoute is not null)
+				entries.Add(new PhysBoneContainer.Entry(PhysBoneRouteSidecar.RecordName, Encoding.UTF8.GetBytes(physicsRoute)));
 			var combined = PhysBoneContainer.AppendTo(clean, entries);
 			if (combined.AsSpan().SequenceEqual(carrier))
 				continue;   // 已经是最新内容，不写盘
@@ -181,7 +184,7 @@ public static class PhysBoneContainerEmbedder
 
 			// **写入后回读校验**：这一步是"vpk2patch → Overwrite 时参数会不会丢"的守门员。
 			// 只要有一次读不回来，就当这次嵌入失败（宁可让调用方知道，也不要交付一个没有参数的 patch）。
-			var verification = Verify(gpuPath, rig.Length, driverRig?.Length);
+			var verification = Verify(gpuPath, rig.Length, driverRig?.Length, physicsRoute);
 			if (verification is not null)
 				return new Outcome(false, alreadyPresent, boneCount, embedded, added,
 					$"{Path.GetFileName(patchPath)} 写入后校验失败：{verification}")
@@ -242,7 +245,7 @@ public static class PhysBoneContainerEmbedder
 	}
 
 	/// <summary>回读校验：容器能取出、里面有 <see cref="RigRecordName"/> 且长度一致；给了 driver 长度也一并校验。</summary>
-	private static string? Verify(string gpuPath, int expectedRigBytes, int? expectedDriverBytes)
+	private static string? Verify(string gpuPath, int expectedRigBytes, int? expectedDriverBytes, string? physicsRoute)
 	{
 		var bytes = File.ReadAllBytes(gpuPath);
 		if (PhysBoneCarrier.ExtractContainer(bytes) is null)
@@ -260,6 +263,13 @@ public static class PhysBoneContainerEmbedder
 				return $"容器里没有 {DriverRecordName}";
 			if (record.Value.length != driverBytes)
 				return $"{DriverRecordName} 长度 {record.Value.length} 与期望 {driverBytes} 不一致";
+		}
+		if (physicsRoute is not null)
+		{
+			var record = FindRecord(bytes, PhysBoneRouteSidecar.RecordName);
+			var container = PhysBoneCarrier.ExtractContainer(bytes)!;
+			if (record is null || Encoding.UTF8.GetString(container, record.Value.offset, record.Value.length) != physicsRoute)
+				return "Physics route record missing or inconsistent with the conversion sidecar";
 		}
 		return null;
 	}
@@ -296,8 +306,9 @@ public static class PhysBoneContainerEmbedder
 		foreach (var directory in new[]
 		{
 			modDirectory,
-			Path.Combine(modDirectory, "vpk2patch"),
-			Path.Combine(modDirectory, "Overwrite"),
+			Path.Combine(modDirectory, HD2ModAdaptation.PatchReconstruction.ModContentLayerNames.Sectional),
+			Path.Combine(modDirectory, HD2ModAdaptation.PatchReconstruction.ModContentLayerNames.LegacySectional),
+			Path.Combine(modDirectory, HD2ModAdaptation.PatchReconstruction.ModContentLayerNames.Overwrite),
 		})
 		{
 			if (!Directory.Exists(directory))

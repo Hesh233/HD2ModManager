@@ -128,6 +128,10 @@ static string Entity(MetadataReader r, EntityHandle h) => h.Kind switch
 static string TypeDef(MetadataReader r, TypeDefinitionHandle h)
 {
     var t = r.GetTypeDefinition(h); var p = t.GetDeclaringType();
+    // Compiler numbering shifts when a new file adds an anonymous manifest shape.
+    // Resolve its structural field shape, not the incidental AnonymousType index.
+    if (r.GetString(t.Name).StartsWith("<>f__AnonymousType", StringComparison.Ordinal))
+        return "anonymous{" + string.Join(",", t.GetFields().Select(f => r.GetString(r.GetFieldDefinition(f).Name))) + "}";
     return (p.IsNil ? r.GetString(t.Namespace) : TypeDef(r, p)) + "." + r.GetString(t.Name);
 }
 static string TypeRef(MetadataReader r, TypeReferenceHandle h)
@@ -164,7 +168,7 @@ sealed class SignatureNames : ISignatureTypeProvider<string,object?>
     public string GetPrimitiveType(PrimitiveTypeCode t) => t.ToString();
     public string GetSZArrayType(string e) => e+"[]";
     public string GetTypeFromDefinition(MetadataReader r,TypeDefinitionHandle h,byte k)
-    { var t=r.GetTypeDefinition(h);var p=t.GetDeclaringType();return (p.IsNil?r.GetString(t.Namespace):GetTypeFromDefinition(r,p,k))+"."+r.GetString(t.Name); }
+    { var t=r.GetTypeDefinition(h);var p=t.GetDeclaringType();if(r.GetString(t.Name).StartsWith("<>f__AnonymousType",StringComparison.Ordinal))return "anonymous{"+string.Join(",",t.GetFields().Select(f=>r.GetString(r.GetFieldDefinition(f).Name)))+"}";return (p.IsNil?r.GetString(t.Namespace):GetTypeFromDefinition(r,p,k))+"."+r.GetString(t.Name); }
     public string GetTypeFromReference(MetadataReader r,TypeReferenceHandle h,byte k)
     { var t=r.GetTypeReference(h);var scope=t.ResolutionScope.Kind==HandleKind.AssemblyReference?"assembly:"+r.GetString(r.GetAssemblyReference((AssemblyReferenceHandle)t.ResolutionScope).Name):t.ResolutionScope.Kind==HandleKind.TypeReference?GetTypeFromReference(r,(TypeReferenceHandle)t.ResolutionScope,k):"module";return scope+":"+r.GetString(t.Namespace)+"."+r.GetString(t.Name); }
     public string GetTypeFromSpecification(MetadataReader r,object? c,TypeSpecificationHandle h,byte k) => r.GetTypeSpecification(h).DecodeSignature(this,c);
