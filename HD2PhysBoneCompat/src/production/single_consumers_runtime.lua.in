@@ -1,0 +1,48 @@
+-- Registered-model consumer integration. Existing discovery/owner safety stays on.
+local ConsumerRuntime={}
+function ConsumerRuntime.close(runtime)
+ local cp=Compat and Compat.consumer_api
+ if cp and runtime.consumerContext then cp.close(runtime.consumerContext)end
+ runtime.consumerContext=nil;runtime.consumerSerial=nil
+end
+function ConsumerRuntime.reset(runtime)
+ local cp=Compat and Compat.consumer_api
+ if not cp or runtime.options.consumerPlans==false then return end
+ ConsumerRuntime.close(runtime)
+ local files={};for _,f in ipairs(runtime.cache.consumerFiles or runtime.options.consumerFiles or{})do files[#files+1]={tocPath=f.tocPath or f.path,index=f.index or 0}end
+ local ctx=cp.new(files,runtime.logger);ctx.world=runtime.world;runtime.consumerContext=ctx;runtime.consumerSerial=-1
+ for _,s in ipairs(runtime.sessions or{})do if s.singleMainline then cp.unapply(s);s.consumerContext=nil end end
+end
+function ConsumerRuntime.watch(runtime)
+ if runtime.consumerContext and runtime.consumerContext.world~=runtime.world then ConsumerRuntime.close(runtime)end
+end
+function ConsumerRuntime.bind(runtime,s)
+ if not s.singleMainline or runtime.options.consumerPlans==false or not Compat.consumer_api then return end
+ if not runtime.consumerContext then ConsumerRuntime.reset(runtime)end
+ local ok,why=pcall(Compat.consumer_api.bind,runtime.consumerContext,s)
+ if not ok then Compat.consumer_api.unapply(s);s.consumerPending=false;s.consumerReason="bind-error";runtime.logger("[physbone][CONSUMERS] full fallback bind-error=%s",tostring(why))end
+end
+function ConsumerRuntime.tick(runtime)
+ local cp=Compat and Compat.consumer_api;if not cp then return end
+ if runtime.options.consumerPlans==false then
+  if runtime.consumerContext then for _,s in ipairs(runtime.sessions or{})do if s.singleMainline then cp.unapply(s);s.consumerPending=false end end;ConsumerRuntime.close(runtime)end
+  return
+ end
+ local ctx=runtime.consumerContext
+ if not ctx then
+  ConsumerRuntime.reset(runtime);ctx=runtime.consumerContext;if not ctx then return end
+  for _,s in ipairs(runtime.sessions or{})do if s.singleMainline then ConsumerRuntime.bind(runtime,s)end end
+ end
+ local ok,why=pcall(cp.tick,ctx,runtime.options.consumerHashBytesPerFrame)
+ if not ok then
+  runtime.logger("[physbone][CONSUMERS] full fallback proof-error=%s",tostring(why))
+  for _,s in ipairs(runtime.sessions or{})do if s.singleMainline then cp.unapply(s);s.consumerPending=false end end
+  ConsumerRuntime.close(runtime);return
+ end
+ if runtime.consumerSerial~=ctx.serial then
+  runtime.consumerSerial=ctx.serial
+  for _,s in ipairs(runtime.sessions or{})do if s.singleMainline and s.consumerPending then ConsumerRuntime.bind(runtime,s)end end
+ end
+end
+function ConsumerRuntime.legitimate(s)return s.consumerMode=="empty"or s.consumerMode=="drivers"end
+function ConsumerRuntime.hasWork(s)return not Compat.consumer_api or Compat.consumer_api.hasWork(s)end

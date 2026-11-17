@@ -64,6 +64,15 @@
                                    Text="{Binding GameDataIndexNotice}"/>
                     </StackPanel>
 
+                    <StackPanel Margin="0,18,0,4">
+                        <TextBlock x:Name="RepairTitleText"
+                                   Text="{x:Static local:HomePageView.SkeletonRepairTitle}"
+                                   Style="{StaticResource HelpSectionTitle}" Margin="0,0,0,8"/>
+                        <TextBlock x:Name="RepairNotesText"
+                                   Text="{x:Static local:HomePageView.SkeletonRepairNotes}"
+                                   Style="{StaticResource HelpParagraph}"/>
+                    </StackPanel>
+
                     <TextBlock Text="第一次使用？" Style="{StaticResource HelpSectionTitle}"/>
                     <TextBlock Text="如何导入 Mod？" Style="{StaticResource HelpSubsectionTitle}"/>
                     <TextBlock Text="• 将 Mod 压缩包或包含 Mod 的文件夹直接拖入管理器。" Style="{StaticResource HelpParagraph}"/>

@@ -51,6 +51,8 @@ class IKChainConfig:
 
 FINGER_AXIS_POLICY = "native-axis-source-length-finger-chain-v1"
 IK_BEND_PLANE_REVISION = "relative-normal-reject-r1"
+LEG_IK_REVISION = "single-leg-bind-pole-soft-reach-r1"
+LEG_IK_SOFT_RATIO = 0.015
 
 
 @dataclass
@@ -62,10 +64,21 @@ class ModConfig:
     rotation_compensations: dict[str, list[float]] = field(default_factory=dict)
     ik_chains: dict[str, IKChainConfig] = field(default_factory=dict)
     finger_axis_policy: str | None = None
+    leg_ik_bind_axes: dict[str, list[float]] = field(default_factory=dict)
 
     def __post_init__(self):
         if self.finger_axis_policy not in (None, FINGER_AXIS_POLICY):
             raise ValueError("Unsupported single HD2 finger axis policy")
+        if not isinstance(self.leg_ik_bind_axes, dict):
+            raise ValueError("Leg bind axes must be a table")
+        for target, axis in self.leg_ik_bind_axes.items():
+            if target not in ("l_foot", "r_foot") or len(axis) != 3:
+                raise ValueError("Leg bind axes require a named foot and three components")
+            values = [float(v) for v in axis]
+            length = sqrt(sum(v*v for v in values))
+            if not all(isfinite(v) for v in values) or not isfinite(length) or length < 1e-8:
+                raise ValueError("Leg bind axis must be finite and nonzero")
+            self.leg_ik_bind_axes[target] = [v/length for v in values]
         missing_offsets = sorted(set(self.distance_multipliers) - set(self.offsets))
         if missing_offsets:
             raise ValueError(
@@ -164,6 +177,7 @@ class ModConfig:
             ik_chains=ik_chains,
             required_bone=required_bone,
             finger_axis_policy=contract.get("finger_axis_policy"),
+            leg_ik_bind_axes=data.get("single_leg_ik_bind_axes", {}),
         )
 
 
@@ -179,6 +193,8 @@ class ModificationResult:
     ik_max_error_after: float = 0.0
     arm_target_projections: int = 0
     arm_requested_target_max_distance: float = 0.0
+    leg_ik_evaluations: int = 0
+    leg_ik_max_target_displacement: float = 0.0
 
 
 @dataclass
@@ -333,10 +349,11 @@ def modify_animation_with_world_compensation(
     source_arm_constraints: bool = False,
     preserve_playback_timing: bool = False,
     playback_reference: AnimationData | None = None,
+    stabilize_leg_ik: bool = False,
 ) -> ModificationResult:
     if config.finger_axis_policy is not None:
         validate_native_finger_axes(unit, bones, config)
-    if any(not isinstance(v, bool) for v in (preserve_hand_bend_frame, preserve_source_key_times, preserve_unmodified_channels, source_arm_constraints, preserve_playback_timing)):
+    if any(not isinstance(v, bool) for v in (preserve_hand_bend_frame, preserve_source_key_times, preserve_unmodified_channels, source_arm_constraints, preserve_playback_timing, stabilize_leg_ik)):
         raise ValueError("Processing profile switches must be booleans")
     if animation.is_additive and not allow_additive:
         raise ValueError(
@@ -490,8 +507,20 @@ def modify_animation_with_world_compensation(
     arm_target_projections = 0
     arm_requested_target_max_distance = 0.0
     ik_changed_animation_indices: set[int] = set()
+    leg_states = {}
+    if stabilize_leg_ik and apply_ik_correction and not animation.is_additive:
+        for name in ik_indices:
+            if name in ('l_foot', 'r_foot'):
+                if name not in config.leg_ik_bind_axes:
+                    raise ValueError("Stabilized leg IK requires this model's actual bind axis: " + name)
+                leg_states[name] = {}
+    leg_ik_evaluations = 0
+    leg_ik_max_target_displacement = 0.0
+    previous_sample_time = sample_times[0]
 
     for time in sample_times:
+        leg_delta_time = max(0.0, (time - previous_sample_time) / 1000.0)
+        previous_sample_time = time
         local_transforms = [
             WorldTransform(
                 position=list(transform.position),
@@ -666,19 +695,29 @@ def modify_animation_with_world_compensation(
                             twist_world_rotation = list(current_world[twist_transform].rotation)
                 ik_max_error_before = max(ik_max_error_before, before)
                 ik_evaluations += 1
-                _apply_two_bone_ik(
-                    local_transforms,
-                    unit.parents,
-                    root_transform,
-                    mid_transform,
-                    target_transform,
-                    target,
-                    target_world_rotation,
-                    preserve_bend_frame=constrained_arm or (preserve_hand_bend_frame and target_name in ('l_hand', 'r_hand')),
-                    hinge_axis=hinge_axis,
-                    reference_direction=reference_direction,
-                    reject_unreliable_bend_normal=constrained_arm,
-                )
+                if target_name in leg_states:
+                    _apply_stable_leg_ik(
+                        local_transforms, unit.parents, root_transform, mid_transform,
+                        target_transform, target, target_world_rotation,
+                        state=leg_states[target_name],
+                        bind_axis=config.leg_ik_bind_axes[target_name],
+                        delta_time=leg_delta_time,
+                    )
+                    leg_ik_evaluations += 1
+                else:
+                    _apply_two_bone_ik(
+                        local_transforms,
+                        unit.parents,
+                        root_transform,
+                        mid_transform,
+                        target_transform,
+                        target,
+                        target_world_rotation,
+                        preserve_bend_frame=constrained_arm or (preserve_hand_bend_frame and target_name in ('l_hand', 'r_hand')),
+                        hinge_axis=hinge_axis,
+                        reference_direction=reference_direction,
+                        reject_unreliable_bend_normal=constrained_arm,
+                    )
                 current_world = _calculate_world_transforms(local_transforms, unit.parents)
                 if constrained_arm:
                     # The wrist twist is a sibling of the hand, not its child.
@@ -693,6 +732,8 @@ def modify_animation_with_world_compensation(
                             ik_changed_animation_indices.add(transform_to_animation[i])
                 after = _distance(current_world[target_transform].position, target)
                 ik_max_error_after = max(ik_max_error_after, after)
+                if target_name in leg_states:
+                    leg_ik_max_target_displacement = max(leg_ik_max_target_displacement, after)
                 if before > 1e-5 and after < before:
                     ik_corrections += 1
                     ik_changed_animation_indices.update(
@@ -880,6 +921,8 @@ def modify_animation_with_world_compensation(
         ik_max_error_after=ik_max_error_after,
         arm_target_projections=arm_target_projections,
         arm_requested_target_max_distance=arm_requested_target_max_distance,
+        leg_ik_evaluations=leg_ik_evaluations,
+        leg_ik_max_target_displacement=leg_ik_max_target_displacement,
     )
 
 
@@ -916,6 +959,77 @@ def _quat_from_to(source, target):
         return [axis[0], axis[1], axis[2], 0.0]
     axis = _cross(source, target)
     return quat_normalize([axis[0], axis[1], axis[2], 1.0 + dot])
+
+
+def derive_leg_bind_axes(unit, bones, chains):
+    """Hinge seeds in each REAL converted model's thigh frame, never another model's pole."""
+    by_name = {name: unit.name_hashes.index(h) for name, h in zip(bones.names, bones.hashes)}
+    world = _calculate_world_transforms(unit.transforms, unit.parents)
+    result = {}
+    for name, chain in chains.items():
+        if name not in ('l_foot', 'r_foot'):
+            continue
+        r, m, e = [by_name[n] for n in (*chain.chain, name)]
+        if unit.parents[m] != r or unit.parents[e] != m:
+            raise ValueError("Leg bind requires the actual direct two-bone chain")
+        a = vec_sub(world[m].position, world[r].position)
+        b = vec_sub(world[e].position, world[m].position)
+        length_product = _distance(a, [0.,0.,0.]) * _distance(b, [0.,0.,0.])
+        if length_product < 1e-12:
+            raise ValueError("Leg bind contains a zero-length limb")
+        normal = quat_inverse_rotate(world[r].rotation, _cross(a,b))
+        if _distance(normal, [0.,0.,0.]) < length_product * 1e-5:
+            # An exactly straight bind has no geometric plane. Native HD2 knee
+            # flexion is about -local Z; project that model-frame axis normal to
+            # its actual segment, with -Y only if Z is parallel. No world pole.
+            direction = _normalize_vector(quat_inverse_rotate(world[r].rotation, a))
+            normal = [0.,0.,-1.]
+            projection = sum(x*y for x,y in zip(normal,direction))
+            normal = vec_sub(normal,[v*projection for v in direction])
+            if _distance(normal,[0.,0.,0.]) < 1e-8:
+                normal = [0.,-1.,0.]
+                projection = sum(x*y for x,y in zip(normal,direction))
+                normal = vec_sub(normal,[v*projection for v in direction])
+        result[name] = _normalize_vector(normal)
+    return result
+
+
+def _apply_stable_leg_ik(local, parents, root, mid, end, target, target_rotation,
+                         *, state, bind_axis, delta_time):
+    """Single normal clips only: trusted hinge sign, parent-local pole, soft reach.
+
+    Keep source bend planes outside the singular zone; inside 15 degrees keep
+    their continuous hemisphere rather than normalizing a sign change into a
+    knee orbit. State is owned by one leg of one clip, not shared across clips.
+    """
+    world = _calculate_world_transforms(local, parents, (root, mid, end))
+    a = vec_sub(world[mid].position, world[root].position)
+    b = vec_sub(world[end].position, world[mid].position)
+    la, lb = _distance(a,[0.,0.,0.]), _distance(b,[0.,0.,0.])
+    if la < 1e-8 or lb < 1e-8:
+        return
+    normal = _cross(a,b)
+    near_straight = sum(x*y for x,y in zip(a,b))/(la*lb) > 0.9659258262890683
+    cached = state.get('hinge_normal', bind_axis)
+    axis = list(cached)
+    if _distance(normal,[0.,0.,0.]) >= la*lb*1e-5:
+        axis = quat_inverse_rotate(world[root].rotation, _normalize_vector(normal))
+        # A reliable first source pose seeds the clip; bind only resolves an
+        # ambiguous initial near-straight pose. Do not force a static bind sign
+        # onto an already well-bent source pose in a different orientation.
+        trust_history = 'hinge_normal' in state or sum(x*y for x,y in zip(a,b))/(la*lb) > 0.9986295347545738
+        if near_straight and trust_history and sum(x*y for x,y in zip(axis,cached)) < 0.:
+            axis = [-v for v in axis]
+    state['hinge_normal'] = list(axis)
+    _apply_two_bone_ik(
+        local, parents, root, mid, end, target, target_rotation,
+        pole_state=state, soft_distance=(la+lb)*LEG_IK_SOFT_RATIO,
+        # Limit only the singular-zone pole/roll, not legitimate fast motion
+        # of an already bent leg. A half second permits the full rotation.
+        delta_time=delta_time if near_straight else max(delta_time, .5), preserve_bend_frame=True,
+        hinge_axis=axis, reference_direction=vec_sub(world[end].position,world[root].position),
+        reject_unreliable_bend_normal=True,
+    )
 
 
 def _apply_two_bone_ik(

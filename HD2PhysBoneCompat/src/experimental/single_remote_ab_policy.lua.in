@@ -1,0 +1,88 @@
+-- Isolated single-skeleton A/B test. Not a production optimization preset.
+-- Ownership is an avatar INSTANCE; never a resource/name or camera rank.
+local RemoteTest = { VERSION = "single-remote-ab-r1", DEFAULT = "@POLICY@" }
+function RemoteTest.mode(runtime)
+ local mode = runtime.options.singleRemoteTestPolicy or RemoteTest.DEFAULT
+ if mode ~= "full" and mode ~= "self-only" and mode ~= "remote-no-vrd" then mode = RemoteTest.DEFAULT end
+ return mode
+end
+function RemoteTest.identity(runtime)
+ local single = runtime.singleState
+ if single ~= runtime.remoteTestSingle then
+  runtime.remoteTestSingle, runtime.remoteTestConfirmedSelf = single, nil
+ end
+ if single == nil then return nil, "waiting" end
+ local avatars = single.avatars or {}
+ for _, avatar in ipairs(avatars) do
+  if single.selfUnit ~= nil and avatar.unit == single.selfUnit then
+   runtime.remoteTestConfirmedSelf = avatar.unit
+   return avatar.unit, "fp-confirmed"
+  end
+ end
+ -- During death/respawn retain only the learned identity for COMPARISON. Never
+ -- dereference this departed Unit or promote the surviving teammate to 'self'.
+ if runtime.remoteTestConfirmedSelf ~= nil then return runtime.remoteTestConfirmedSelf, "await-local-respawn" end
+ if #avatars == 1 then return avatars[1].unit, "single-avatar-unconfirmed" end
+ -- More than one avatar without a learned first-person identity is ambiguous.
+ -- Fail open rather than disabling the user's own physics; log this explicitly.
+ return nil, "ambiguous-aim-first-person"
+end
+function RemoteTest.apply(runtime)
+ local mode = RemoteTest.mode(runtime)
+ local selfUnit, identity = RemoteTest.identity(runtime)
+ local avatars = runtime.singleState and runtime.singleState.avatars or {}
+ local stats = { mode = mode, identity = identity, selfUnits = 0, selfChains = 0,
+  remoteUnits = 0, remoteChains = 0, physicsExcluded = 0, vrdExcluded = 0, unknownOwners = 0 }
+ runtime.remoteTestSelf, runtime.remoteTestStats = selfUnit, stats
+ runtime.remoteFrameDriverWrites, runtime.selfFrameDriverWrites = 0, 0
+ for _, session in ipairs(runtime.sessions or {}) do
+  if session.singleMainline and runtime.options.singleMainline ~= false then
+   local ownerKnown = false
+   -- <=4 comparisons. Native-equal wrapper handles may not hash to the same key.
+   for _, avatar in ipairs(avatars) do if avatar.unit == session.owner then ownerKnown = true; break end end
+   local remote = selfUnit ~= nil and ownerKnown and session.owner ~= selfUnit
+   local localOwner = selfUnit ~= nil and ownerKnown and session.owner == selfUnit
+   local chains = #(session.sessions or {})
+   local drivers = #(session.drivers or {})
+   if session.test1201Source then
+    drivers = 0
+    for _, record in ipairs(session.test1201Source.profile.records) do
+     if record.kind == 2 and not record.excludedWrist then drivers = drivers + 1 end
+    end
+   end
+   if localOwner then stats.selfUnits, stats.selfChains = stats.selfUnits + 1, stats.selfChains + chains
+   elseif remote then stats.remoteUnits, stats.remoteChains = stats.remoteUnits + 1, stats.remoteChains + chains
+   else stats.unknownOwners = stats.unknownOwners + 1 end
+   local physicsOff = remote and mode == "self-only"
+   local vrdOff = remote and mode ~= "full"
+   if session.singleRemoteBaseEvaluateDrivers == nil then session.singleRemoteBaseEvaluateDrivers = session.evaluateDrivers ~= false end
+   if (session.singleRemotePhysicsExcluded == true) ~= physicsOff or (session.singleRemoteVrdExcluded == true) ~= vrdOff then
+    if Compat.single_remote_policy_transition then
+     local ok, err = pcall(Compat.single_remote_policy_transition, session, physicsOff, vrdOff)
+     if not ok and not session.singleRemoteTransitionError then
+      session.singleRemoteTransitionError = true
+      runtime.logger("[physbone][REMOTE_TEST] transition-error=%s", tostring(err))
+     end
+    end
+   end
+   session.singleRemotePhysicsExcluded, session.singleRemoteVrdExcluded = physicsOff, vrdOff
+   session.singleRemoteIsRemote, session.singleRemoteIsSelf = remote, localOwner
+   session.evaluateDrivers = session.singleRemoteBaseEvaluateDrivers and not vrdOff
+   if physicsOff then
+    session.pendingDt = 0 -- Disabled time is NOT a low-frequency accumulator.
+    session.singleDue = false
+    stats.physicsExcluded = stats.physicsExcluded + chains
+   end
+   if vrdOff then stats.vrdExcluded = stats.vrdExcluded + drivers end
+  end
+ end
+ local signature = table.concat({mode, identity, stats.selfUnits, stats.remoteUnits, stats.physicsExcluded, stats.vrdExcluded, stats.unknownOwners}, ":")
+ if signature ~= runtime.remoteTestSignature then
+  runtime.remoteTestSignature = signature
+  runtime.logger("[physbone][REMOTE_TEST] variant=@VARIANT@ policy=%s identity=%s self=%du/%dc remote=%du/%dc physicsExcluded=%d vrdExcluded=%d unknownOwners=%d; local stride/VRD unchanged",
+   mode, identity, stats.selfUnits, stats.selfChains, stats.remoteUnits, stats.remoteChains, stats.physicsExcluded, stats.vrdExcluded, stats.unknownOwners)
+ end
+end
+M.REMOTE_TEST_POLICY = RemoteTest.DEFAULT
+M.REMOTE_TEST_VARIANT = "@VARIANT@"
+M.remote_test_policy = RemoteTest

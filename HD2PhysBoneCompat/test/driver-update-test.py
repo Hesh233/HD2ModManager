@@ -17,7 +17,9 @@ from lupa.lua51 import LuaRuntime
 os.chdir(ROOT)
 lua = LuaRuntime(unpack_returned_tuples=True)
 compat = lua.execute((ROOT / "HD2PhysBoneCompat/src/physbone_compat.lua").read_text(encoding="utf-8-sig"))
-assert compat.version == "1.3.4"
+# Keep optional diagnostic return out of Python fixture session objects.
+compat.attach = lua.eval("function(old)return function(...)local session=old(...);return session end end")(compat.attach)
+assert compat.version == "1.3.7"
 
 failures = []
 

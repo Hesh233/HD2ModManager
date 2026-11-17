@@ -36,6 +36,18 @@ public static class LuaAddonPatchBuilder
 	/// <summary>Lua 资源在 TOC 里的类型 id。</summary>
 	private const ulong LuaTypeId = 0xA14E8DFA2CD117E2;
 
+	/// <summary>Chef 1.4.1 scans resources no larger than 4 MiB, including the 8-byte envelope.</summary>
+	public const int MaxLoaderResourceBytes = 4 * 1024 * 1024;
+
+	/// <summary>Reject unloadable UTF-8 payloads before creating or replacing any package files.</summary>
+	public static void ValidateSourceSize(string source)
+	{
+		ArgumentNullException.ThrowIfNull(source);
+		var bytes = Encoding.UTF8.GetByteCount(source);
+		if (bytes > MaxLoaderResourceBytes - 8)
+			throw new InvalidDataException($"Lua 资源正文 {bytes} 字节，加 8 字节头超过 Chef 的 {MaxLoaderResourceBytes} 字节加载上限；请缩减载荷，不能导出静默失效的包。");
+	}
+
 	private const uint Magic = 0xF0000011;
 	private const int HeaderLength = 104;
 	private const int EntryLength = 80;
@@ -52,6 +64,7 @@ public static class LuaAddonPatchBuilder
 		ArgumentException.ThrowIfNullOrWhiteSpace(directory);
 		ArgumentException.ThrowIfNullOrWhiteSpace(addonId);
 		ArgumentNullException.ThrowIfNull(source);
+		ValidateSourceSize(source);
 
 		var full = Path.GetFullPath(directory);
 		Directory.CreateDirectory(full);

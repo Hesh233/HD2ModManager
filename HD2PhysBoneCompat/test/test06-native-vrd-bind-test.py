@@ -101,7 +101,7 @@ class Engine:
 def main():
  ap=argparse.ArgumentParser();ap.add_argument('--report',type=Path,required=True);ap.add_argument('--replay-history',action='store_true');args=ap.parse_args()
  l,m,rig=module();oldl,old,oldrig=module(True)
- check(m.version=='1.3.4','new version')
+ check(m.version=='1.3.7','new version')
  check(F['driverRigSha256']==H['sha'](P/'physbone-driver-rig.bin'),'fixture matches current v2 rig')
  check(F['sourceVpkSha256']==H['sha'](ROOT/'testVPK/test06.vpk'),'fixture source unchanged')
  check(py(m.parse_driver_rig((P/'physbone-driver-rig.bin').read_bytes()))==py(old.parse_driver_rig((P/'physbone-driver-rig.bin').read_bytes())),'parser bytes/math unchanged')

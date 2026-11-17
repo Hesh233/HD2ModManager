@@ -1,0 +1,43 @@
+-- Positive ship/mission classification. Do not infer ship just from "not aiming".
+function RemotePhysics.scene(runtime,single)
+ local context=runtime.options.sceneContext
+ local main=runtime.world
+ local mission,worldId
+ if type(context)=="table" then
+  if type(context.world)=="function" then main=try(context.world) end
+  if type(context.in_mission)=="function" then mission=try(context.in_mission) end
+  if type(context.world_id)=="function" then worldId=try(context.world_id) end
+ end
+ local cache=single.sceneCache or {};single.sceneCache=cache
+ local mode=cache.mode
+ local frame=runtime.frame or 0
+ if cache.world~=main or cache.mission~=mission or cache.worldId~=worldId or not cache.frame or frame<cache.frame or frame-cache.frame>=30 then
+  local levels
+  if main~=nil then
+   if S.World and type(S.World.num_levels)=="function" then levels=try(S.World.num_levels,main) end
+   -- Chef API revision is a NUMBER. Its documented guarded native helper is call.
+   if levels==nil and type(context)=="table" and type(context.call)=="function" then levels=try(context.call,"World.num_levels",main) end
+  end
+  mode="unknown"
+  if main~=nil and type(levels)=="number" and levels==math.floor(levels) then
+   if levels>10 then mode="mission" elseif levels==1 or levels==2 then mode="ship" end
+  elseif main~=nil and mission==true then mode="mission"
+  elseif main~=nil and type(context)=="table" and type(context.on_ship)=="function" and try(context.on_ship)==true then mode="ship"
+  elseif main~=nil and mission==false and type(worldId)=="number" and worldId>0 and cache.missionSeenId~=worldId then
+   -- Missing native level API: only a stable, newly classified non-mission from
+   -- the loader may be a ship. A temporary mission "checking" false is UNKNOWN.
+   mode="ship"
+  end
+  if mode=="mission" and worldId~=nil then cache.missionSeenId=worldId end
+  cache.world,cache.worldId,cache.mission,cache.frame,cache.mode=main,worldId,mission,frame,mode
+ end
+ local changed=single.sceneMode~=mode
+ if changed then
+  single.sceneMode=mode
+  single.physicsEpoch=(single.physicsEpoch or 0)+1
+  -- A ship is never an ADS identity source. Scene transitions must not carry a
+  -- ship-wide VRD bypass or a prior scene's learned owner into a new mission.
+  single.selfUnit,single.adsIdentity,single.fpLockUnit,single.fpLockFrames=nil,nil,nil,0
+ end
+ return mode,changed
+end

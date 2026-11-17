@@ -210,11 +210,11 @@
   "physicsSourceFiles": [
     {
       "name": "physbone_compat.lua",
-      "sha256": "087c2b9c255baa6dd6d4b2713b9772547da2bb5cc3f98e52e4921ae2df65a8b4"
+      "sha256": "ee150fafe26e175caaa9c0ecee115876a47132e95a22dc64191bed0b7f8bb215"
     },
     {
       "name": "physbone_runtime.lua",
-      "sha256": "d2c9c8a9f864b3e6c9829897fc0f2c7ef7a7499d673f2a7b83aea578247f740c"
+      "sha256": "a2d576f070fed2b57a7b7a54a899864521d7984cd2652d33422e1241ec32f211"
     },
     {
       "name": "direct/physbone_compat.lua",
@@ -230,5 +230,12 @@
     }
   ],
   "buildFlavor": "skeleton-test",
-  "selfUpdatesEnabled": false
+  "selfUpdatesEnabled": false,
+  "physicsRuntimeVersion": "2.3.7",
+  "physicsCompatVersion": "1.3.7",
+  "physicsSinglePolicy": "single-v3-master-b78e63e",
+  "physicsSingleUpstreamRuntimeVersion": "2.1.45",
+  "physicsLegacySkeletonRuntimeVersion": "2.3.6",
+  "physicsRealFpsAccepted": false,
+  "physicsSingleNamespaceProfileResources": 25
 }

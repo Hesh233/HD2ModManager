@@ -949,7 +949,8 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 
 	private static string ComputeFileGeneration(LibrarySnapshot snapshot, string root)
 	{
-		var builder = new System.Text.StringBuilder();
+		// Retire pre-namespace deployment indexes without deleting user caches.
+		var builder = new System.Text.StringBuilder("filefacts-custom-namespace-r1\n");
 		foreach (var node in snapshot.Nodes.Values.OrderBy(node => node.Id.Value))
 		{
 			var directory = Path.Combine(root, node.RelativePath);

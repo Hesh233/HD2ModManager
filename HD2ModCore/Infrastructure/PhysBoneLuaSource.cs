@@ -49,6 +49,16 @@ public static class PhysBoneLuaSource
 		var directCompat = LoadDirectCompat();
 		var directRuntime = LoadDirectRuntime();
 		var routes = LoadPhysicsRoutes();
+        // Large skeleton catalogs must not make the independent direct branch exceed Chef's
+        // inclusive 4 MiB envelope limit. Keep both embedded sources byte-identical; remove
+        // only lexical trivia from the direct branch when composing an oversized package.
+        if (Encoding.UTF8.GetByteCount(compat) + Encoding.UTF8.GetByteCount(runtime)
+            + Encoding.UTF8.GetByteCount(directCompat) + Encoding.UTF8.GetByteCount(directRuntime)
+            + Encoding.UTF8.GetByteCount(routes) + 4096 > LuaAddonPatchBuilder.MaxLoaderResourceBytes - 8)
+        {
+            directCompat = LuaTriviaCompactor.Compact(directCompat);
+            directRuntime = LuaTriviaCompactor.Compact(directRuntime);
+        }
 		var builder = new StringBuilder(compat.Length + runtime.Length + directCompat.Length + directRuntime.Length + routes.Length + 4096);
 		if (!string.IsNullOrWhiteSpace(addonId))
 		{

@@ -6,6 +6,9 @@ namespace HD2ModManager.Views
 {
     public partial class HomePageView : UserControl
     {
+        public static string SkeletonRepairTitle => Services.SkeletonTestBuild.HomeTitle;
+        public static string SkeletonRepairNotes => Services.SkeletonTestBuild.ReleaseNotes;
+
         public HomePageView()
         {
             InitializeComponent();

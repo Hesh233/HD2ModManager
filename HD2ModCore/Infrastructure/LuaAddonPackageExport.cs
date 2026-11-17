@@ -49,6 +49,7 @@ public static class LuaAddonPackageExport
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(rootDirectory);
 		ArgumentNullException.ThrowIfNull(feature);
+		LuaAddonPatchBuilder.ValidateSourceSize(feature.Source);
 
 		var root = Path.GetFullPath(rootDirectory);
 		var folder = Path.Combine(root, feature.Key);

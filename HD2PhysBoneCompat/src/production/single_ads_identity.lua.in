@@ -1,0 +1,109 @@
+-- Read-only first-person entry proof, then an immutable per-Unit identity latch.
+-- A retained FP graph, FOV, camera-nearest avatar or mouse button is NOT proof.
+local FP_RESOURCE = "content/fac_helldivers/fp_cha_avatar/fp_cha_avatar"
+local FP_RESOURCE_ID = "d0cf4d493ca08bed"
+local function ads_pose(fn, ...)
+ if type(fn) ~= "function" or not S.Matrix4x4 or type(S.Matrix4x4.to_elements) ~= "function" then return nil end
+ local ok, values = pcall(function(...) return {S.Matrix4x4.to_elements(fn(...))} end, ...)
+ if not ok or #values ~= 12 then return nil end
+ for _, value in ipairs(values) do if type(value) ~= "number" or value ~= value or math.abs(value) >= 1e12 then return nil end end
+ return values
+end
+local function ads_camera_match(a, b)
+ local dx,dy,dz=a[10]-b[10],a[11]-b[11],a[12]-b[12]
+ if dx*dx+dy*dy+dz*dz > .08*.08 then return false end
+ -- Same entry proof as production native_first_person_guard 1.0.0: camera
+ -- positions agree; bone/view bases may use different native camera axes.
+ return true
+end
+local function ads_named_node(unit, name, count)
+ if type(Compat.resolve_named_node)=="function" then return Compat.resolve_named_node(S, unit, name, count) end
+ if try(S.Unit.has_node, unit, name)==true then
+  local node=try(S.Unit.node, unit, name)
+  if type(node)=="number" and node>=1 and node<=count then return node end
+ end
+ return nil
+end
+local function ads_first_person_view(runtime)
+ if not S.World or type(S.World.units_by_resource)~="function" or not S.Unit or type(S.Unit.world_pose)~="function" then return nil end
+ local worlds=try(S.Application.worlds)
+ if type(worlds)~="table" or #worlds>64 then return nil end
+ local main=ads_pose(S.World.debug_camera_pose,runtime.world)
+ if main==nil then return nil end
+ local seen={}
+ for _,world in ipairs(worlds) do
+  local graphs=try(S.World.units_by_resource,world,FP_RESOURCE)
+  if type(graphs)=="table" and #graphs<=8 then
+   for _,unit in ipairs(graphs) do
+    if not seen[unit] and Compat.unit_alive(S,unit)==true then
+     seen[unit]=true
+     local resource=try(S.Unit.resource_name,unit)
+     local hex=resource and S.IdString64 and try(S.IdString64.to_hex,resource)
+     if type(hex)=="string" and hex:lower():gsub("^0x","")==FP_RESOURCE_ID then
+      local count=try(S.Unit.num_scene_graph_items,unit)
+      -- Only READ the verified native root/camera prefix. Appended Source outputs
+      -- do not authorize any writes or borrow a different model's bind/profile.
+      if type(count)=="number" and count>=63 and ads_named_node(unit,"root",count)==5 and ads_named_node(unit,"camera",count)==51 then
+       if Compat.unit_alive(S,unit)==true then
+        local camera=ads_pose(S.Unit.world_pose,unit,51)
+        if camera and ads_camera_match(main,camera) then return main end
+       end
+      end
+     end
+    end
+   end
+  end
+ end
+ return nil
+end
+local function ads_note(runtime, status, unit, checks)
+ local message=string.format("[physbone][ADS_ONCE] variant=@VARIANT@ status=%s instance=%s checks=%d frame=%d\n",status,tostring(unit or "-"),checks or 0,runtime.frame or 0)
+ runtime.logger("%s",message:gsub("\n$",""))
+ if runtime.options.log==false then return end
+ if runtime.adsLog==nil and not runtime.adsLogFailed then
+  local path=runtime.options.logPath
+  if type(path)=="string" then path=path:gsub("[^/\\]+$","hd2physbone_@VARIANT@_identity.log") end
+  if path then local ok,handle=pcall(io.open,path,"w");if ok and handle then runtime.adsLog=handle else runtime.adsLogFailed=true end end
+ end
+ if runtime.adsLog and (runtime.adsLogBytes or 0)<32768 then
+  runtime.adsLog:write(os.date("%Y-%m-%d %H:%M:%S")," ",message);runtime.adsLog:flush()
+  runtime.adsLogBytes=(runtime.adsLogBytes or 0)+#message+21
+ end
+end
+function api.sample_ads_once(runtime, single)
+ local proof=single.adsIdentity
+ if proof==nil then proof={checks=0,probes=0,consecutive=0};single.adsIdentity=proof;single.physicsEpoch=(single.physicsEpoch or 0)+1 end
+ -- Single.project/prune already checks fresh avatar membership. This is only a
+ -- numeric/instance latch check: no camera, FP graph, node or position queries.
+ if proof.owner~=nil and single.selfUnit==proof.owner then return true end
+ if proof.owner~=nil then
+  ads_note(runtime,"WAIT_AIM_NEW_INSTANCE",nil,proof.checks)
+  proof.owner,proof.candidate,proof.lastProbe,proof.consecutive=nil,nil,nil,0
+  single.physicsEpoch=(single.physicsEpoch or 0)+1
+ end
+ local every=math.max(1,math.floor(runtime.options.firstPersonIdentityPollFrames or 20))
+ if proof.lastProbe and runtime.frame-proof.lastProbe<every then return false end
+ proof.lastProbe=runtime.frame;proof.probes=proof.probes+1
+ local camera=ads_first_person_view(runtime)
+ if camera==nil then proof.candidate,proof.consecutive=nil,0;return false end
+ -- Owner identification happens ONLY after the real FP camera matched the main
+ -- view. Require a UNIQUE current TP avatar, not nearest rank/name/resource.
+ proof.checks=proof.checks+1
+ local selected,matched=nil,0
+ for _,avatar in ipairs(single.avatars or {}) do
+  if Compat.unit_alive(S,avatar.unit)==true then
+   local x,y=readVector(S,try(S.Unit.world_position,avatar.unit,1))
+   if x~=nil then local dx,dy=x-camera[10],y-camera[11]
+    if dx*dx+dy*dy<.35*.35 then selected,matched=avatar.unit,matched+1 end
+   end
+  end
+ end
+ if matched~=1 then proof.candidate,proof.consecutive=nil,0;return false end
+ if proof.candidate==selected then proof.consecutive=proof.consecutive+1 else proof.candidate,proof.consecutive=selected,1 end
+ if proof.consecutive<3 then return false end
+ proof.owner,single.selfUnit=selected,selected
+ single.physicsEpoch=(single.physicsEpoch or 0)+1
+ redistribute(S,single,"首次第一人称瞄准确认（仅一次）",selected)
+ ads_note(runtime,"LOCKED_NO_MORE_ID_CHECKS",selected,proof.checks)
+ return true
+end

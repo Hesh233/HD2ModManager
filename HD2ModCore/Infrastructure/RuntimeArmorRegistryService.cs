@@ -579,8 +579,10 @@ public sealed class RuntimeArmorRegistryService
 				or UnauthorizedAccessException)
 			{
 				// 链接编译失败不应让已经写好的协议作废；运行时保留上一版映射。
+				ChefArmorMappingTransport.RethrowIfMirrorFailure(exception);
 			}
 		}
+		ChefArmorMappingTransport.PublishStopIfNeeded(registryRoot, compiled);
 		await WriteWorkspaceAsync(desired, cancellationToken).ConfigureAwait(false);		await WriteAtomicTextAsync(Path.Combine(WorkspaceRoot, AppliedSourceFileName),
 			SerializeWorkspace(desired), cancellationToken).ConfigureAwait(false);
 		Directory.CreateDirectory(paths.DataDirectory);
@@ -687,6 +689,7 @@ public sealed class RuntimeArmorRegistryService
 				cancellationToken).ConfigureAwait(false);
 			cancellationToken.ThrowIfCancellationRequested();
 			File.Move(temporaryPath, path, overwrite: true);
+			ChefArmorMappingTransport.PublishCanonical(path, text);
 		}
 		finally
 		{

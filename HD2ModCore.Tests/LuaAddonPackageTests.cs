@@ -341,8 +341,8 @@ public sealed class LuaAddonPackageTests
 	public void PhysicsPackageCarriesSingleFrontSkirtPolicyAndTipLimitDiagnostic()
 	{
 		var source = LuaAddonCatalog.Physics().Source;
-		Assert.Contains("M.version = \"1.3.4\"", source, StringComparison.Ordinal);
-		Assert.Contains("M.VERSION = \"2.3.4\"", source, StringComparison.Ordinal);
+		Assert.Contains("M.version = \"1.3.7\"", source, StringComparison.Ordinal);
+		Assert.Contains("M.VERSION = \"2.3.7\"", source, StringComparison.Ordinal);
 		Assert.Contains("function M.is_wrist_driver(bone)", source, StringComparison.Ordinal);
 		Assert.Contains("if M.is_wrist_driver(bone) then", source, StringComparison.Ordinal);
 		Assert.Contains("excludedWristDrivers = excludedWristDrivers", source, StringComparison.Ordinal);

@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+<PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><UseAppHost>false</UseAppHost></PropertyGroup>
+<ItemGroup><Reference Include="HD2ModCore"><HintPath>../../outputs/armor-registry-single-overwrite-fix-20261116/staged-manager/HD2ModCore.dll</HintPath></Reference></ItemGroup>
+</Project>

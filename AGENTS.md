@@ -1,5 +1,237 @@
 # 项目协作记忆
 
+## C仅弹簧骨骼诊断候选（2026-11-17，仅诊断不接受）
+
+- 用户原文「先找出最新的物理实现，按照优化方向迭代A包。之后打一个和主线一样只实现弹簧骨骼的c包，用于排除driver骨测试性能差距」；A22已另轮完成。C按拍板「去driver也去VRD裙摆」：和主线一样只实现弹簧骨骼，同时去driver骨写入与VRD裙摆链，保留常规弹簧，使A与C唯一差异=driver+VRD。C仅诊断、非生产替换、不接受为正式；裙摆/VRD骨骼运动故意缺失，视觉差异预期非bug。
+- C机制(runtime-only，compat字节不变3530bd37)：在A22 runtime(08f3924d)注入spring_only_policy(session)——evaluateDrivers=false(update_drivers不调用)、singleRemoteVrdExcluded=true(跳过driver归还)、VRD链item.disabled=true+item.singleSpringOnlyExcluded=true(弹簧循环/release尊重disabled)；attach全量施加+bind切换体重施加。VRD分类器=链首parentName属非手腕driver骨名(is_wrist_driver排除手腕)，四模型已核(test01 6VRD/Cow 0/test13 5/test15 8，手腕锚定x1/x2/y4/y5保留为常规)。求解器失效护栏适配：原`if item.disabled then tripped`会被C永久VRD disable每拍触发致证明不完成；改为`disabled and singleSpringOnlyExcluded~=true`仅忽略C故意VRD，对其它disabled仍触发(非VRD安全保留)。VARIANT=C/VERSION=2.3.22(导出器要数字semver无后缀，变体字母区分)。
+- 三口径分解：①同旧Core沙箱A22vsC——alive完全一致(3862/4798/15418)，常规弹簧写入逐Unit一致(5822/5836/20856/5821/5833)，C把VRD弹簧写(舰船13311→0)与driver求解调用(舰船7200→0)降0，peak C<A22(去VRD预期)。②C实际ZIP在当前正常Core含Direct，比同沙箱候选多alive+2600(1p)/+7400(4p/舰船)发现开销(独立于C，A22/C相同会抵消)。③跨轮A22实际vsC实际同当前Core——alive完全一致(6462/12198/22818)，逐Unit owner/mode/excluded/healthFrames/pendingDt一致，成功写差=VRD弹簧写(舰船34167−20856=13311)，最干净隔离。driver骨写入A22/C都=0(test01夹具控制骨静态)，故隔离的driver开销=求解调用overhead+VRD弹簧写移除，非driver骨写开销；需控制骨实际驱动的模型/场景另测。指令采样含夹具非CPU计时(C候选舰船76498→44115，实际因Direct回升47255)，不宣称FPS收益。
+- 实际ZIP真导出/CRC/SHA、Chef扫描后解析==执行源码SHA(cde97877)无真实替换、started/成功writer/卸载通过；Lua4092386B<4MiB余量101918B。C契约探针789断言(候选/实际各789，A22基线193)、6installer、两VM投影各1303步69436断言、编码246765检查通过。冻结A生产舰船/VRD门禁(断言evaluateDrivers==true/VRD启用)故意不施加(与C去VRD矛盾)，C契约由789探针证明。61profiles/39资源当前bind/config与旧290case/8744894FK证据重核，不冒称重跑全FK。282保护文件不变。根ff64/normal Core575e97b5、production A19/B20/manifest、A21/A22候选、当前库/profile/模型/动画/活动配套与旧封档保持；未启动/导入/部署/Git。
+- C继承A22判活降频缺口(≤900帧重建延迟/切换回调顺序缺口/无写前身份守卫)，离线等价非崩溃安全证明。候选仅在outputs/physics-C-spring-only-diagnostic-20261117/delivery，ZIP SHA 8d014aa762d94c54a522d1a6505bda7aa54ef98808540193330cf9dbd7e1fd64；报告docs/agent/physics-C-spring-only-diagnostic-20261117.md。需同当前Core同场景A22-vs-C实机FPS差值量化driver+VRD开销＋折腾安全验证；C不接受为正式、不覆盖接受包。
+
+
+## A22管理热路径＋判活降频测试候选（2026-11-17，未实机接受）
+
+- 用户原文「先找出最新的物理实现，按照优化方向迭代A包。之后打一个和主线一样只实现弹簧骨骼的c包，用于排除driver骨测试性能差距」；A22范围按拍板「按现原型纳入（仅测试）」，保留≤900帧重建延迟与切换回调顺序缺口，仅测试非崩溃安全证明。C包另轮。
+- 正常Core基线已漂移：manager-repair-1.01-sync轮把A21/compat1.3.13＋direct-v1(上游2.1.45)同步进正常Core（575e97b5/19281方法/42资源，SkeletonRuntime包裹＋PhysicsRoutes路由，compat已内嵌）。A22导出只替换一个runtime资源(A21→A22)，身份/常量/引用零变；A21旧基线ce3a3c40/19802/39无Direct。
+- A22=A21三项(active-dispatch-r3五处清理/空消费者派发前拒绝/投影七表改scratch双缓冲)＋非写入会话(empty或excluded)判活降频：保留每拍指针prune，alive＋节点身份每30帧采样，模式/排除变化立即强制全量健康并对齐cadence；写入会话与写前alive不变。未做写前身份守卫/轻量health账本/裁骨/FP63。compat完整字节不变(3530bd37)。
+- 安全缺口：稳定非写入会话重建检测≤30→≤900帧；prune在bind前致切换回调可先驱动一次(基线同顺序但≤30帧检测)；写前身份守卫未实施；离线等价非崩溃安全证明，接受前须实机折腾(重建/换装/重生/切图/进出队)验证。
+- 三口径分解(同旧Core沙箱A19→A21→A22隔离增量)：判活降频单独alive四人−14500/舰船−9280/单人−2320；A21−A19四人−2400/舰船−9600。实际A22ZIP在当前正常Core含Direct，比同沙箱候选多alive+2600(1p)/+7400(4p/舰船)发现开销(独立于A22)；净vs A19旧Core基线四人−9500/舰船−11480/单人−2120，非A22单独效果非FPS。非写入healthFrames四人36557→1952。逐Unit写入哈希/solver/成功写/状态基线==候选==实际，候选==实际healthFrames，总链/static/peak/全局写入哈希一致；跨轮核A21候选==A22候选写入。指令采样含夹具非CPU计时，实际因Direct回升，不宣称提速/收回帧。
+- 实际ZIP真导出/CRC/SHA、Chef扫描后解析==执行源码SHA(8b1c9bf6)无真实替换、started/成功writer/卸载通过；Lua4090736B<4MiB余量103568B。A-only33命令(路由快照从skeletonRuntime upvalue恢复VARIANT)/6installer、两VM投影各1303步69436断言、真实test01五阶段＋清理＋投影身份175断言通过。61profiles/39资源当前bind/config与旧290case/8744894FK证据重核，不冒称重跑全FK。282保护文件不变。根ff64/normal Core、production A19/B20/manifest、A21候选、当前库/profile/模型/动画/活动配套与旧封档保持；未启动/导入/部署/Git。
+- 候选仅在outputs/physics-A22-health-sampling-candidate-20261117/delivery，ZIP SHA b54e413d4e639208b1b52be35d104c9398af96a9bf58fc315443432a1b18a11a；报告docs/agent/physics-A22-health-sampling-candidate-20261117.md。需要同场景四人A19/A21/A22/OFF实机物理与FPS＋折腾安全验收，不能升级正式或覆盖接受包。
+
+
+## manager-1.0.7 骨架修复1.01＋A2.3.21同步与BAT验证（2026-11-17）
+
+- 用户明确要求最新代码和A2.3.21同步到normal manager-1.0.7；当前工作区GUI/Core/CLI/转换器及依赖已成套重建，基准GUI1.5.17、设置“骨架修复1.01”，首页在“第一次使用？”前显示用户四条原文。更新停用/原偏好保留，启动说明改为当前物理文件。
+- 仅此安装显式绑定A21/compat1.3.13与direct-v1 2.1.45/1.0.0；两个A21资源/SHA、求解数学与参数不变。原A19/B20正式清单/封档、原A21候选、共享受保护普通源码未覆盖，也不冒认A21已实机正式接受。
+- 最新五资源包直接内联会超Chef上限；新增词法trivia压缩仅作用大载荷的direct组成，20257/25921 token逐项相同，原嵌入资源不改。最终Lua含头4089840B，余量104464B。成套Core导出ZIP6255413ce953683ec88108da65b4eaee2bed6a0b534965080b3db65208414f00，不等于旧两资源候选ZIP。
+- 真实安装UI49、打包38、配置/源码各6、定向.NET38、迁移529+1skip通过；Core1524过/1skip，既有挂点INSERT注释断言1失败保留。实际新ZIP经Chef1.4.1沙箱两VM各90通过，成功舰船/ADS写骨/卸载。61profiles/39资源当前bind/config/TOC与旧290case/8744894FK SHA重核，不冒称重跑全FK或FPS验收。
+- 真实BAT Full/Startup预检、Full实包126项/122载荷与外内CRC/SHA通过；ZIP387.86MiB，SHA4b6ac76b72de439b295fa6d95ee1c70a7ac12aea1ce8f4d466f80986b5403452。包名带1.01，物理/compat/修复标识错配fail-closed；Sync按安装元数据绑定全部policy/消费者字段，二次0改写，PS5脚本保留UTF8 BOM。
+- 14318原文件14296不变、22授权程序更新、9新增符号/物理，无删除；根ff64/0.7/false、settings/偏好/现库/profile/模型/bind/动画/旧配套不变。未GUI/游戏启动、导入/应用/部署、重绑/重烘或Git提交推送。10%是指定警告，非本轮测量；其他加载器未新增实机测试。
+- 后续修复版重建须显式A21资源绑定与元数据组装，不能拿普通旧Core标1.01；BuildNativeRuntime预期版本字段与BAT会拒绝此错配。证据/备份/实包outputs/manager-repair-1.01-sync-20261117；说明docs/agent/manager-repair-1.01-a21-sync-20261117.md。
+
+
+## A21多人管理热路径测试候选（2026-11-17，未实机接受）
+
+- 用户新证据：四人A经Chef关闭物理至少回升15FPS并回到无物理水平；支持优先插件开销，不据此推定纯Lua主导或精确毫秒成本。
+- 从接受A19＋compat1.3.13生成隔离A2.3.21：active-dispatch-r3＋空消费者派发前拒绝＋project七顶层表改私有scratch/双缓冲。完整会话账本、每拍fresh inventory/健康/节点重建、peak/归还、自己stride1、全部compat数学/证书/catalog/bind/effective参数原样；没有远端轻量健康账本/裁骨/FP63映射。五处退出清理池/派发表。
+- 实际新ZIP真导出/CRC/SHA、Chef扫描后无源码替换启动/成功writer/卸载通过；Lua3896968B低于4MiB。A-only33命令/6installer、两VM投影各1303步69436断言、真实test01五阶段＋清理69断言通过。五采样窗口成功写入含callback/Unit顺序/节点/数值SHA逐值同A19；health/solver/状态同，远端任务solver/writer0，本地1800。alive四人任务21698→19298，舰船34298→24698，非FPS；GC时间未测，单人runtime行采样有增加，不宣称已收回15帧。
+- 61profiles/39资源当前bind/config与旧290case/8744894FK证据重核，不冒称本轮重跑完整FK。280保护文件不变。根ff64/normal Core、production A19/B20/manifest、当前库/profile/模型/动画/活动配套与旧封档保持；未启动/导入/部署。
+- 候选仅在outputs/physics-A21-management-candidate-20261117/delivery，ZIP SHA e25a8296024bf39c0a5fd899a93ca4a34e3f5688af77ac22d0fc8978ddca8733；报告docs/agent/physics-A21-management-candidate-20261117.md。需要同场景四人A19/A21/OFF实机物理与FPS验收，不能升级正式或覆盖接受包。
+
+
+## A19单人/四人战斗FPS差异：只读生产分析（2026-11-17）
+
+- 正式A19/B20先完成封包与531成员32,359,934B封档（SHA4b8cee2292384ebe3ae80f83d134c2c5ca518ff179f9318025a0120bc010b5ff）；随后只分析，不改runtime/骨架/模型/配置/库/部署。已有525保护路径保持。
+- 排除队友物理只停spring/VRD solver+writer，不删队友动画/蒙皮/联机/渲染、也不删session；World.units/索引/健康/投影/周期roster/预览清理仍有开销。新log不支持“旧grip插件还活着”或用2.3.9旧perf当19的FPS。
+- actual A19 ZIP＋Chef1.4.1＋Lua5.1＋真实test01夹具1→4→1，各600callback，identityWatch开/关两对照：本地3活session/1800solver相同，远端solver/成功writer/锁定后FP查询均0；session7→28→7，默认开watch的alive8582→21698→8582，说明剩余管理工作。不将夹具指令/耗时当游戏FPS或成因占比。
+- 实机缺同场景1/4人及物理开/关CPU/GPU frametime四组，不能认定哪条成本主导。未来若实施优先excluded轻量生命期＋local active调度，保留inventory/World/重建/归还安全，不简单删alive/prune、不减本地stride1，不实施真裁骨/FP63映射。
+- 报告docs/agent/physics-A19-one-vs-four-combat-fps-analysis-20261117.md；证据outputs/physics-A19-one-vs-four-analysis-20261117及-identity-watch；脚本tools/analyze_a19_multiplayer_overhead.py。本轮未请求新候选测试，未覆盖之前封档。
+
+
+## A2.3.19/B2.3.20 用户接受、正式封包与归档（2026-11-17）
+
+- 用户“表现正常，ab打正式包，归档”覆盖下条19/20待实机接受状态；接受物理正常表现，不扩张为单人/四人战斗FPS已相等。15/16实机11FPS与17/18Chef超限拒绝原记录保留。
+- normal运行时配套新增A19/B20正式ZIP，compat1.3.13，完整字节/SHA与已验收候选一致；生产single_remote_release_manifest已同步用户接受及formal-release哈希。Lua/数学/参数/Source2/T16/腕排除/TOC全部palette与未知全量回退不改；normal Core/内置导出器未同步新上限守卫。
+- 实机Chef新日志A13:56:10/B14:09:35正常started；两包舰船/ADS锁定有证据。新隔离49门禁/8runtime720检查与12loader通过；完整FK61profiles/39资源/290case/8744894旧证据重新核当前bind/config/rig/driver/harness/catalog/compat SHA，不冒称本轮重跑全FK。既有.NET挂点INSERT注释断言失败保留。
+- 用户换包使旧保护library/profiles变化，本轮以当前状态冻结，不回滚；ff64根/ce3a normal Core及保护文件保持。不启动管理器/游戏，不自动导入/选中/部署、改库/profile/模型/GPU/动画/重烘或覆盖历史镜像。
+- 报告docs/agent/physics-single-loader-accepted-formal-20261117.md；证据outputs/physics-single-loader-accepted-formal-20261117，新49回归在outputs/physics-single-loader-size-fix-20261117/accepted-formal-gates。正式源码证据日志封档位于normal非运行文件/归档。随后只分析A单人/四人差异，不擅改已接受runtime；FP63映射/真裁骨仍未实施。
+
+
+## Chef 加载上限修正候选 A2.3.19/B2.3.20（2026-11-17，待实机物理/FPS）
+
+- 用户已拒绝17/18：“无帧数影响，a/b舰船上物理效果没生效，战斗中切换第一人称后也没生效”。实际两次Chef1.4.1均 `1 Lua resource(s) over 4 MB not read`，插件未启动；不能把无FPS影响当启用物理后的性能接受。15/16的11FPS失败亦保留；四旧ZIP和日志不覆盖、不继续推荐。
+- 19/20、compat1.3.13仅证书表示改为36块去重Base64一次纯Lua解码；原始TOC/rig/driver字节、完整all-TOC-palette/真实bind/effective配置及消费者闭包安全门禁不降级，render SHA/GPU内容read禁用、未知继续全量。原数学/作者参数/Source2/T16/腕排除/一次归还不变，舰船两包弹簧+VRD、自己stride1、首次ADS一次；FP63/Source接收映射尚未实施。
+- 实际patch的Lua资源A3,894,237/B3,894,241字节（含8字节头）低于4,194,304；旧包Chef扫描big1/found0负控与精确±1边界通过。源码导出守卫在创建/替换文件前按UTF8+8拒绝超限；normal Core未更新，不能声称现有内置导出器已得新守卫。
+- 两实际ZIP经原Chef parser/sandbox/starter/watchdog启动，再核舰船及ADS solver+成功setter返回后的骨骼写入，修正不可调用Vector3夹具，不以进入回调/尝试写入作成功；49门禁重新通过/8runtime720检查。完整FK原产物已完成并核当前哈希：61profiles/39资源/290case/8744894逐值同全量，fresh producer与3错证书/12loader/真导出CRC/SHA/19802方法0变通过。相关.NET10通过；既有挂点INSERT断言35中1失败原TRX保留，不改已验收Lua凑绿。
+- 仅将两个新候选ZIP放normal运行时配套，不导入/启用/部署、不启动管理器或游戏；根ff64/normal Core ce3a完整保持，494路径/489原文件零SHA变，无重烘/模型/GPU/动画/profile改写，不覆盖历史镜像。当前用户库配置不回滚。
+- 报告docs/agent/physics-single-loader-size-fix-20261117.md，证据outputs/physics-single-loader-size-fix-20261117（delivery/resume-verification/gate-run/fk-release/configuration/protected）。下次需用户普通流程替换A或B一个候选、先核Chef running版本，再验舰船物理/FPS和任务首次ADS。**本轮离线通过不等于新实机修复或FPS接受。**
+
+
+## 舰船11帧修正候选 A2.3.17/B2.3.18（2026-11-17，实机FPS待验收）
+
+- 前条实机失败不撤销：旧15/16不推荐、ZIP保留。本轮由实际Chef1.4.1 patch提取纯Lua bit，原8192B SHA median75ms/max80ms，确认快路径误判；实际game没有jit/ffi。nil transition检查/调用名称不一致已修正，日志错误加入门禁。
+- 当前候选17/18、compat1.3.12只新增normal运行时配套文件，不自动替换用户已入库/启用B16、不部署、不改根/模型/GPU/动画/profile、正常Core/GUI/Python。舰船两包原弹簧+VRD/自己stride1/任务A自己B禁远端VRD/ADS一次/腕排除/T16/Source2作者数学保。
+- 新消费者v2是完整TOC全部RealIndices合法蒙皮上界（含全LOD/材料/107native/非mesh/链锚父VRD闭包），不是删GPU-SHA却复用v1正权重mask。只读producer核真实GPU权重subset，runtime获胜TOC/rig/driver完整字节一致与sidecar尺寸区间/完整bind门禁；不宣称runtime GPU内容SHA相等。未知/变TOC/缺区间回退全量。当前4模型61profiles/39资源，全palette恰同weighted；新增模型必须新完整证书。
+- actual Chef校验片均值约0.07–0.09ms/max<0.5ms，源7Unit约28–37回调完成；render SHA/GPU内容read被强制禁止测试。47实际ZIP门禁、6runtime含真实Chef/no suppressed errors、两VM290case/8744894检查全native/weighted/palette/nonmesh/FK/writer/归还逐值同；fresh producer/3错证书/真DLL2资源导出CRC/SHA/12loader安装卸载过。492路径/491当前原文件SHA不变，ff64根/ce3aCore保留。
+- 报告docs/agent/physics-single-consumers-ship-11fps-fix-20261117.md，证据outputs/physics-single-consumers-ship-11fps-20261117。**未测新游戏FPS，不可把候选或VM耗时当正式验收**；下一步用户正常替换一个候选看舰船/任务/多人表现，仍不自动GUI/游戏/重烘/部署。旧15/16实机失败记录及根配置长期规则不被离线通过覆盖。
+
+
+## A2.3.15/B2.3.16 舰船 11 FPS：实机拒绝（2026-11-17）
+
+- 用户原文“发布的两个正式包均有问题，进入舰船后只有11帧”。覆盖前条的离线发布状态：两个包实机性能失败，不继续推荐；原ZIP、日志和封档保留，不自动换包/部署/改库配置/重烘。
+- 当前只读日志：Chef1.4.1/game Lua5.1没有jit/ffi，Chef补的是纯Lua bit；本地H.fast只看bit函数存在就给8192B每回调，不能当原生/JIT快路径。需真实Chef兼容层+无JIT性能门禁，不能仅测stock Lua5.1无bit和LuaJIT。
+- 当前B日志还出现9次FORMAL transition-error=nil：policy检查single_remote_policy_transition却调用不存在的single_scene_policy_transition；离线测试漏了错误日志。这是另一个必须修正的功能问题，不以关VRD/降自己物理步频掩盖。
+- 本轮证据outputs/physics-single-consumers-ship-11fps-20261117；根/模型/动画/活动profile/游戏不写。新修正必须保全部SHA/真实bind/完整T16/作者数学/一次归还和非网格消费者，不绕过GPU/Unit证明，不再把离线正确性当FPS验收。
+
+
+## 精确消费者第一阶段与双正式包收尾（2026-11-17）
+
+- 用户要求依据FP分析“1.结论与优先顺序”迭代并分别正式封包；先完成精确消费者＋每Unit筛链，不裁骨/重导/重烘/自动改库部署。当前A2.3.15/B2.3.16、compat1.3.11已交normal运行时配套，A/B二选一；旧2.3.13/14和封档保留，未选中/导入新包，normal Core/GUI/Python不覆盖。
+- 只读producer四真实模型test01/Cow/test13/test15：61 profiles/39资源，Unit/GPU/stream/107原生bind/完整链祖先与VRD control/parent、helper/socket/mesh origin/light/prelight/typed connector闭包；未知Actor等不支持非网格拒绝。每模型bind/effective/rig SHA真实独立，不借旧profile。七源test01 84→12链/42→6VRD、Cow182→29/14→2、test13 98→14/35→10、test15 203→29/98→14；不是实例去重或FPS。
+- 原compat数学/作者参数/T16全64真实门禁/Source2/腕排除保持，版本后附consumer/hash包装；合法empty不重试/跟随/预算，driver-only原VRD+flush，排除输出一次归还，world/plan失效重证明。有bit8192B/无bit256B每回调分段真实获胜payload SHA，未证期间全量；完成后无哈希空转。纯Lua初始化可能慢，不冒充FPS收益。
+- 收尾负控复现并修正仅GPU清单漏高优先级TOC：实际loadCarriers独立记录TOC，orphan GPU不完整拒绝；两最终ZIP两VM真实磁盘路径、pending world/option句柄失效通过。四玩家30/自己9实例保留，任务ADS一次锁定，舰船两包弹簧＋VRD按真实消费者，自己stride1。
+- 实际ZIP两VM290案例/8744894检查含所有native/weighted/nonmesh FK、warmup、保留solver/writer/release逐值同全量；37专项＋4epoch命令、fresh producer0警告0错及3错证书负控、19802方法0变仅2Lua资源/真导出器/CRC/SHA/owner/GUID/12loader安装卸载全过。486路径/485原文件SHA无变；root ff64a88d7a0c786f600a3382db7cfec66a71b0c30e62b755eb2abd9ca413ced6、Core ce3a3c40943f6e47ec1820101066480f86d2ff3a3d7f427cfb8980d251768a76保持，旧缺manifest不复原。
+- 报告docs/agent/physics-single-consumers-formal-20261117.md；证据outputs/physics-single-consumers-formal-20261117/release-r2与fk-release。当前目录仅已核4模型，新增/变更模型需新只读事实与成套发布，未知全量回退。父TODO实际FPS/视觉1→2→4玩家仍待，第二阶段真裁Unit/GPU/真实T16 subset及独立FP63/Source映射仍未做；不标主线FPS已对齐。
+
+
+## 第一人称物理消费者闭包分析（2026-11-17，未生产实施）
+
+- 用户新授权继续 TODO，允许重导/裁骨/重烘/改库配置方向分析与隔离验证；覆盖旧 TODO 暂停分析，不等于自动改库/根配置/模型动画/profile/运行时、发布试包或部署。原 FP63/Source接收映射另条未实施，不能以性能分析移除隐藏或改武器挂点。
+- 当前入库A四成员逐字节同正式2.3.13，新identity船checks0/任务锁定checks3；非FPS。七源资源按实际绘制LOD权重、全107原生bind、完整链/父/锚/VRD控制闭包：test01 84→12链/42→6VRD/119→17弹簧节点；Cow182→29链/14→2VRD/448→68节点。不是按资源跨实例去重，不把现场9自己Unit强裁7。
+- 两VM30/60/120/240Hz实际bind+父FK+持续辅助输出+帧末flush重放134案例/3774992检查/360负控，保留消费者world pose/链/VRD/setter/release逐值同全量、rig/作者参数/腕排除不变；裸Compat计数不是FPS，不等于整runtime/多人/阴影反射验收。当前18真实Cow资源先过完整64骨T16原子门禁。
+- VpkUnitBonePolicy.ForUnit(single/native)仍返回完整bind，重导原路线不会裁骨。50个内存骨架探针test01节点973→774/Cow1274→821，未author模型/GPU；Cow仅权重+祖先会丢source_extra_83完整链，真裁后原T16因node/layout拒绝，需新真实subset profile及GPU/node索引配套，不复制旧profile/假ID/放宽门禁。
+- 首选新生成/库消费者配套+会话筛链，先不重导重烘。零消费者须正向状态与实例/plan失效，原A runtime0链会30帧负重试、45帧无处理重挂，不能直接部署清空sessions原型；补非网格消费者/安全一次归还/driver-only路径。真裁Unit若Avatar/Bones/bind/通道全契约不变才门禁复用动画，当前payload指纹须新prepare；改这些则逐模型重生配套，不借offset。
+- 259路径/258实际文件SHA长度不变，旧A11 manifest本轮开始已缺不复原；normal Core/root ff64a88...、0.7/0.7/1/single false、库/模型动画/profile/旧正式及实测封档不写。源码/normal配置两门禁、7上游blob快照SHA与实际A四成员通过；未查新master或声称实际FPS已对齐。报告docs/agent/fp-physics-consumer-analysis-20261117.md，证据outputs/fp-physics-consumer-analysis-20261117；TODO仅离线分析项勾完成，实施/游戏验收仍待。
+
+
+## 舰船弹簧＋VRD双正式修订（2026-11-17）
+
+- 用户补充舰船没有第一人称需VRD，最后明确A舰船也开弹簧；最终A/B舰船都全弹簧＋VRD，不等待/查询FP；任务仍A只自己/B远端弹簧保留禁VRD，首次ADS确认一次。未发中间VRD-only草案，生产无其代码。
+- 新normal运行时配套A2.3.13/B2.3.14正式ZIP、compat1.3.10；整个compat相对1.3.9只有版本字节改，作者数学/真实bind/contacts/FK/T16/Source2/腕排除全保。旧2.3.11/12及实测封档不覆，新说明单骨架物理AB正式版-舰船弹簧VRD全开修订-20261117.md。
+- single_ship_scene.lua.in按loader稳定主世界真实levels1/2 ship、>10 mission，0/未知不盲船；实际Chef api=1数字、call为受保护函数；missing层数任务checking同idfalse不误开船VRD。scene/world/id变化清epoch与ADS latch，sameWorld往返也正确，船不查FP；任务一次后停查询，船上两包原预算调度。
+- 45舰船＋53ADS两VM及真ZIP提取同门禁、旧full87＋51两VM、整compat仅version、源码/CRC/SHA/owner/GUID/19802方法0变仅2Lua、安装卸载/真实导出loader→sceneContext过。173冻结程序/config/模型/库/旧正式包/封档SHA不变，ff64...根保持；normal/Core默认不改、不导入应用部署启动或Git提交。
+- 用户要正式不再试包，未新增游戏FPS验收；多人全物理差距仍docs/TODO.md，不额外优化/降自己刷新率。report docs/agent/physics-single-ship-vrd-formal-20261117.md；证据outputs/physics-single-ship-vrd-formal-20261117，before留原1.3.9/A11/B12，生成器build_single_ship_vrd_formal.py与scene模板/清单成套，避免再次导旧不识船包。
+
+
+## 单骨架 A/B 实测封档与一次瞄准正式包（2026-11-17）
+
+- 用户已反馈A大幅优化但仍不如主线、B小幅；结束测试版测试，双包直接正式；多人同时物理的性能列docs/TODO.md，本轮不继续优化或要求试包。不是精确FPS验收，不虚构130+/1%low。
+- 正式独立A2.3.11（仅自己）/B2.3.12（别人弹簧保留禁VRD），共用compat1.3.9，normal运行时配套两ZIP；生产family在src/production/single_remote_*与single_ads_identity.lua.in+manifest。不暗选/替换程序内置默认A/B，normal Core/主默认2.3.7入口保留，用户配置/库/勾选不写、不应用部署启动或Git提交。
+- 按已有production FP视角证据：resource d0cf4d493ca08bed、原生root5/camera51、主相机位置8cm、唯一TP水平35cm/连续3次。只有真实FP匹配后识别自己，确认后整个实例生命周期停止FP/自己身份查询；换装队友变化不重检，自己重生/换world才重新待瞄准。A确认前全停；B确认前所有仅弹簧/禁VRD，确认后自己完整VRD。不用相机最近/FOV/鼠标键猜身份。
+- 策略仅会话epoch/owner变化应用，不每帧遍历玩家/VRD记录；删除正式Perf长采样，只有独立A/B identity事件日志32k。保留预览清理、近远调度与活体/世界安全；自己stride1，4是玩家非件数、作者参数/真实bind/contacts/FK/T16/Source2/腕排除不变。
+- 默认53两VM+真ZIP提取53两VM、显式旧full87+51两VM、整个compat仅版本改动/实导CRC/SHA/owner/GUID/生产source/安装卸载通过；19802方法/670常量/39资源仅2 Lua不同。170冻结输入SHA不变，root ff64a88...不变。新一次逻辑直接正式，未新游戏实测。
+- 原测试包与11真实日志封档normal非运行文件/归档/单骨架物理AB实测版本与运行日志-20261117-封档.zip SHA f8b69c6e688475d31fc8071610b44e67ce9bca3e4427225bfb19ec6ceb74f951。原日志/旧ZIP不删改；A末3玩家27unit/324链排216、CPU2.082ms，B末4玩家36/432保324排162VRD、CPU6.352ms，不能当同人数FPS比较；A实际当前载荷同已发包，B已移库不可冒称重比。report docs/agent/physics-single-ads-once-formal-20261117.md，证据outputs/physics-single-ads-once-release-20261117；已归档发布，不重复发测试版。
+
+
+## test01 多人性能 A/B 两包（2026-11-16，FPS 待实测）
+
+- 用户确认test01多人物理正常、超1人实战FPS下降；最新A其它人物全物理停算，B其它人物保物理排VRD。只单骨架，4为玩家非件数；自己R2参数/VRD/stride1保持，native/dual/direct不优化。未正式升级主src/normal/Core。
+- 仅normal非运行文件/测试包两新ZIP：A单骨架仅自己物理2.3.9-r1（337308B/SHA 5ed974520b26c1b62c23446cfb62f32a8a324fe6d0cd8b8dda48bf89d2a80d05）；B队友保留物理禁VRD2.3.10-r1（337310B/SHA 4006f2db5dc3b28d59d3a89c7f72b5f598b7610cf9ca450db94da10da4922ee7）。共用隔离compat1.3.8，不是正式/FPS验收升级；normal Core ce3a...及生产2.3.7/1.3.7保留、原R2不覆。
+- 主线FP学得自己avatar INSTANCE比较owner，不按相机第一/资源名。未知多人fail-open记ambiguous-aim-first-person，先FP瞄准1s确认fp-confirmed。A跳整Compat.update/pendingDt=0保留发现生命周期；B会话evaluateDrivers=false防直调/release/Source内联绕过，不改共享rig/bind/裁骨。旧写入仅一次交还，死亡重生/世界失效恢复。
+- 默认68两VM+实际ZIP提取68过；基线full显式87+51两VM过。真实test01七源Units1/2/4×120受控帧A7827/B7832：自己pose/spring/VRD/调用逐值同R2，A远端0，B840/2520弹簧更新VRD0；非实际FPS/GPU。生产T1201/T16完整literal与数学同源，Source合成坏VRD规则A0/B49物理且0VRD，不冒称实际bind选择。
+- 两隔离Core各19802方法/670常量/39资源，0IL/引用/身份变仅2物理；真导ZIP四根CRC/SHA/owner/GUID/源码、两VM安装卸载/重复回调/1200s诊断过。10s日志hd2physbone_test01_A_perf.log/B_perf.log、1:8采样250k，timer非FPS；证据日志合成、实机在Roaming Arrowhead。157冻结用户/模型/config/程序输入SHA无变，ff64a88...全配置保持，无导入应用/重绑重烘/部署启动/提交。
+- 实验single_remote_ab_*模板、single-remote-*测试与tools/build/run/verify/deliver_single_remote_ab_*；不写正式配置/默认发布来源。报告docs/agent/physics-test01-remote-ab-20261116.md，证据outputs/physics-test01-remote-ab-20261116；用户每轮仅一物理、手动应用重启，同场景1→2→4记录加入时间+真实FPS/CSV+长日志再定优化。
+
+
+## 单骨架主线2.3.7 R2与当前精确bind（2026-11-16）
+
+- 用户限定仅单骨架、父子同主线可照搬；single-v3正向判据移植b78e63e/2.1.45的11函数/身份/缓存/调度，legacy/native/direct不优化；4为玩家，不设4/8衣物件数上限、未知17件全留、自己stride1。source runtime2.3.7；单骨架300安全重扫/30负重试/600预算6m近远/会话错峰、cache.frame推进相机；新鲜下标仅在役single+≤4avatar，当前槽需相等、移位批扫/native-equal fallback；全世界索引JIT退化试验不交付。
+- 最终校验发现normal并发44改/62消失（库/生成Python/元数据/旧物理等），本轮不写、未回滚覆盖。正常Core仍ce3a...、config ff64a88...完整不变。Cow7源ID4718…→37b3245c673c…，R1旧18白名单不代表新库已覆盖；R2从当前每资源64节点/bind重派生7精确新记录，当前spring/driver rig同接受基线、11Overwrite记录不变，旧18留合25。compat1.3.7仅精确single数据/版本，50函数数学/全骨原子预检/两胸根参数不变，不生产ID伪造或借其它模型profile。
+- 当前18真实源/目标64bind、6拒绝、4Hz回放23928过；单骨架87两VM/多人51、17Lua、双骨架420帧调度/dt/调用同2.3.6、.NET物理14、配置/物理各6、打包34过。模拟壳1人17件1.4017→0.095ms、4人32件2.675→0.1667，调用等量、节点查询降80%；不是FPS/真实求解，未确认130+，游戏查询未运行无CSV。
+- 最终仅用normal非运行文件/测试包/物理运行时-单骨架主线对齐-2.3.7-r2-待实测.zip，332610B/SHA 2b2dfe70caac43d6b98012d9225a65255f9d2bd797d4d0610d1cc3d18429d3be。真normal ce3a... Core隔离替换2 Lua，19802方法/670常量/39资源其它身份代码引用不变，候选B6A0...未覆盖normal；实际导出根4项CRC/SHA/owner/GUID/源码/install/uninstall、导出87+51过。R1原ZIP保留不推荐，已发2.3.6不覆。源码版本/门禁2.3.7+1.3.7；正常仍2.3.6，勿另导旧包冒充R2。
+- 不自动导入/应用/部署/启动GUI游戏、改父子/裁骨/模型/bind/动画/profile/根配置或Git提交。主线逐Unit裁骨未自动用于既有模型；必须真实消费者/FK/contacts及bind门禁，不能只看静态442→61就硬mask。用户仅启用R2一份完整重启、同舰船FPS+新37b3 T16 SELECTED日志验收。报告docs/agent/physics-single-mainline-port-20261116.md；证据outputs/physics-single-mainline-20261116。
+
+## 单骨架腿部 IK 测试修正（2026-11-16，实机待验收）
+
+- 用户授权修正近伸直膝方向连续性/最大伸展并同步正常 manager-1.0.7。源码+tools runtime+指定安装定向同步：single-leg-bind-pole-soft-reach-r1；保留1.0.22 GUI精确门禁，独立legIkRevision/SHA识别，不改GUI/Core/CLI DLL或物理Lua。只由single开启，default/dual/手臂/additive旧行为保持；真实模型bind轴写新effective，逐clip/腿父坐标pole、15°内连续半球、末端1.5%soft reach，可靠弯腿不全局限速。
+- 当前Cow两已取证但未命名资源膝跳62.216→2.982°、61.154→3.621°；test15识别走样333ms屈膝0.057→11.082°/目标偏移5.714mm。是离线修正证据，不冒称用户具体现场走路已实机接受，soft末端偏移需同时验脚接地/滑步。
+- Python119/安装官方Python37、三模型51真实(12add源字节/余84通道同)、安装进程池36隔离样本、实际net10 GUI报告3accept/3拒sample门禁通过。12同步文件/14221原保护SHA不变；完整根ff64…/双手0.7/0.7/1/single false及后续自定义保持。新test自包含，原BuildNativeRuntime仅增revision/回归，不整包重建、不借旧bind、不改库/profile/settings/模型/旧动画/游戏、不Git提交。
+- 旧库动画不会随代码变；下一步用户重开指定管理器，为要测单骨架模型分别重生配套动画再手动部署验证，不须仅为本算法重导VPK/重绑。本轮仅outputs下36样本，不是库重烘。报告docs/agent/single-leg-ik-fix-20261116.md；备份、源码diff、精确SHA与最终证据outputs/single-leg-ik-fix-20261116。当前pending-game-test，不标正式实机验收。
+
+
+## 舰船物理帧率回退：最大4玩家与调度热路径排查（2026-11-16）
+
+- 用户报“未参考主线版本舰船130+，现在60+”，2.3.6性能未验收，按回退处理。用户明确最多4名玩家；最新17unit/442链是1玩家17模型实例，不把Unit数量当玩家、不设置4件上限。
+- 实部署Lua同正式2.3.6；Chef只跑最后一份跳旧副本。16:39:33会话phys平均7.360ms/最坏47，armor0.011/loader0.051；是CPU耗时不是displayFPS。17:01:54新日志仍8→16→17实例。没有实际CSV，不要求用户以离线dt接受优化。
+- 确认上一轮引入每帧O(U×S)线性成员检查、每60帧无条件完整发现；同时真实实例8→17增加负载，未证明多的可丢。隔离候选改fresh数组下标O(1)仍检查槽位相等、最多4avatar轻刷、完整扫描默认300帧/变化/补挂、保留晚骨图与生命周期，51回归过，不改数学/裁骨/借旧bind。
+- 2400背景/600帧/3次中位Lua5.1同求解量：1人17件442链当前1.330→候选0.2217ms/壳帧，4人32件832链2.5683→0.2417；scene查询24200→4848/24410→4914。仅壳CPU，非实际FPS；LuaJIT收益小，不扩张实机接受。早期rescanFrames=6误条件结果保留，最终显式300。
+- 本轮只排查与隔离实验，主src/正常DLL/已发包/config/settings/库模型动画profile/游戏不写，不启动部署或Git提交。docs/agent/physics-ship-fps-regression-20261116.md；证据outputs/physics-ship-fps-regression-20261116。下一步需新候选实机同场景测试，不能还原整个Core丢Chef映射或用旧未生效半驱动当公平FPS基线。
+
+## 物理2.3.6正式包与实际FPS门槛（2026-11-16）
+
+- 用户要求“再打一个物理正式包，要看实际帧数优化”。已从正常Core ce3a...重新导出运行时配套/物理运行时-2.3.6-正式版.zip，318822B/SHA d66ad2a929e269f4a76ade9e212d78fc941ec97285675dddb43754f0f25a1242；载荷与r4原字节同源、根4项CRC/长度/SHA/owner/GUID过。不是旧测试包改名；旧2.3.5/r4冻结，代码/物理参数/配置/库/模型动画不写、不部署启动游戏。正式打包不标多人/FPS已验收。
+- 16:39:33最新2.3.6日志单人17unit/442链（此前8/208）；不是FPS、不能未经身份/可见性证据裁成8件。当前GameProcessQuery明确NoProcessFoundForGivenName，无实际CSV，不能以Lua dt/回调/调用次数代替帧率或宣称优化完成。
+- 正常非运行文件/实际FPS采集已放Intel签名Valid便携PresentMon2.6.0（非服务/安装器，SHA b2a706bc6ad475749e3b7e3409263aa1e6906d45bdcf993f6dbc0f660188f1af）、Capture/Analyze脚本。用户现有游戏PID只读ETW、QPC毫秒、唯一会话、不自动提权/注入/停其它工具/控游戏；存metadata和日志副本。合成60FPS/QPC算术过，不是实机。
+- 待用户同场景同设置3组OFF/ON各120s CSV，再看平均FPS/1%low/p99/长帧、CPU/GPU busy及真实unit/chain，才评优化。docs/agent/physics-formal-fps-20261116.md和outputs/physics-formal-fps-20261116成套。已打包，不重覆正式ZIP；不自动重烘/部署/启动游戏或Git提交。
+
+## 多人单双骨架物理：2.3.6/1.3.6定向修正（2026-11-16，实机待验收）
+
+- 用户要求127.0.0.1:7890分析上游并修多人。已核1.5.18/b78e63e及blob，增量保留本地数学/全骨/真实bind；稳定骨名+新鲜ID回退、整数轮转不截断、目标就绪不等全局数量、每玩家增量会话、相机重试/未知不误节流、活体成员/加载空档/整组回收、晚复活空数组恢复。
+- 2.3.6/1.3.6源码与normal已同步，非多人实机验收；最新旧日志仅2.3.5-test16-r1/1玩家。51多人+实际导出51、16Lua、44求解源不变/23928真实bind/18资源6拒绝、15709v3/132腕、.NET物理12与配置/物理各6通过；旧缺模型夹具/既有FP INSERT断言单列，不改Lua掩盖。
+- 已保留并行Chef-flat-v1最新991c... Core：19802方法/670常量/身份MVID引用不变，39资源只2物理变化；正常仅5原文件变化、其余14225字节保持、0删。GUI/CLI/其它DLL/Python/config/settings/库/模型/动画/profile/勾选不写；test-manager/历史镜像/2.3.5已发包不覆。保留0.7/0.7/1与single false及所有后续自定义，不部署重烘/启动游戏或Git提交。
+- 最终只用正常非运行文件/测试包/物理运行时-多人单双骨架修正-2.3.6-r4-待测试.zip，SHA 8d865ab86a0624cebfe031fcdb0f2983b384f934387107b5b58cea2d79f62934；早期本轮候选保留未作最终交付。用户需停旧物理、导r4一份、手动应用并完整重启看2.3.6新日志。报告docs/agent/multiplayer-skeleton-physics-fix-20261116.md；证据/成套备份outputs/multiplayer-skeleton-physics-fix-20261116。已应用不重apply。
+
+
+## Chef 外置护甲映射已验收；无效代码回退范围待明确（2026-11-16）
+
+- 用户原文“上述问题测试通过，已修正，把之前的无效代码还原”：chef-flat-v1当前外置护甲映射标记已修复；真实flat日志revision5、1998 sets/0 rejected。只接受本轮问题，不扩张其他模型/动作/FPS/多人。
+- 用户请求清理旧无效代码，但当前在役首轮source Unit保留不是无效：真实当前库的隔离对照，首轮前Core索引0/7并复现原始拒绝，当前7/7与272map通过；索引版本盐防止加载旧的0源Unit缓存。不可直接还原这两处，更不可整Core回滚导致丢Chef修正。
+- 本轮只记录验收与回退范围审查，代码未回退；等待用户明确其它目标。当前Core991c631c...不变，用户验收后的库/profile/workspace/镜像/log/config/settings不写，不恢复测试前快照，不改并发物理工作。
+- 说明docs/agent/chef-armor-compat-20261116.md后续验收段；备份/0源对照/当前通过/acceptance在outputs/chef-armor-accepted-cleanup-20261116。未自动部署/重烘/启动GUI游戏/提交推送。
+
+
+## 外置护甲映射 Chef 文件兼容（2026-11-16）
+
+- 用户要求在现状上改外置映射兼容Chef，主源码与normal manager-1.0.7定向同步。Lua识别Chef loader，读设置根单层codex_runtime_armor_registry.links.dat、写单层codex_runtime_armor_registry.log；权威Local/Bingus workspace/links不搬、不覆盖设置，Bingus/无Loader原路线保留。镜像原子无BOM/fsync/4MiB限制，显式应用才发布；Chef不能写Roaming时按其规则回退Local本层。
+- 只新增镜像helper和原Core的writer/apply钩子、设置描述、一份armor_override_runtime.lua；原19798→19802方法，差异7、新增常量3、旧常量引用/身份MVID不变；39资源仅1映射Lua变化，38物理/B3/FP原SHA保持，前轮命名空间/版本盐保留。不改Chef沙箱/加载器、不迁测试direct-v1、不改GUI/CLI/config/settings/模型/动画/profile/游戏。
+- 停用/清空同步空镜像并修普通旧zero-link早退；不创建缺失权威links，保留删除/关闭需重启游戏的引擎契约。镜像失败不再被旧catch吞，不自动“应用”迁移用户状态。
+- 主86专项/正常候选84专项通过；候选DLL产真实当前links隔离镜像，再过实际Chef1.4.1 sandbox4路（Chef/fallback/Bingus/no-loader）1998覆盖、blocked0、写日志、停用通过；旧同条件0覆盖/211拒绝。未实机验收；用户关闭游戏后正常重开管理器点应用，再完整启动游戏取flat日志，不重复新增boot。
+- docs/agent/chef-armor-compat-20261116.md；outputs/chef-armor-compat-20261116有成套原件备份/IL资源审计/TRX/真沙箱测试与全安装SHA。只同步normal，旧镜像/包不覆、未自动部署/重烘或Git提交。
+
+
+## 外置映射已加载但被 Chef 文件沙箱拒绝（2026-11-16）
+
+- 用户要求检查外置兼容是不是漏加载Lua。已找正确 `%APPDATA%/Arrowhead/Helldivers2/chef_loader.log`：15:00:57 line851确实启动 mods/codex/runtime_armor_registry（game patch18），Chef boot/core在patch1；不缺Lua。资源对应src/armor_override_runtime.lua。
+- 实际原因：该Lua误把Chef兼容CowboyBingusModLoader.log_directory当Bingus目录，读Roaming/Arrowhead/Helldivers2/ArmorRegistry/wardrobe.links；权威文件在Local/CowboyBingus/Helldivers2/ArmorRegistry。Chef明确拒绝ArmorRegistry子目录读和Logs子目录写（line850/853起反复）；这也解释没有ArmorOverrideRuntime.log。不能把缺日志继续当未加载。
+- 上游1.5.18该路径逻辑未改。未来修Chef/Bingus双路线允许文件IO与管理器匹配输出，不关闭整个沙箱、不添加重复boot/运行时，不改物理/模型/动画。仅检查请求本轮未实施；docs/agent/external-armor-lua-loader-audit-20261116.md及outputs/external-armor-lua-loader-audit-20261116有实日志片段，覆盖前轮执行未确认状态。
+
+
+## 护甲映射仍未实机生效：上游 1.5.18 复核（2026-11-16）
+
+- 用户反馈前轮仍未生效；前轮只验证7源Unit入部署与协议校验，不标记整体/游戏已修复。实data现已有7源+隐藏Unit，协议rev4/272map/2000link（1998独source）。正确运行时日志是ArmorOverrideRuntime.log；当前缺少它，执行未确认，不拿旧ffi的runtime.status/ArmorRegistryRuntime.log判定。
+- 指定代理127.0.0.1:7890已取上游b78e63e/1.5.18。#28低污染/Hider/优先与失败提示、#30fsync/坏JSON均不是当前场景已解决的证据；fa7→HEAD原过滤/索引/运行时Load未变。真实links隔离Lua回放普通路径双方1998调用相同；HEAD仅保留Hider update钩子的新修复，官方钩子测试过，不冒称引擎实测。
+- 用户条件是确认已修正才同步；本轮未确认，故没有同步源码/二进制。当前O-3已是mapped目标，上游优先部署会剔除声明目标整节点，可能同时丢Cow来源；另有自动物理addon/跳过旧物理包行为，不盲目切本地已验收2.3.5分支。根/库/模型/动画/profile/游戏不改，未启动应用/部署/重烘/Git提交。
+- 下一步取正确外置加载/ArmorOverride回执和GUI应用完整提示，核引擎API/路径/IO；报告docs/agent/upstream-armor-mapping-review-20261116.md，证据outputs/upstream-armor-mapping-review-20261116。若另外授权升级1.5.18须兼容模型来源与物理/完整配置保护。
+
+
+## 单骨架已换甲模型的护甲映射部署衔接（2026-11-16）
+
+- 用户要求修正并同步 normal manager-1.0.7。原 Cow 7 自定义 Unit 被直接 O-3 Overwrite 的 17 原版键替代，登记7键实际部署0匹配；管理员权限不是此校验根因。索引为带rekey标记的真实自定义模型前置自身原命名空间完整载荷；Overwrite/材质顺序不变，缺/错/截断来源拒绝，自身目标不重复，未部署守卫仍保留。
+- FileFacts generation 加版本盐自然拒绝旧索引，不清用户缓存。正常 Core 只定向索引类型及 generation：19787→19798 方法，39资源/全部常量引用/程序集身份MVID保持，不用测试direct-v1 Core反向覆盖正常物理2.3.5/compat1.3.5。GUI仍1.5.17骨架分支，不修改EXE/GUI/Python/根配置/库/模型/动画/profile/游戏。
+- 主源码74专项/定向正常依赖71专项过；真实当前库隔离复制7/7源Unit、272映射通过，未部署负对照仍拒绝。正常基底有3注册/boot和5新主线direct/物理断言既有差异，原/新均复现已记录，不扩张修复/全量通过/实机验收。
+- 说明 docs/agent/armor-registry-single-overwrite-fix-20261116.md；备份/完整SHA/定向IL资源审计/TRX/真实库隔离证据 outputs/armor-registry-single-overwrite-fix-20261116。只同步指定 normal，不动test-manager/旧镜像/旧包；用户正常重开后手动应用验证，不自动部署重烘或Git提交。
+
+
+## test16 已修复：用户验收、2.3.5/1.3.5 正式同步（2026-11-16）
+
+- 用户明确“表现正常，标记已修复，同步到代码并更新”两个目录后打正式包。test16胸骨瞬抖已标已修复；不扩张其它模型/全部动作/FPS/多人验收。当前正式本地物理2.3.5/compat1.3.5取代旧2.3.4/1.3.4发布基线；保留已验收R1数学/原参数/18精确资源+64真实bind门禁，详细逐帧观测默认关。
+- 已同步主src两个物理Lua、生产test16真实profile、源码/runtime/打包元数据及两实际Core。普通19787方法/667常量/39资源、测试19789方法/668常量/42资源全身份/引用/IL不变，只改两物理资源；MVID/PDB配套保留。测试direct-v1/上游2.1.45与3独立模块原SHA保留，普通不补direct元数据。配置来源/用户后续自定义仍遵循长期配置记忆。
+- normal manager-1.0.7仅5原文件变化，test-manager仅7原文件变化；其余14196/13436原字节保持、0删除。GUI/CLI/其他DLL/Python/config/settings/更新偏好/库/模型/bind/动画/profile不写，GUI仍1.5.17骨架分支/每次提示/禁程序更新。未部署/启动GUI游戏/重绑重烘/Git提交推送，旧R1/历史镜像不覆盖。
+- 正式物理：两个安装运行时配套目录的物理运行时-2.3.5-正式版.zip（普通）和物理运行时-2.3.5-正式版-direct-v1分流.zip（测试）。由更新的实际DLL重新导出，内根4项/SHA/owner/版本同源验证，非R1改名。Full正式管理器包各126项/122载荷+物理ZIP，仍保留skeleton-test GUI标识，均外内CRC/长度/SHA回读通过。
+- 141784主+4822边界/14 Lua、18正控6拒绝/24链逐位、44分流、34打包、配置/物理各6、实际.NET物理11全过；真实201精确消费者/300allow/B3 1.0.19/FP1.0.1/模板与完整配置SHA门禁保持。不造模型contacts/FK配置、不自动更新库。最新R1compact会话是另一29链rig，不能冒充test16 SELECTED实测；验收依据为用户反馈。
+- 已应用，不重复apply。正式详细说明docs/agent/test16-breast-fix-accepted-20261116.md；证据/成套原件备份/资源与IL审计/物理和Full实包/保护SHA在outputs/test16-breast-fix-accepted-20261116。以后修正另版本，保留发布字节。正常根配置绝不能被随包/旧封档反向覆盖。
+
+
+## test16 胸骨瞬抖：R1 独立物理测试包（2026-11-16，未实机验收）
+
+- 用户要求检查最新日志后修正并打包：实际会话2026-11-15 23:31:05–23:32:06，正常安装/旧库物理同源 b07fcd9d...，2.3.4/1.3.4；一份addon/一份64骨rig/26链/8 Unit，repeat0、dt0.0076–0.0089，无驱动错误。心跳69.8°是项链/手链，不证明胸部20°限位坏；旧compact没有逐胸逐帧，不冒称每次实机抖动的确切因果已证。
+- 真实test16 Breast_L/R flags0x51、轴向k100/c0、角k200/c5、20°锥。小幅周期位移复现自由尖端过零归一化奇异；R1=test16-nominal-angular-radius-r1，用作者静止杆长作角向力臂，保留带符号轴向方程/0阻尼、基座与所有原参数。只在该模型完整rig+18精确资源（7源+11实际Overwrite）+每资源64真实bind/node预检后原子开两胸根；拒绝缺API/错rig/资源/bind，不借test06/test01 profile。
+- 独立测试 runtime2.3.5-test16-r1 / compat1.3.5-test16-r1，固定目录 非运行文件/测试包/物理运行时-test16胸骨瞬抖修正-r1-待测试.zip，309660B/SHA082f52b87705e312bd93fed29a8618fb197c43e62af16cec2d0c27bd00cfdcb4。正常生产Lua/DLL与旧2.3.4 ZIP未合入/覆盖；非生产模板在HD2PhysBoneCompat/src/experimental/test16_breast_stability.lua.in（csproj不嵌入）。测试源/生成器/冻结日志在outputs/test16-breast-jitter-20261115。
+- 主141784+边界4822与14原harness过；30/60/120/240Hz受控idle旧单帧21–40°→0.12–0.46°，非实机测量。其他24链逐位数值保留，Source test1201算法/profile保持；18正控/6拒绝、左右零跨度/锥/死Unit/恢复通过。原安装14163文件和根完整配置/settings/库/模型/bind/动画/profile保留，无GUI/游戏启动、部署、重绑/重烘、Git提交/推送。
+- 手动只启用R1一份物理、停旧外置/内置冲突，部署并完整重启；新hd2physbone_test16_r1.log须头2.3.5-test16-r1与T16_BREAST SELECTED roots=2 identity=Unit.resource_name。观测180s/512KiB、每根最多40样本并复用缓冲；未GPU/FPS/多人接受。发布字节冻结；未来改模型/新修正另版本，不自动推广正式。详见 docs/agent/test16-breast-jitter-test-20261116.md。
+
+
 ## Package-HD2ModManager.bat 版本门禁修复与成套同步（2026-11-15）
 
 - 用户报打包错已在两个实际BAT -CheckOnly复现：GUI/build-info1.5.17，打包清单仍1.5.15，正确触发版本过期拒绝。已同步主tools源码与manager-1.0.7/test-manager各4文件（根BAT、Package-Manager.ps1、清单、README），不靠删门禁解决。

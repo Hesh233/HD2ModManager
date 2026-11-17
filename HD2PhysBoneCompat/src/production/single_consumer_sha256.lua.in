@@ -1,0 +1,56 @@
+-- Streaming SHA-256. Bounded verification work; no shell/helper process.
+local ConsumerHash = (function()
+ local H, MOD = {}, 4294967296
+ local bitlib=rawget(_G,"bit") or rawget(_G,"bit32")
+ if type(bitlib)~="table" and type(require)=="function" then local ok,b=pcall(require,"bit");if ok then bitlib=b end end
+ local band,bxor,bnot,shr,ror
+ if type(bitlib)=="table" and type(bitlib.band)=="function" and type(bitlib.bxor)=="function" then
+  band,bxor,bnot,shr=bitlib.band,bitlib.bxor,bitlib.bnot,bitlib.rshift
+  ror=bitlib.ror or bitlib.rrotate
+  local native=true
+  for _,fn in ipairs({band,bxor,bnot,shr})do
+   local ok,info=pcall(function()return debug.getinfo(fn,"S")end)
+   if not ok or not info or info.what~="C"then native=false end
+  end
+  local jitlib=rawget(_G,"jit");local enabled=false
+  if type(jitlib)=="table"and type(jitlib.status)=="function"then local ok,on=pcall(jitlib.status);enabled=ok and on==true end
+  H.nativeBit=native;H.fast=native and enabled;H.backend=H.fast and"native-jit"or(native and"native-interpreter"or"lua-bit")
+ else
+  local and4,xor4={},{}
+  for a=0,15 do for b=0,15 do local x,y,aa,bb=0,0,a,b;local p=1
+   for i=1,4 do local av,bv=aa%2,bb%2;if av~=bv then x=x+p end;if av==1 and bv==1 then y=y+p end;aa,bb=math.floor(aa/2),math.floor(bb/2);p=p*2 end
+   xor4[a*16+b],and4[a*16+b]=x,y
+  end end
+  local function op(a,b,t) a,b=a%MOD,b%MOD;local v,p=0,1;for i=1,8 do v=v+t[(a%16)*16+b%16]*p;a,b,p=math.floor(a/16),math.floor(b/16),p*16 end;return v end
+  band=function(a,b)return op(a,b,and4)end
+  bxor=function(a,b,c)local v=op(a,b,xor4);if c~=nil then v=op(v,c,xor4)end;return v end
+  bnot=function(a)return MOD-1-a%MOD end
+  shr=function(a,n)return math.floor((a%MOD)/2^n)end
+  H.fast=false;H.nativeBit=false;H.backend="lua-arithmetic"
+ end
+ if type(ror)~="function" then ror=function(a,n)a=a%MOD;return math.floor(a/2^n)+(a%2^n)*2^(32-n)end end
+ local K={1116352408,1899447441,3049323471,3921009573,961987163,1508970993,2453635748,2870763221,3624381080,310598401,607225278,1426881987,1925078388,2162078206,2614888103,3248222580,3835390401,4022224774,264347078,604807628,770255983,1249150122,1555081692,1996064986,2554220882,2821834349,2952996808,3210313671,3336571891,3584528711,113926993,338241895,666307205,773529912,1294757372,1396182291,1695183700,1986661051,2177026350,2456956037,2730485921,2820302411,3259730800,3345764771,3516065817,3600352804,4094571909,275423344,430227734,506948616,659060556,883997877,958139571,1322822218,1537002063,1747873779,1955562222,2024104815,2227730452,2361852424,2428436474,2756734187,3204031479,3329325298}
+ local function block(c,s,at)
+  local w=c.w
+  for i=1,16 do local p=at+(i-1)*4;local a,b,d,e=s:byte(p,p+3);w[i]=((a*256+b)*256+d)*256+e end
+  for i=17,64 do local x,y=w[i-15],w[i-2];local s0=bxor(ror(x,7),ror(x,18),shr(x,3));local s1=bxor(ror(y,17),ror(y,19),shr(y,10));w[i]=(w[i-16]+s0+w[i-7]+s1)%MOD end
+  local h=c.h;local a,b,d,e,f,g,j,k=h[1],h[2],h[3],h[4],h[5],h[6],h[7],h[8]
+  for i=1,64 do local s1=bxor(ror(f,6),ror(f,11),ror(f,25));local ch=bxor(j,band(f,bxor(g,j)));local t1=(k+s1+ch+K[i]+w[i])%MOD;local s0=bxor(ror(a,2),ror(a,13),ror(a,22));local maj=bxor(band(a,b),band(a,d),band(b,d));local t2=(s0+maj)%MOD;k,j,g,f,e,d,b,a=j,g,f,(e+t1)%MOD,d,b,a,(t1+t2)%MOD end
+  h[1],h[2],h[3],h[4]=(h[1]+a)%MOD,(h[2]+b)%MOD,(h[3]+d)%MOD,(h[4]+e)%MOD
+  h[5],h[6],h[7],h[8]=(h[5]+f)%MOD,(h[6]+g)%MOD,(h[7]+j)%MOD,(h[8]+k)%MOD
+ end
+ function H.new()return{h={1779033703,3144134277,1013904242,2773480762,1359893119,2600822924,528734635,1541459225},w={},buf="",bytes=0}end
+ function H.update(c,s)
+  if c.done then error("SHA already finalized")end
+  c.bytes=c.bytes+#s;s=c.buf..s;local n=#s-#s%64
+  for at=1,n,64 do block(c,s,at)end;c.buf=s:sub(n+1);return c
+ end
+ local function be(v)return string.char(math.floor(v/16777216)%256,math.floor(v/65536)%256,math.floor(v/256)%256,v%256)end
+ function H.finish(c)
+  if c.done then return c.done end
+  local bits=c.bytes*8;local pad="\128"..string.rep("\0",(55-c.bytes)%64)..be(math.floor(bits/MOD))..be(bits%MOD)
+  H.update(c,pad);local out={};for i=1,8 do out[i]=string.format("%08x",c.h[i])end;c.done=table.concat(out);return c.done
+ end
+ function H.digest(s)local c=H.new();H.update(c,s);return H.finish(c)end
+ return H
+end)()

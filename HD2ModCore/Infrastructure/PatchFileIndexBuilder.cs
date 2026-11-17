@@ -129,6 +129,8 @@ public sealed class PatchFileIndexBuilder : IPatchFileIndexBuilder
 				}
 			}
 
+			PreserveCustomModelSource(nodeDir, node.Id, files, issues, cancellationToken);
+
 			byNode[node.Id] = files
 				.OrderBy(f => f.ArchiveHex16, StringComparer.OrdinalIgnoreCase)
 				.ThenBy(f => f.NormalizedOrder)
@@ -137,6 +139,54 @@ public sealed class PatchFileIndexBuilder : IPatchFileIndexBuilder
 		}
 
 		return ValueTask.FromResult(new PatchFileIndex(DateTimeOffset.UtcNow, byNode, issues));
+	}
+
+
+	// Direct rekey replaces the custom Unit IDs in Overwrite. Keep the source
+	// namespace as an earlier group, not as a same-name override. The ordinary
+	// effective files still win for material/section/dependency edits. This is
+	// a read-only index addition: no model files or game deployment are written.
+	private void PreserveCustomModelSource(string nodeDirectory, ModNodeId nodeId,
+		List<IndexedPatchFile> files, List<CoreIssue> issues, CancellationToken cancellationToken)
+	{
+		var overwrite = ModNodePayloadLayout.GetOverwriteDirectory(nodeDirectory);
+		if (!File.Exists(Path.Combine(overwrite, ".hd2-vpk-rekey-overwrite"))) return;
+		var payload = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(nodeDirectory);
+		var model = VpkCustomModelFile.TryReadModel(nodeDirectory);
+		if (payload is null || model?.SourceItemId is not null || model?.Pieces is not { Count: > 0 }) return;
+		try
+		{
+			var expected = model.Pieces.Select(piece => Convert.ToUInt64(piece.Unit, 16)).ToHashSet();
+			var effective = RuntimeArmorResourceFilter.ReadDeployedUnitsAsync(overwrite, cancellationToken).GetAwaiter().GetResult();
+			if (expected.All(effective.Contains)) return; // self-target already retains the namespace
+			var source = RuntimeArmorResourceFilter.ReadDeployedUnitsAsync(payload, cancellationToken).GetAwaiter().GetResult();
+			if (!expected.All(source.Contains) || source.Any(unit => !expected.Contains(unit)))
+				throw new InvalidDataException("自定义素体来源 Unit 与登记不一致，不能补入映射部署载荷。");
+			var parsed = Directory.EnumerateFiles(payload, "*", SearchOption.TopDirectoryOnly)
+				.Select(path => (Path: path, Info: TryParse(path))).Where(item => item.Info is not null).ToArray();
+			foreach (var archive in parsed.GroupBy(item => item.Info!.ArchiveHex16, StringComparer.OrdinalIgnoreCase))
+			{
+				var groups = archive.Where(item => item.Info!.SidecarKind == PatchSidecarKind.Base)
+					.OrderBy(item => item.Info!.PatchIndex).ToArray();
+				for (var index = 0; index < groups.Length; index++)
+				{
+					var group = groups[index];
+					foreach (var file in archive.Where(item => item.Info!.PatchIndex == group.Info!.PatchIndex))
+					{
+						cancellationToken.ThrowIfCancellationRequested();
+						var info = new FileInfo(file.Path);
+						files.Add(new IndexedPatchFile(nodeId, file.Path, info.Name, file.Info!.ArchiveHex16,
+							file.Info.PatchIndex, index - groups.Length, file.Info.SidecarKind,
+							info.Length, info.LastWriteTimeUtc, int.MinValue + index));
+					}
+				}
+			}
+		}
+		catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException or FormatException or OverflowException)
+		{
+			issues.Add(new CoreIssue(CoreIssueSeverity.Error, "CustomModelSourceDeploymentInvalid",
+				$"无法保留自定义素体映射载荷：{exception.Message}", nodeDirectory, nodeId, exception.ToString()));
+		}
 	}
 
 	private PatchFileNameInfo? TryParse(string path)

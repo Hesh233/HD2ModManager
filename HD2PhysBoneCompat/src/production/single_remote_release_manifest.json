@@ -1,0 +1,155 @@
+{
+  "schema": "hd2-single-physics-formal-family-v1",
+  "releaseDate": "2026-11-17",
+  "identityRevision": "first-person-aim-once-v1",
+  "acceptedFeedback": {
+    "userWords": "继续之前中断任务，表现正常，ab打正式包，归档。之后分析已经开启物理并排除自身以外的物理的情况下，A包在战斗场景，为什么单玩家帧数要比4个玩家帧数高",
+    "acceptedDate": "2026-11-17",
+    "timezone": "Asia/Shanghai",
+    "scope": "A19/B20 normal behavior accepted; 1-vs-4 combat FPS still under analysis",
+    "priorFeedback": {
+      "A": "large performance improvement, still behind mainline",
+      "B": "small improvement, still behind mainline"
+    }
+  },
+  "sources": [
+    {
+      "variant": "A",
+      "runtimeVersion": "2.3.19",
+      "compatVersion": "1.3.13",
+      "policy": "self-only",
+      "runtimePath": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\HD2PhysBoneCompat\\src\\production\\single_remote_A_runtime.lua",
+      "runtimeSha256": "422b6987bd0ac90c648d9131a5bbd60ee1a7391b279a4e9dd4cc15cdd50e86e0",
+      "compatSha256": "3530bd37c701e1dea98affe1dfc30ff0716233813c011765249b57a6f821279b"
+    },
+    {
+      "variant": "B",
+      "runtimeVersion": "2.3.20",
+      "compatVersion": "1.3.13",
+      "policy": "remote-no-vrd",
+      "runtimePath": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\HD2PhysBoneCompat\\src\\production\\single_remote_B_runtime.lua",
+      "runtimeSha256": "b83090df3eaca4c3ef7b374820c76e123214398d177ad6da31cc4266ec95bb7f",
+      "compatSha256": "3530bd37c701e1dea98affe1dfc30ff0716233813c011765249b57a6f821279b"
+    }
+  ],
+  "compatPath": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\HD2PhysBoneCompat\\src\\production\\single_remote_compat.lua",
+  "templateSha256": {
+    "identity": "d19150b8abb2a6b4a9410959e4984ca1e1c4108ecaa423b5e589595cc8211673",
+    "policy": "ddcaf2a4207748b4af6393627034d0543e77154612edaf8912b4ce9c74624d16",
+    "scene": "2b23901daf9f322f5b72a6fa331a79d4375249c8614559bf40a8fa9a6dc75251",
+    "consumerCompat": "a2966fcf08a278c1a2caa44844bc1c254ef3ea22f96877794736a7a47516df37",
+    "consumerRuntime": "9e9d6b518b70565e7e7242e8f593717c42f5c16c5669c0883a4a601671e69b3c",
+    "consumerSha256": "09a23f7cc5bbd1a657bd58ebd18972a85cffd7e0f657772c0c64f57a0d2ae193",
+    "consumerProducer": "b51a67104d4b24071a8754144ad2c6646b50eae7d2ffa548b9299974c5d837d0",
+    "consumerFixBuilder": "a08fffce8fd8879e50e9e5162b047389b3edfb7e563f924a5d3ccdb32de4e593",
+    "consumerLoaderFixBuilder": "d834d8ba445c906ee1a4ee46a64eeeaa997a8968678c980c94357dd3c3cc8837",
+    "consumerCatalogEmitter": "38dd3ff9132e67950655dd322bb538682d4bf22f40822cf7429a4b37d4b1712a"
+  },
+  "fpReadOnlyContract": {
+    "resource": "d0cf4d493ca08bed",
+    "nativePrefixMinimum": 63,
+    "rootNode": 5,
+    "cameraNode": 51,
+    "cameraPositionToleranceMetres": 0.08,
+    "uniqueTpHorizontalToleranceMetres": 0.35,
+    "consecutiveFpProofs": 3,
+    "pollFramesUntilConfirmed": 20,
+    "viewProofReference": "production/native_first_person_guard.lua v1.0.0"
+  },
+  "performanceAuditDefault": false,
+  "managerEmbeddedDefaultNotChanged": true,
+  "modelsAndConfigNotWritten": true,
+  "performanceAuditRemovedFromFormal": true,
+  "sceneRevision": "ship-vrd-mission-ads-v2",
+  "shipPolicy": {
+    "A": "springs and VRD, no ADS identity check",
+    "B": "springs and VRD, no ADS identity check"
+  },
+  "sceneContract": {
+    "mainWorldFromLoader": true,
+    "levelsShip": [
+      1,
+      2
+    ],
+    "levelsMissionGreaterThan": 10,
+    "levelsZeroOrUnknownNotAutomaticallyShip": true,
+    "chefGuardedHelper": "call (api is revision number)",
+    "sceneProbeFrames": 30,
+    "sameWorldSceneChangeResetsPolicyEpochAndAdsIdentity": true
+  },
+  "userCorrection": "舰船 A 同时开启弹簧和 VRD；A/B 舰船一致，任务保持原策略",
+  "consumerRevision": "single-toc-palette-consumers-v2",
+  "consumerProof": "complete winning TOC exact bytes + ALL TOC skin palette upper bound; raw rig/driver exact; sidecar range; no render SHA",
+  "consumerModels": [
+    {
+      "modelName": "[单骨架模型]test01",
+      "rigSha256": "b41e9b270dc0b8858cb21c985cb5c67e3f70dc481bcfa1e44e94eb5af95d937e",
+      "driverRigSha256": "1bf98c29aca51dd1a04537e5c9a15c78e686561defab8c24239afb7387fd1b70",
+      "configSha256": "a4628301c66de9f6fe5ee1556812e127eed183921810b39cca392a71bde85fc0",
+      "bindSha256": "262520bcd137e0fde87e4a674f667e6cda906cf5ab2233a067cd57b9a7511e55"
+    },
+    {
+      "modelName": "[单骨架模型]Cow_QiPao_Milltina_Nick",
+      "rigSha256": "c71c3f6cc324a97fc9cfce7deaab0108dfd159f10c79449c25f3e69467bfed3e",
+      "driverRigSha256": "dc3272b489d84ea02b13bf85f6fe3f507c39db4f1c1c53a57d7829e425176f8c",
+      "configSha256": "8f1284d0f04d6a3b2c29d39f43aee9386f3398c9f6f7c784ca14f17483053eda",
+      "bindSha256": "24b72d72ba889c55e1f0bdf2f86940afa7709ba9400ad1a31154ae07e9530629"
+    },
+    {
+      "modelName": "[单骨架模型]test13",
+      "rigSha256": "908a8fd7c8d85ddabc2a1c32f33d4d0cfc329b93ae2c80533ee96b1258aefd73",
+      "driverRigSha256": "fc23a43a9ddf7e4b42e3d186f722a7d1e12c84d3732cbbc7bb50cdd414aad525",
+      "configSha256": "3e359caabe3009360519e84ada0b10cefd82dd76c9e6f9758109ae9046676012",
+      "bindSha256": "c464879c69a9b901d104fc6e695880946198cd23d8cab6d3fdfee20aafed0d49"
+    },
+    {
+      "modelName": "[单骨架模型]test15",
+      "rigSha256": "6d2d5000a02386d4d765cda62846bc584a5cd52f153367e9e2d123fa49f6cfbe",
+      "driverRigSha256": "b1b8bb338dbf254a2021322bc817d25c3a6cfe9e9c8b1820c77262cd5f53619e",
+      "configSha256": "015aa4b5a2f0e7f0c020e96085e0a8467caea393f5582a72e49eb2c6274e233c",
+      "bindSha256": "d3578771d9c602c31c3194f8d8ec8433c962f6705d38ad4100370317d97324bd"
+    }
+  ],
+  "consumerProfiles": 61,
+  "consumerDistinctResources": 39,
+  "consumerCatalogSha256": "4154cba9f2275198c13566523c06348254401d6c46b8fc57bb41e5594184c897",
+  "realGameAcceptanceStatus": "user-accepted-A19-B20-formal-not-controlled-multiplayer-FPS",
+  "supersedesRejectedVersions": [
+    "2.3.15",
+    "2.3.16",
+    "2.3.17",
+    "2.3.18"
+  ],
+  "renderGpuHashing": false,
+  "catalogEncoding": "interned-base64-once-v1",
+  "catalogEncodingStats": {
+    "uniqueBlobs": 36,
+    "uniqueRawBytes": 957672,
+    "encodedBytes": 1276944
+  },
+  "chefMaxLuaResourceBytes": 4194304,
+  "formalRelease": {
+    "path": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\physics-single-loader-accepted-formal-20261117\\formal-release.json",
+    "sha256": "1d1e8525577a4402de5dafaeb4cdbe6d5fd0d9ffde7e34482164c3862ef96f61",
+    "packages": [
+      {
+        "variant": "A",
+        "runtimeVersion": "2.3.19",
+        "compatVersion": "1.3.13",
+        "path": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-v34-b23-integrated-20261105\\manager-1.0.7\\运行时配套\\物理运行时-单骨架-A-Chef加载上限修复-2.3.19-正式版.zip",
+        "bytes": 840203,
+        "sha256": "a1234ba660a712a16a7f444d06e94b6f108300701365432e83c3728e4edcdbac",
+        "byteIdenticalToAcceptedCandidate": true
+      },
+      {
+        "variant": "B",
+        "runtimeVersion": "2.3.20",
+        "compatVersion": "1.3.13",
+        "path": "I:\\HD2SDK-CommunityEdition\\anim_batch_mod\\HD2ModManager\\outputs\\native-v34-b23-integrated-20261105\\manager-1.0.7\\运行时配套\\物理运行时-单骨架-B-Chef加载上限修复-2.3.20-正式版.zip",
+        "bytes": 840201,
+        "sha256": "12d673b72b9baaab5750b062a30cf7160873965a06849ffb29a86d835fa172b7",
+        "byteIdenticalToAcceptedCandidate": true
+      }
+    ]
+  }
+}

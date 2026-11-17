@@ -187,7 +187,7 @@ internal static class Program
         var noticeTitle = (string)build.GetField("NoticeTitle")!.GetRawConstantValue()!;
         var noticeText = (string)build.GetField("NoticeText")!.GetRawConstantValue()!;
         const string expectedNotice = "此为全量动画转换的骨架测试版本，使用自定义骨架，有效解决体型，双开门，身高，陷地问题。\n"
-            + "，物理模式暂时只兼容外置加载器兼容，物理模块需要改为安装路径文件里的“物理运行时-正式版-2.3.4.zip”\n"
+            + "物理模式当前使用A2.3.21，请使用安装路径“运行时配套\\物理运行时.zip”，仅启用一份物理运行时\n"
             + "全量动画文件替换后只能为单个mod服务，即其他甲的形状也会变成mod甲的形状\n"
             + "相关开关按钮在设置界面，开启是否询问安装骨架动画开关即可";
         Check(noticeTitle == "骨架测试版本", "Wrong startup caption"); Add("startup-title-exact");
@@ -207,8 +207,8 @@ internal static class Program
         var version = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion.Split('+')[0];
         foreach (var sample in new[] { version, "1.5.18", "2.0.0", "2.1.0-test.1" })
         {
-            Check((string)Invoke(build.GetMethod("VersionText")!, null, sample)! == "基于" + sample + " 骨架测试", "Version label is hardcoded");
-            Add("version-display-follows-input-" + sample);
+            Check((string)Invoke(build.GetMethod("VersionText")!, null, sample)! == "骨架修复1.01", "Wrong skeleton repair version");
+            Add("repair-display-independent-of-base-" + sample);
         }
 
         // Resource-only App construction must never pump the Dispatcher: Application's queued startup would run the production Shell.
@@ -263,7 +263,7 @@ internal static class Program
         PreserveSentinels(); Add("actual-service-change-callback-cannot-announce-cached-update");
         var vmType = assembly.GetType("HD2ModManager.ViewModels.AppUpdateSectionViewModel", true)!;
         var vm = Activator.CreateInstance(vmType, service)!;
-        Check(Value<string>(vm, "CurrentVersionText") == "基于" + version + " 骨架测试", "Wrong actual version label"); Add("real-viewmodel-skeleton-version-label");
+        Check(Value<string>(vm, "CurrentVersionText") == "骨架修复1.01", "Wrong actual version label"); Add("real-viewmodel-skeleton-version-label");
         foreach (var flag in new[] { "UpdatesEnabled", "AutoCheck", "AutoUpdate", "CanCheck", "CanDownload", "CanInstallNow", "HasRelease", "ShowDownloadButton", "IsDownloading", "IsReady" })
             Check(!Value<bool>(vm, flag), "Disabled build exposes active update state: " + flag);
         Add("all-update-actions-and-auto-switches-inactive-even-with-cached-release");
@@ -297,11 +297,37 @@ internal static class Program
         {
             Render(surface, width, Path.Combine(output, "settings-version-" + (int)width + ".png"));
             Check(controls.Visibility == Visibility.Collapsed && !controls.IsEnabled && controls.ActualHeight == 0, "Update region visible or occupying layout space");
-            Check(label.Text == "基于" + version + " 骨架测试" && label.ActualWidth > 0, "Compiled version label is not visible/bound");
+            Check(label.Text == "骨架修复1.01" && label.ActualWidth > 0, "Compiled version label is not visible/bound");
             Check(Descendants(controls).OfType<Button>().All(b => !b.IsEnabled), "Hidden update button remains enabled");
             Add("actual-settings-version-render-and-all-update-controls-collapsed-width-" + width);
         }
         Check(Descendants(controls).OfType<Button>().Count() == 6 && Descendants(controls).OfType<CheckBox>().Count() == 2, "Did not cover all original update buttons/auto toggles"); Add("all-six-update-buttons-and-both-auto-toggles-hidden");
+        var homeType = assembly.GetType("HD2ModManager.Views.HomePageView", true)!;
+        var home = (FrameworkElement)Activator.CreateInstance(homeType)!;
+        var homeTitle = (TextBlock)home.FindName("RepairTitleText");
+        var homeNotes = (TextBlock)home.FindName("RepairNotesText");
+        const string expectedHomeNotes = "1.01修复：\n"
+            + "1.走路动画跳变\n"
+            + "2.多人物理失效情况，舰船默认全开启物理效果（不代表战斗时的帧数），战斗切换第一人称自动启动物理效果（警告，目前会有10%性能损失。裙子的物理效果战斗性能消耗比舰船高）\n"
+            + "3.全护甲兼容chef加载器映射（暂不测试其他加载器兼容，12月还会炸一次）\n"
+            + "4.当前最新物理包为A2.3.21，后续可能还有新的版本";
+        Check(homeTitle.Text == "骨架测试版本管理器：1.01" && homeNotes.Text == expectedHomeNotes,
+            "Home-page repair title/notes differ from the requested exact text");
+        Check(homeNotes.TextWrapping == TextWrapping.Wrap, "Long performance warning is not wrapped");
+        var homeTexts = Descendants(home).OfType<TextBlock>().ToArray();
+        var firstUse = Array.FindIndex(homeTexts, t => t.Text == "第一次使用？");
+        Check(Array.IndexOf(homeTexts, homeTitle) < Array.IndexOf(homeTexts, homeNotes)
+            && Array.IndexOf(homeTexts, homeNotes) < firstUse, "Repair notes are not before first-use help");
+        Add("actual-home-exact-repair-title-four-notes-wrapping-and-first-use-order");
+        foreach (var width in new[] { 900d, 1200d })
+        {
+            home.Height = 900;
+            Render(home, width, Path.Combine(output, "home-repair-" + (int)width + ".png"));
+            Check(homeTitle.ActualHeight > 0 && homeNotes.ActualHeight > 0, "Repair content is hidden");
+            Check(homeNotes.ActualWidth <= home.ActualWidth && homeNotes.ActualHeight >= 5 * 21,
+                "Repair notes are clipped or not laying out all five lines");
+            Add("actual-home-repair-layout-width-" + width);
+        }
         PreserveSentinels(); Check(app.Windows.Count == 0, "Headless verification created a Window"); Add("headless-tests-no-native-window-or-startup-execution");
         Invoke(vmType.GetMethod("Dispose")!, vm); Invoke(serviceType.GetMethod("Dispose")!, service);
         Check(Field(updater, "_timer") is null && (bool)Field(updater, "_stopped")!, "Dispose reactivated updater");

@@ -1,0 +1,226 @@
+-- Consumer data is produced from real registered Units, not guessed bone masks.
+local Consumers = (function()
+ local catalog=@CATALOG@
+ local CP={revision="single-toc-palette-consumers-v2",hash=ConsumerHash,proofMode="toc-exact-palette-v2"}
+ local modelProof={};for _,m in ipairs(catalog.models or{})do modelProof[m.modelName]=m end
+ local rawRigs,rawDrivers=setmetatable({},{__mode="k"}),setmetatable({},{__mode="k"})
+ local oldParseRig,oldParseDrivers=M.parse_rig,M.parse_driver_rig
+ function M.parse_rig(bytes)local r,e=oldParseRig(bytes);if r then rawRigs[r]=bytes;return r end;return nil,e end
+ function M.parse_driver_rig(bytes)local r,e=oldParseDrivers(bytes);if r then rawDrivers[r]=bytes;return r end;return nil,e end
+ local byResource={}
+ for _,p in ipairs(catalog.units or{})do byResource[p.resource]=byResource[p.resource]or{};table.insert(byResource[p.resource],p)end
+ local function hex64(s,at)local a={};for i=7,0,-1 do a[#a+1]=string.format("%02x",s:byte(at+i))end;return table.concat(a)end
+ local function num64(s,at)local n=0;for i=7,0,-1 do n=n*256+(s:byte(at+i)or 0)end;if n>9007199254740991 then return nil end;return n end
+ local function close_job(j)if j.handle then pcall(j.handle.close,j.handle);j.handle=nil end end
+ function CP.close(ctx)if not ctx then return end;for _,j in ipairs(ctx.jobs or{})do close_job(j)end;ctx.closed=true end
+ local function note(ctx,fmt,...)if ctx.logger then ctx.logger("[physbone][CONSUMERS] "..fmt,...)end end
+ function CP.new(files,logger)
+  local ctx={files=files or{},jobs={},jobByKey={},rigJobs=setmetatable({},{__mode="k"}),requests={},descriptors={},serial=0,logger=logger,scan=1,closed=false}
+  table.sort(ctx.files,function(a,b)return(a.index or 0)<(b.index or 0)end)
+  return ctx
+ end
+ local function file_index(ctx,row)
+  local p=row.tocPath or row.path;if type(p)~="string"then return end
+  p=p:gsub("%.gpu_resources$","")
+  local f=io.open(p,"rb");if not f then ctx.scanFailed=true;note(ctx,"inventory unavailable path=%s",p);return end
+  local ok,why=pcall(function()
+   local h=f:read(72);if not h or#h~=72 then error("short patch header")end
+   local nt,count=u32(h,5),u32(h,9)
+   if nt>4096 or count>4096 then error("patch counts")end
+   local start=72+32*nt;local size=f:seek("end");if not size or start+count*80>size then error("patch table range")end
+   assert(f:seek("set",start));local entries=f:read(count*80);if not entries or#entries~=count*80 then error("patch table read")end
+   for i=0,count-1 do local at=1+i*80
+    if hex64(entries,at+8)=="e0a48d0be9a7453f"then
+     local rid=hex64(entries,at);local old=ctx.descriptors[rid];local index=row.index or 0
+     if not old or index>old.index then
+      local toc,gpu,stream=num64(entries,at+16),num64(entries,at+32),num64(entries,at+24)
+      local ts,ss,gs=u32(entries,at+56),u32(entries,at+60),u32(entries,at+64)
+      if not toc or not gpu or not stream or toc+ts>size or ts<128 then error("Unit payload range")end
+      ctx.descriptors[rid]={index=index,tocPath=p,tocOffset=toc,tocSize=ts,gpuPath=p..".gpu_resources",gpuOffset=gpu,gpuSize=gs,streamPath=p..".stream",streamOffset=stream,streamSize=ss}
+     elseif index==old.index and old.tocPath~=p then old.ambiguous=true end
+    end
+   end
+  end)
+  pcall(f.close,f);if not ok then ctx.scanFailed=true;note(ctx,"inventory rejected path=%s reason=%s",p,tostring(why))end
+ end
+ -- v2 proves the COMPLETE TOC byte-for-byte using native string comparison.
+ -- Its ALL-RealIndices skin-palette upper bound is valid for every legal GPU
+ -- weight/index under this TOC, unlike v1's positive-weight-only mask.
+ -- No SHA, emulated bit operations, vertex scan, or GPU contents in render.
+ local function payload_job(ctx,d,expected)
+  local key=d.tocPath..":"..tostring(d.tocOffset)..":"..tostring(d.tocSize)
+  local j=ctx.jobByKey[key]
+  if j then if j.expected~=expected then j.failed="ambiguous-exact-TOC"end;return j end
+  j={kind="file",path=d.tocPath,start=d.tocOffset,offset=0,length=d.tocSize,expected=expected,priority=0}
+  ctx.jobs[#ctx.jobs+1]=j;ctx.jobByKey[key]=j;return j
+ end
+ local function valid_range(ctx,path,offset,length)
+  if length==0 then return true end
+  local key=path..":"..tostring(offset)..":"..tostring(length)
+  if ctx.rangeResults==nil then ctx.rangeResults={}end
+  if ctx.rangeResults[key]~=nil then return ctx.rangeResults[key]end
+  local f=io.open(path,"rb");local good=false
+  if f then local ok,size=pcall(f.seek,f,"end");pcall(f.close,f);good=ok and type(size)=="number"and offset>=0 and length>=0 and offset+length<=size end
+  ctx.rangeResults[key]=good;return good
+ end
+ local function resource(session)return M.test1201_resource_id(session.S,session.unit)end
+ function CP.request(ctx,s)
+  if not ctx or ctx.closed or s.singleMainline~=true then return nil,"not-single"end
+  local rid=s.consumerResource or resource(s);s.consumerResource=rid
+  local list=rid and byResource[rid];if not list then return nil,"unregistered-resource"end
+  local rb,db=rawRigs[s.rig],s.rig.drivers and rawDrivers[s.rig.drivers]
+  if not rb or not db then return nil,"unverified-rig-source"end
+  local req=ctx.requests[rid..":"..tostring(s.rig)]
+  if not req then
+   req={rid=rid,list=list,pair={r={bytes=rb},d={bytes=db}},status="pending"}
+   ctx.requests[rid..":"..tostring(s.rig)]=req;ctx.done=false
+  end
+  return req,"pending"
+ end
+ local function reject(ctx,r,reason)r.status="rejected";r.reason=reason;ctx.serial=ctx.serial+1 end
+ local function advance_request(ctx,r)
+  if r.status~="pending"or ctx.scan<=#ctx.files then return end
+  if ctx.scanFailed then reject(ctx,r,"inventory-incomplete");return end
+  local d=ctx.descriptors[r.rid]
+  if not d or d.ambiguous then reject(ctx,r,"no-unique-winning-Unit");return end
+  if not r.candidates then
+   r.candidates={}
+   for _,p in ipairs(r.list)do local m=modelProof[p.model]
+    if p.proofMode==CP.proofMode and m and m.rigExact==r.pair.r.bytes and m.driverExact==r.pair.d.bytes and
+       type(p.tocExact)=="string"and#p.tocExact==p.tocBytes and p.tocBytes==d.tocSize and p.gpuBytes==d.gpuSize and p.streamBytes==d.streamSize then
+     r.candidates[#r.candidates+1]=p
+    end
+   end
+   if#r.candidates==0 then reject(ctx,r,"rig-exact-or-payload-size");return end
+   -- Multiple registered shapes with this resource cannot share an unproved mask.
+   local expected=r.candidates[1].tocExact
+   for _,p in ipairs(r.candidates)do if p.tocExact~=expected then reject(ctx,r,"ambiguous-exact-profile");return end end
+   r.toc=payload_job(ctx,d,expected)
+  end
+  if r.toc.failed then reject(ctx,r,"winning-Unit-exact-bytes");return end
+  if not r.toc.matched then return end
+  local p=r.candidates[1]
+  if not valid_range(ctx,d.gpuPath,d.gpuOffset,d.gpuSize)or not valid_range(ctx,d.streamPath,d.streamOffset,d.streamSize)then reject(ctx,r,"geometry-range");return end
+  r.profile=p;r.status="ready";r.reason="Unit-exact+all-palette+rig-exact";ctx.serial=ctx.serial+1
+ end
+ function CP.tick(ctx,budget)
+  if not ctx or ctx.closed or ctx.done then return end
+  if ctx.scan<=#ctx.files then file_index(ctx,ctx.files[ctx.scan]);ctx.scan=ctx.scan+1;if ctx.scan>#ctx.files then ctx.serial=ctx.serial+1 end;return end
+  for _,r in pairs(ctx.requests)do advance_request(ctx,r)end
+  local chosen
+  for _,j in ipairs(ctx.jobs)do if not j.matched and not j.failed then chosen=j;break end end
+  if chosen then local j=chosen;local n=math.min(math.max(64,math.min(budget or 8192,8192)),j.length-j.offset)
+   local ok,why=pcall(function()
+    if n>0 then
+     if not j.handle then j.handle=assert(io.open(j.path,"rb"),"payload-open");local size=j.handle:seek("end");if not size or j.start+j.length>size then error("payload-size")end;assert(j.handle:seek("set",j.start))end
+     local bytes=j.handle:read(n)
+     if not bytes or#bytes~=n then error("payload-short-read")end
+     if bytes~=j.expected:sub(j.offset+1,j.offset+n)then error("exact-TOC-mismatch")end
+     j.offset=j.offset+n
+    end
+    if j.offset==j.length then j.matched=true;j.expected=nil;close_job(j);ctx.serial=ctx.serial+1 end
+   end)
+   if not ok then close_job(j);j.failed=tostring(why);j.expected=nil;ctx.serial=ctx.serial+1;note(ctx,"proof read rejected reason=%s",tostring(why))end
+  end
+  for _,r in pairs(ctx.requests)do advance_request(ctx,r)end
+  if not chosen then local pending=false;for _,r in pairs(ctx.requests)do if r.status=="pending"then pending=true;break end end;ctx.done=not pending end
+ end
+ local function roots(s)
+  s.consumerFullSessions=s.consumerFullSessions or s.sessions
+  s.consumerFullDrivers=s.consumerFullDrivers or s.drivers or{}
+  return s.consumerFullSessions,s.consumerFullDrivers
+ end
+ local function validate(s,p)
+  if p.proofMode~=CP.proofMode or p.palettePolicy~="all-toc-RealIndices-v1"or type(p.skinPaletteNodes)~="table"then return nil,"not-palette-v2"end
+  if s.nodeCount~=p.nodeCount or s.test1201Source~=nil then return nil,"node-count-or-source-route"end
+  if is16Rig(s.rig) and s.test16Resource~=p.resource then return nil,"T16-exact-gate"end
+  if #p.parents~=p.nodeCount or #p.nodeHashes~=p.nodeCount then return nil,"full-node-tables"end
+  for i=1,p.nodeCount do local seen={};local n=i;for step=1,p.nodeCount+1 do if seen[n]then return nil,"parent-cycle"end;seen[n]=true;local v=p.parents[n];if type(v)~="number"or v%1~=0 or v< -1 or v>=p.nodeCount then return nil,"parent-index"end;if v<0 then break end;n=v+1 end end
+  if M.session_health(s,M.frame)~="ok"then return nil,"not-live"end
+  local chains,drivers=roots(s);local allNodes={};local count=0
+  for _,item in ipairs(chains)do for k,b in ipairs(item.chain)do
+   local e=p.bindings[b.name];local n=item.nodes[k];local base=item.basePoses[k]
+   if k==1 then local anchor=p.bindings[b.parentName];if not anchor or anchor.node~=item.anchorNode then return nil,"chain-anchor-layout"end end
+   if not e or e.node~=n or not base or not sClose({p={base.px,base.py,base.pz},q=base.r},{p=e.p,q=e.q},1e-5)then return nil,"full-spring-bind"end
+   if allNodes[n]then return nil,"duplicate-spring-node"end;allNodes[n]=true;count=count+1
+  end end
+  if count~=#s.rig.bones then return nil,"incomplete-full-spring-layout"end
+  local expectedDrivers=0;local driverByName={};for _,b in ipairs(s.rig.drivers and s.rig.drivers.bones or{})do if not M.is_wrist_driver(b)then expectedDrivers=expectedDrivers+1;driverByName[b.name]=b end end
+  if #drivers~=expectedDrivers then return nil,"incomplete-full-driver-layout"end
+  -- The original attach decides wrist policy. Validate every surviving driver,
+  -- never query or restore an excluded wrist to fill a consumer table.
+  for _,d in ipairs(drivers)do local raw=driverByName[d.name];local ep=raw and p.bindings[raw.parentName];local ec=raw and p.bindings[raw.controlName]
+   if not ep or not ec or ep.node~=d.parentNode or ec.node~=d.controlNode then return nil,"driver-control-or-parent-layout"end
+   local e=p.bindings[d.name]
+   if not e or e.node~=d.node or not d.base or not sClose({p={d.base.px,d.base.py,d.base.pz},q=d.base.r},{p=e.p,q=e.q},1e-5)then return nil,"full-driver-bind"end
+  end
+  local needed={};for _,list in ipairs({p.skinPaletteNodes,p.nativeNodes,p.nonMeshNodes})do for _,n in ipairs(list or{})do if n<0 or n>=p.nodeCount then return nil,"consumer-index"end;needed[n+1]=true end end
+  local function parent_close()
+   local add=false;for n in pairs(needed)do local v=p.parents[n];if type(v)~="number"or v>=p.nodeCount then return nil end;if v>=0 and not needed[v+1]then needed[v+1]=true;add=true end end;return add
+  end
+  local cs,ds={},{}
+  for pass=1,p.nodeCount+1 do
+   local changed=parent_close();if changed==nil then return nil,"parent-table"end
+   for i,item in ipairs(chains)do local use=false;for _,n in ipairs(item.nodes)do if needed[n]then use=true end end
+    if use then if not cs[i]then cs[i]=true;changed=true end;for _,n in ipairs(item.nodes)do if not needed[n]then needed[n]=true;changed=true end end;if not needed[item.anchorNode]then needed[item.anchorNode]=true;changed=true end end
+   end
+   for i,d in ipairs(drivers)do if needed[d.node]then if not ds[i]then ds[i]=true;changed=true end;for _,n in ipairs({d.node,d.parentNode,d.controlNode})do if not needed[n]then needed[n]=true;changed=true end end end end
+   if not changed then return{chains=cs,drivers=ds,needed=needed}end
+  end
+  return nil,"cyclic-dependencies"
+ end
+ local beforeRelease=M.release
+ function CP.unapply(s)
+  if s.consumerFullSessions then s.sessions=s.consumerFullSessions;s.drivers=s.consumerFullDrivers end
+  s.consumerMode=nil;s.consumerApplied=nil;s.consumerPending=true
+ end
+ local function apply(s,p,selection)
+  local full,drivers=roots(s);local keep,drop,kd,dd={},{},{},{}
+  for i,item in ipairs(full)do if selection.chains[i]then keep[#keep+1]=item else drop[#drop+1]=item end end
+  for i,d in ipairs(drivers)do if selection.drivers[i]then kd[#kd+1]=d else dd[#dd+1]=d end end
+  local restored=0
+  if s.consumerDidUpdate and(#drop>0 or#dd>0)then
+   local partial={};for k,v in pairs(s)do partial[k]=v end;partial.sessions,partial.drivers=drop,dd
+   restored=beforeRelease(partial)or 0
+  else
+   for _,item in ipairs(drop)do M.reset_linear_state(item.tip);item.lastWritten=nil end
+   for _,d in ipairs(dd)do d.lastWritten,d.smoothedQ=nil,nil end
+  end
+  s.sessions,s.drivers=keep,kd;s.consumerMode=#keep==0 and(#kd==0 and"empty"or"drivers")or"active"
+  s.consumerApplied=p;s.consumerPending=false;s.consumerReason="verified";s.pendingDt=0
+  return restored
+ end
+ function CP.bind(ctx,s)
+  if not s or s.singleMainline~=true then return false end
+  if s.consumerContext~=ctx then CP.unapply(s);s.consumerContext=ctx;s.consumerRequest=nil;s.consumerPending=true end
+  if not s.consumerPending then return s.consumerMode~=nil end
+  local req,why=CP.request(ctx,s);s.consumerRequest=req
+  if not req then s.consumerPending=false;s.consumerReason=why;return false end
+  if req.status=="rejected"then s.consumerPending=false;s.consumerReason=req.reason;note(ctx,"full fallback resource=%s reason=%s",s.consumerResource,tostring(req.reason));return false end
+  if req.status~="ready"then return false end
+  local selection,error=validate(s,req.profile)
+  if not selection then s.consumerPending=false;s.consumerReason=error;note(ctx,"full bind fallback resource=%s reason=%s",s.consumerResource,tostring(error));return false end
+  local restored=apply(s,req.profile,selection)
+  note(ctx,"selected resource=%s mode=%s chains=%d/%d drivers=%d/%d handback=%d proof=Unit-exact+all-TOC-palette+rig-exact+geometry-range;render-SHA=0",s.consumerResource,s.consumerMode,#s.sessions,#s.consumerFullSessions,#s.drivers,#s.consumerFullDrivers,restored)
+  return true
+ end
+ function CP.hasWork(s)return s.consumerMode~="empty"and(s.consumerMode~="drivers"or(s.evaluateDrivers~=false and#(s.drivers or{})>0))end
+ CP.catalog=catalog
+ return CP
+end)()
+M.consumer_api=Consumers
+M.CONSUMER_REVISION=Consumers.revision
+local consumerUpdate=M.update
+function M.update(session,dt,maxWrite)
+ if session and session.consumerMode=="empty"then session.pendingDt,session.engineCalls,session.skippedSame=0,0,0;return 0 end
+ if session and session.consumerMode=="drivers"then
+  if session.singleRemotePhysicsExcluded or session.evaluateDrivers==false then return 0 end
+  if M.session_health(session,M.frame)~="ok"then return 0 end
+  if session.consumerDriverFrame==M.frame and M.frame~=nil then return 0 end;session.consumerDriverFrame=M.frame
+  local wrote=M.update_drivers(session,dt);session.skippedSame=math.max(0,#session.drivers-wrote)
+  if wrote>0 and session.world then session.S.World.update_unit(session.world,session.unit)end
+  session.consumerDidUpdate=true;return wrote
+ end
+ if session and session.singleMainline and not session.singleRemotePhysicsExcluded then session.consumerDidUpdate=true end
+ return consumerUpdate(session,dt,maxWrite)
+end

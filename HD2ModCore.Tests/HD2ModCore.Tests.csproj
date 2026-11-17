@@ -21,6 +21,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\HD2ModManager\ViewModels\VpkTargetArmorOption.cs" Link="VpkTargetArmorOption.cs" />
     <Compile Include="..\HD2ModManager\Services\VpkModelDecision.cs" Link="VpkModelDecision.cs" />
     <Compile Include="..\HD2ModManager\Services\VpkImportRollbackPolicy.cs" Link="VpkImportRollbackPolicy.cs" />
     <Compile Include="..\HD2ModManager\Services\SingleSkeletonAnimationReport.cs" Link="SingleSkeletonAnimationReport.cs" />

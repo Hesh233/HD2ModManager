@@ -231,10 +231,10 @@ do
 	local S, unit, engineState, calls = make_engine(100)
 	local session = M.attach(S, unit, make_rig(), { logger = quiet(), world = {} })
 	session.identityEvery = 1
-	check("有抽样骨名 id", type(session.identityNode) == "number", tostring(session.identityNode))
+	check("保存稳定骨名而非跨帧 IdString32", type(session.identityNode) == "string", tostring(session.identityNode))
 	local originalHasNode = S.Unit.has_node
 	S.Unit.has_node = function(_, id)
-		if id == session.identityNode then return false end
+		if id == session.identityNode or id == S.Application.string_to_id32(session.identityNode) then return false end
 		return originalHasNode(_, id)
 	end
 	calls.violation = nil

@@ -37,6 +37,9 @@ class PackagingTests(unittest.TestCase):
         (self.install / 'anim_batch_mod').mkdir()
         shutil.copy2(INSTALL / 'anim_batch_mod/build-info.json', self.install / 'anim_batch_mod/build-info.json')
         self.manifest = json.loads((TOOL / 'package-manifest.json').read_text(encoding='utf-8-sig'))
+        installed_info = json.loads((self.install / 'anim_batch_mod/build-info.json').read_text(encoding='utf-8-sig'))
+        self.manifest['physicsRuntimeVersion'] = installed_info['physicsRuntimeVersion']
+        self.manifest['physicsCompatVersion'] = installed_info['physicsCompatVersion']
         self.manifest['full'] = self.manifest['startup'] = ['HD2ModManager.dll', 'HD2ModCore.dll', 'HD2GameItemAssets.dll']
         self.write_manifest()
 
@@ -188,8 +191,8 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(report['generatedArtifactCount'], 1)
         self.assertEqual(report['payloadCount'], 3)
         proof = report['productionArtifacts'][0]['provenance']
-        self.assertEqual(proof['runtimeVersion'], '2.3.4')
-        self.assertEqual(proof['compatVersion'], '1.3.4')
+        self.assertEqual(proof['runtimeVersion'], self.manifest['physicsRuntimeVersion'])
+        self.assertEqual(proof['compatVersion'], self.manifest['physicsCompatVersion'])
         self.assertEqual(proof['zipSha256'], hashlib.sha256(artifact).hexdigest())
         self.assertEqual(before, {n: hashlib.sha256((self.install / n).read_bytes()).hexdigest() for n in before})
         self.assertFalse(list((self.install / '非运行文件/打包输出').glob('.physics-*')))
@@ -290,11 +293,21 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(generated['managerVersion'], self.manifest['managerVersion'])
 
     def test_sync_does_not_assign_new_direct_backend_to_old_install(self):
+        # This is an explicit legacy-metadata fixture, independent of whichever
+        # newer backend the real manager installation currently carries.
+        path = self.install / 'anim_batch_mod/build-info.json'
+        metadata = json.loads(path.read_text(encoding='utf-8-sig'))
+        for key in list(metadata):
+            if key.startswith(('directPhysics', 'skeletonRepair')) or key in ['physicsRouteVersion', 'physicsRoutingPolicy', 'physicsSourceFiles']:
+                del metadata[key]
+        metadata['physicsRuntimeVersion'] = '2.3.6'
+        metadata['physicsCompatVersion'] = '1.3.6'
+        path.write_text(json.dumps(metadata), encoding='utf-8')
         self.run_sync('-Apply', include_static=False)
         generated = json.loads((self.tools / 'package-manifest.json').read_text(encoding='utf-8-sig'))
         self.assertNotIn('physicsRoutingPolicy', generated)
         self.assertNotIn('directPhysicsRuntimeVersion', generated)
-        self.assertEqual(generated['physicsRuntimeVersion'], '2.3.4')
+        self.assertEqual(generated['physicsRuntimeVersion'], '2.3.6')
 
     def test_sync_uses_installation_declared_backend_fields(self):
         path = self.install / 'anim_batch_mod/build-info.json'
@@ -361,6 +374,26 @@ class PackagingTests(unittest.TestCase):
         output = self.work / 'unused output'
         self.run_package('-CheckOnly', '-OutputDirectory', str(output))
         self.assertFalse(output.exists())
+
+    def test_actual_runtime_version_mismatch_refused(self):
+        self.manifest['physicsRuntimeVersion'] = '99.0.0'
+        self.assertIn('Installed physics version differs', self.run_package('-CheckOnly', ok=False).stdout)
+
+    def test_actual_compat_version_mismatch_refused(self):
+        self.manifest['physicsCompatVersion'] = '99.0.0'
+        self.assertIn('Installed physics version differs', self.run_package('-CheckOnly', ok=False).stdout)
+
+    def test_legacy_physics_cannot_be_relabeled_as_repair_build(self):
+        path = self.install / 'anim_batch_mod/build-info.json'
+        info = json.loads(path.read_text(encoding='utf-8-sig'))
+        info['skeletonRepairPhysicsRuntimeVersion'] = '99.0.0'
+        info['skeletonRepairPhysicsCompatVersion'] = self.manifest['physicsCompatVersion']
+        path.write_text(json.dumps(info), encoding='utf-8')
+        self.assertIn('explicit A21 physics source binding', self.run_package('-CheckOnly', ok=False).stdout)
+
+    def test_stale_repair_revision_refused(self):
+        self.manifest['skeletonRepairVersion'] = '99.0'
+        self.assertIn('Skeleton repair version differs', self.run_package('-CheckOnly', ok=False).stdout)
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

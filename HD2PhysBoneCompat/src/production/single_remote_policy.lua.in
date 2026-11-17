@@ -1,0 +1,31 @@
+-- Formal single-skeleton policies: ship VRD bypass, mission one-time ADS identity.
+RemotePhysics={REVISION="ship-vrd-mission-ads-v2",DEFAULT="@POLICY@"}
+@SCENE@
+function RemotePhysics.bind(single,session)
+ if session.singleMainline~=true or single.options.singleFormalPolicy==false then return end
+ local epoch=single.physicsEpoch or 0
+ if session.singleFormalEpoch==epoch and session.singleFormalOwner==session.owner then return end
+ local ship=single.sceneMode=="ship"
+ local own=single.selfUnit~=nil and session.owner==single.selfUnit
+ if session.singleRemoteBaseEvaluateDrivers==nil then session.singleRemoteBaseEvaluateDrivers=session.evaluateDrivers~=false end
+ local springOff=not ship and RemotePhysics.DEFAULT=="self-only" and not own
+ local vrdOff=not ship and not own
+ if Compat.single_remote_policy_transition then
+  local ok,why=pcall(Compat.single_remote_policy_transition,session,springOff and vrdOff,vrdOff)
+  if not ok and not session.singleFormalErrorLogged then session.singleFormalErrorLogged=true;single.logger("[physbone][FORMAL] transition-error=%s",tostring(why)) end
+ end
+ session.singleRemotePhysicsExcluded=springOff and vrdOff
+ session.singleRemoteVrdExcluded=vrdOff
+ session.singleRemoteIsSelf,session.singleRemoteIsRemote=own,not own
+ session.evaluateDrivers=session.singleRemoteBaseEvaluateDrivers and not vrdOff
+ session.singleFormalEpoch,session.singleFormalOwner=epoch,session.owner
+ if session.singleRemotePhysicsExcluded then session.pendingDt,session.singleDue=0,false end
+end
+function RemotePhysics.frame(runtime)
+ runtime.remoteFrameDriverWrites,runtime.selfFrameDriverWrites=0,0
+end
+M.FORMAL_PHYSICS_VARIANT="@VARIANT@"
+M.REMOTE_PHYSICS_POLICY=RemotePhysics.DEFAULT
+M.IDENTITY_POLICY="first-person-aim-once-v1"
+M.SCENE_POLICY=RemotePhysics.REVISION
+M.remote_physics_policy=RemotePhysics

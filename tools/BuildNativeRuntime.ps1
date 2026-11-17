@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param([string] $PythonArchive = (Join-Path $PSScriptRoot 'python-runtime-cache\python-3.11.9-embed-amd64.zip'))
 $ErrorActionPreference = 'Stop'
 $managerRoot = Split-Path -Parent $PSScriptRoot
@@ -17,7 +17,7 @@ if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notl
 }
 # Isolated stdlib plus the sibling source directory; main.py adds the package parent.
 "python311.zip`n.`n..`n" | Set-Content -LiteralPath (Join-Path $pythonDirectory 'python311._pth') -Encoding ascii
-$names = @('__init__.py','main.py','cli.py','native_skeleton.py','native_animation.py','native_arm_reference.py','attachment_skeleton.py','runtime_companions.py','attachment_repair_profile.py','attachment_repair_policy.json','attachment-fix.json','single_skeleton.py','single_animation_compaction.py','playback_reference.py','native_config.py','motion_skeleton.py','archive.py','batch.py','binary.py','constants.py','formats.py','math3d.py','processor.py','weapon_grip_targets.json','config.toml')
+$names = @('__init__.py','main.py','cli.py','native_skeleton.py','native_animation.py','native_arm_reference.py','attachment_skeleton.py','runtime_companions.py','attachment_repair_profile.py','attachment_repair_policy.json','attachment-fix.json','single_skeleton.py','single_animation_compaction.py','test_single_leg_ik.py','playback_reference.py','native_config.py','motion_skeleton.py','archive.py','batch.py','binary.py','constants.py','formats.py','math3d.py','processor.py','weapon_grip_targets.json','config.toml')
 foreach ($name in $names) { Copy-Item -LiteralPath (Join-Path $animationRoot $name) -Destination $runtime -Force }
 # Lossless R2 template is a required, independently versioned single-route dependency.
 $singleTemplate = Join-Path $animationRoot 'presets\single-normal-reference\playback.zip'
@@ -54,19 +54,33 @@ foreach ($relative in @('__init__.py','version.py','LICENSE.txt','_version.cp311
 if ($LASTEXITCODE -ne 0) { throw 'Official Python + source entry point failed.' }
 $manifest = [ordered]@{ builtUtc=[DateTime]::UtcNow.ToString('o'); runtime='Official CPython 3.11.9 embeddable x64';
     archiveSha256=(Get-FileHash -LiteralPath $PythonArchive -Algorithm SHA256).Hash;
-    signer=$signature.SignerCertificate.Subject; pipelineVersion='1.0.15'; singleSkeletonPipelineVersion='1.0.22'; singleIkBendPlaneRevision='relative-normal-reject-r1'; singleFingerSegmentPolicy='native-axis-source-length-finger-chain-v1'; singleOutputEncodingProfile='single-constant-float-boundary2-v1'; singleProcessingProfile='standard-single-v3-normal-reference'; singlePlaybackRevision='normal-reference-r2'; singlePlaybackReferenceSha256='4030765f8066141df8ecd0440322d128a4827d2cf9f5064a3a918b34eaefbf18'; singleAnimationProgress='stderr-v1'; runtimePolicy='b23-1.0.8'; luaVersion='1.0.19'; legacyLuaVersion='1.0.17'; runtimeCompanionVersion='1.0.19'; firstPersonSourceVersion='1.0.1'; optionSwitchSchema='hd2-grip-switches-v1'; runtimeCompanionLayout='paired-standard-manifest-v1'; physicsRuntimeVersion='2.3.4'; physicsCompatVersion='1.3.4'; physicsPackageLayout='arsenal-flat-root-v1'; physicsPackageExportRevision='20261110-accepted'; gripFixVersion='test07-1.0.11'; gripFixRevision='bounded-runtime-logs-20261107';
+    signer=$signature.SignerCertificate.Subject; pipelineVersion='1.0.15'; singleSkeletonPipelineVersion='1.0.22'; singleLegIkRevision='single-leg-bind-pole-soft-reach-r1'; singleLegIkSoftReachRatio=0.015; singleIkBendPlaneRevision='relative-normal-reject-r1'; singleFingerSegmentPolicy='native-axis-source-length-finger-chain-v1'; singleOutputEncodingProfile='single-constant-float-boundary2-v1'; singleProcessingProfile='standard-single-v3-normal-reference'; singlePlaybackRevision='normal-reference-r2'; singlePlaybackReferenceSha256='4030765f8066141df8ecd0440322d128a4827d2cf9f5064a3a918b34eaefbf18'; singleAnimationProgress='stderr-v1'; runtimePolicy='b23-1.0.8'; luaVersion='1.0.19'; legacyLuaVersion='1.0.17'; runtimeCompanionVersion='1.0.19'; firstPersonSourceVersion='1.0.1'; optionSwitchSchema='hd2-grip-switches-v1'; runtimeCompanionLayout='paired-standard-manifest-v1'; physicsRuntimeVersion='2.3.7'; physicsCompatVersion='1.3.7'; physicsPackageLayout='arsenal-flat-root-v1'; physicsPackageExportRevision='20261116-multiplayer-skeleton-fix'; gripFixVersion='test07-1.0.11'; gripFixRevision='bounded-runtime-logs-20261107';
     presetFiles=@((Get-ChildItem -LiteralPath $preset -File | ForEach-Object { @{name=('presets/native-v15/'+$_.Name);sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash} }); @{name='presets/single-normal-reference/playback.zip';sha256=(Get-FileHash -LiteralPath $singleTemplate -Algorithm SHA256).Hash});
     files=@($names | ForEach-Object { @{name=$_;sha256=(Get-FileHash -LiteralPath (Join-Path $runtime $_) -Algorithm SHA256).Hash} }) }
 $manifest.attachmentFixConfigSha256 = (Get-FileHash -LiteralPath (Join-Path $animationRoot 'attachment-fix.json')).Hash.ToLowerInvariant()
 $manifest.managerVersion = '1.5.17'
+$manifest.skeletonRepairVersion = '1.01'
+$manifest.skeletonRepairPhysicsRuntimeVersion = '2.3.21'
+$manifest.skeletonRepairPhysicsCompatVersion = '1.3.13'
+# The GUI repair build requires an explicit A21 source binding after compilation; do not relabel legacy physics.
 $manifest.directPhysicsRuntimeVersion = '2.1.45'
 $manifest.directPhysicsCompatVersion = '1.0.0'
 $manifest.physicsRouteVersion = '1.0.0'
 $manifest.physicsRoutingPolicy = 'explicit-route-legacy-local-v1'
+$manifest.physicsSinglePolicy = 'single-v3-master-b78e63e'
+$manifest.physicsSingleUpstreamRuntimeVersion = '2.1.45'
+$manifest.physicsLegacySkeletonRuntimeVersion = '2.3.6'
+$manifest.physicsRealFpsAccepted = $false
 $physicsSourceRoot = Join-Path $managerRoot 'HD2PhysBoneCompat/src'
 $manifest.physicsSourceFiles = @('physbone_compat.lua', 'physbone_runtime.lua', 'direct/physbone_compat.lua', 'direct/physbone_runtime.lua', 'physbone_routes.lua') | ForEach-Object {
     @{ name=$_; sha256=(Get-FileHash -LiteralPath (Join-Path $physicsSourceRoot $_) -Algorithm SHA256).Hash.ToLowerInvariant() }
 }
+$test16Profile = Join-Path $physicsSourceRoot 'production/test16_breast_stability_profile.json'
+$manifest.acceptedTest16BreastFix = @{ status='fixed'; acceptedByUser=$true; date='2026-11-16';
+    scope='test16 chest spring jitter; exact accepted rig/resources/binds'; revision='test16-nominal-angular-radius-r1';
+    changedRoots=@('Breast_L','Breast_R'); preciseResourceCount=25; springBindsPerResource=64;
+    profileSha256=(Get-FileHash -LiteralPath $test16Profile -Algorithm SHA256).Hash.ToLowerInvariant();
+    runtimeVersion='2.3.7'; compatVersion='1.3.7'; diagnosticsDefaultEnabled=$false; modelsOrAnimationsRebuilt=$false }
 $manifest.attachmentRepairPolicyVersion = '1.0.19'
 $manifest.attachmentRepairPolicyRevision = 'accepted-tp-profile-r1-20261112'
 $manifest.attachmentRepairPolicySha256 = (Get-FileHash -LiteralPath (Join-Path $runtime 'attachment_repair_policy.json')).Hash.ToLowerInvariant()

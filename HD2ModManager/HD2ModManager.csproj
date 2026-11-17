@@ -4,7 +4,7 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
-    <!-- 程序版本号（SemVer）。骨架测试设置页显示“基于此版本 骨架测试”；后续同步上游代码需更新此处 Version。
+    <!-- 程序版本号（SemVer）。骨架修复设置页显示独立的 RepairVersion（1.01）；后续同步上游代码需更新此处 Version。
          发布脚本也据此给压缩包命名。骨架测试分支停用应用内更新，不另行硬编码界面版本。 -->
     <Version>1.5.17</Version>
     <ApplicationIcon>Resources\helldivers2.ico</ApplicationIcon>

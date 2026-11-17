@@ -339,6 +339,7 @@ class _ProcessOptions:
     source_arm_constraints: bool
     preserve_playback_timing: bool
     preserve_unchanged_bytes: bool
+    stabilize_leg_ik: bool = False
 
 
 @dataclass(frozen=True)
@@ -394,6 +395,7 @@ def _run_batch_animation(task: _ProcessTask):
             source_arm_constraints=options.source_arm_constraints,
             preserve_playback_timing=options.preserve_playback_timing,
             playback_reference=playback_reference,
+            stabilize_leg_ik=options.stabilize_leg_ik,
         )
         modified_entry = copy.deepcopy(task.animation_entry)
         modified_entry.toc_data = bytearray(
@@ -437,6 +439,7 @@ def build_batch_entries(
     preserve_playback_timing: bool = False,
     preserve_unchanged_bytes: bool = False,
     playback_reference_loader: Callable[[int], bytes] | None = None,
+    stabilize_leg_ik: bool = False,
 ) -> BatchBuildResult:
     if isinstance(threads, bool) or not isinstance(threads, int) or not 1 <= threads <= 16:
         raise ValueError("threads must be an integer between 1 and 16")
@@ -508,6 +511,7 @@ def build_batch_entries(
                     source_arm_constraints=source_arm_constraints,
                     preserve_playback_timing=preserve_playback_timing,
                     playback_reference=playback_reference,
+                    stabilize_leg_ik=stabilize_leg_ik,
                 )
                 modified_entry = copy.deepcopy(animation_entry)
                 modified_entry.toc_data = bytearray(animation_entry.toc_data if preserve_unchanged_bytes and modification.unchanged else animation.to_bytes())
@@ -557,6 +561,7 @@ def build_batch_entries(
             source_arm_constraints=source_arm_constraints,
             preserve_playback_timing=preserve_playback_timing,
             preserve_unchanged_bytes=preserve_unchanged_bytes,
+            stabilize_leg_ik=stabilize_leg_ik,
         )
         pending = deque()
         remaining = iter(enumerate(jobs, start=1))

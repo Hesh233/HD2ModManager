@@ -17,9 +17,9 @@ local function check(condition, message, detail)
 	checks = checks + 1
 	if not condition then
 		failures = failures + 1
-		io.stderr:write("  ✗ " .. message .. (detail ~= nil and ("  [" .. tostring(detail) .. "]") or "") .. "\n")
+		print("  FAIL " .. message .. (detail ~= nil and ("  [" .. tostring(detail) .. "]") or ""))
 	else
-		io.stdout:write("  ✓ " .. message .. "\n")
+		print("  PASS " .. message)
 	end
 end
 

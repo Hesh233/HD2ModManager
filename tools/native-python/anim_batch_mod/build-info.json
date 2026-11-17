@@ -11,7 +11,7 @@
   "singleAnimationProgress": "stderr-v1",
   "runtimePolicy": "b23-1.0.8",
   "luaVersion": "1.0.19",
-  "physicsRuntimeVersion": "2.3.4",
+  "physicsRuntimeVersion": "2.3.7",
   "gripFixVersion": "test07-1.0.11",
   "gripFixRevision": "bounded-runtime-logs-20261107",
   "presetFiles": [
@@ -86,7 +86,7 @@
       "name": "attachment-fix.json"
     },
     {
-      "sha256": "240F7CBFD07E218F87B44CE2397BAF18B121C27EFEC251703843B193D248146A",
+      "sha256": "3506ca59f9730e912391fb2d66d3cabb96d68d88999aff05ff33a731aeaa0bbb",
       "name": "single_skeleton.py"
     },
     {
@@ -106,7 +106,7 @@
       "name": "archive.py"
     },
     {
-      "sha256": "50737C012EB94D109DBCD952B2B818065701B908FC2ACE6821ADFAD4F67C8FFE",
+      "sha256": "6d3f941ae044016a34c5dc1bbc6c512cd56734efd429b2c4a28d037f634961c2",
       "name": "batch.py"
     },
     {
@@ -126,7 +126,7 @@
       "name": "math3d.py"
     },
     {
-      "sha256": "E483C5FA65BAC68E3520E738720979E33CA3FD7C09C357B749C189452B82E128",
+      "sha256": "26c8f7d89e9cabc7eb1518a75c30c5fdbafb96c90b3fb42e98e2b18ebd7b915a",
       "name": "processor.py"
     },
     {
@@ -152,13 +152,17 @@
     {
       "name": "runtime_companions.py",
       "sha256": "89ADDA90E3E0BF46FBCA8F4CF2C3993113D6E72AE047B8A6BF0E288FBC037904"
+    },
+    {
+      "name": "test_single_leg_ik.py",
+      "sha256": "98e4d98bc5a36a9362f3e1adec7c60dca95de87dd3b8118a4f3fe92b8f55344e"
     }
   ],
   "singleOutputEncodingProfile": "single-constant-float-boundary2-v1",
   "singleBoundaryFramesEachEnd": 2,
-  "physicsCompatVersion": "1.3.4",
+  "physicsCompatVersion": "1.3.7",
   "physicsPackageLayout": "arsenal-flat-root-v1",
-  "physicsPackageExportRevision": "20261110-accepted",
+  "physicsPackageExportRevision": "20261116-multiplayer-skeleton-fix",
   "legacyLuaVersion": "1.0.17",
   "runtimeCompanionVersion": "1.0.19",
   "firstPersonSourceVersion": "1.0.1",
@@ -181,11 +185,11 @@
   "physicsSourceFiles": [
     {
       "name": "physbone_compat.lua",
-      "sha256": "087c2b9c255baa6dd6d4b2713b9772547da2bb5cc3f98e52e4921ae2df65a8b4"
+      "sha256": "ee150fafe26e175caaa9c0ecee115876a47132e95a22dc64191bed0b7f8bb215"
     },
     {
       "name": "physbone_runtime.lua",
-      "sha256": "d2c9c8a9f864b3e6c9829897fc0f2c7ef7a7499d673f2a7b83aea578247f740c"
+      "sha256": "a2d576f070fed2b57a7b7a54a899864521d7984cd2652d33422e1241ec32f211"
     },
     {
       "name": "direct/physbone_compat.lua",
@@ -199,5 +203,36 @@
       "name": "physbone_routes.lua",
       "sha256": "181178d92b05f16470b5d4aa722030eec9bde8c25acd25a856eff91231117a39"
     }
-  ]
+  ],
+  "acceptedTest16BreastFix": {
+    "status": "fixed",
+    "acceptedByUser": true,
+    "date": "2026-11-16",
+    "scope": "test16 chest spring instantaneous jitter; exact accepted rig/resources/binds",
+    "revision": "test16-nominal-angular-radius-r1",
+    "changedRoots": [
+      "Breast_L",
+      "Breast_R"
+    ],
+    "preciseResourceCount": 25,
+    "springBindsPerResource": 64,
+    "profileSha256": "53ccc639157aebad11cabd75b114e5934481df08546f42e02e5e1bdc62a59f42",
+    "runtimeVersion": "2.3.5",
+    "compatVersion": "1.3.7",
+    "diagnosticsDefaultEnabled": false,
+    "modelsOrAnimationsRebuilt": false
+  },
+  "singleLegIkRevision": "single-leg-bind-pole-soft-reach-r1",
+  "singleLegIkSoftReachRatio": 0.015,
+  "singleLegIkBindPolicy": "actual-model-thigh-local-v1",
+  "singleLegIkStatus": "pending-game-test",
+  "singleLegIkUpdatedUtc": "2026-11-16T10:59:11.071802+00:00",
+  "physicsSinglePolicy": "single-v3-master-b78e63e",
+  "physicsSingleUpstreamRuntimeVersion": "2.1.45",
+  "physicsLegacySkeletonRuntimeVersion": "2.3.6",
+  "physicsRealFpsAccepted": false,
+  "physicsSingleNamespaceProfileResources": 25,
+  "skeletonRepairVersion": "1.01",
+  "skeletonRepairPhysicsRuntimeVersion": "2.3.21",
+  "skeletonRepairPhysicsCompatVersion": "1.3.13"
 }

@@ -12,7 +12,7 @@ from .constants import UNIT_TYPE_ID,BONE_TYPE_ID,STATE_MACHINE_TYPE_ID,ANIMATION
 from .formats import UnitData,BonesData
 from .playback_reference import NormalPlaybackReference,PLAYBACK_REVISION,FRAME_TIME_POLICY
 from .single_animation_compaction import compact_single_animation,OUTPUT_ENCODING_PROFILE,BOUNDARY_FRAMES_EACH_END
-from .processor import ModConfig,FINGER_AXIS_POLICY,IK_BEND_PLANE_REVISION,validate_native_finger_axes
+from .processor import ModConfig,FINGER_AXIS_POLICY,IK_BEND_PLANE_REVISION,LEG_IK_REVISION,LEG_IK_SOFT_RATIO,derive_leg_bind_axes,validate_native_finger_axes
 from .batch import discover_batch_jobs,build_batch_entries
 from .cli import parse_thread_count,calculate_bone_offsets,calculate_bone_rotation_compensations,write_generated_config,write_output_patch,verify_patch
 
@@ -185,7 +185,7 @@ def _derive_calibration(units,original,bones):
     return offsets,deltas,rotations
 
 
-def _compose_config(calibration,standard,original,bones):
+def _compose_config(calibration,standard,original,bones,units=None):
     offsets,deltas,rotations=calibration;offsets=copy.deepcopy(offsets);deltas=copy.deepcopy(deltas)
     data=standard['data'];names=set(bones.names)
     required=str(data.get('filter',{}).get('required_bone','cape4'))
@@ -202,6 +202,10 @@ def _compose_config(calibration,standard,original,bones):
         r,m,h=[indices[n] for n in [*chain.chain,target]]
         if original.parents[m]!=r or original.parents[h]!=m:raise ValueError('Standard IK must be a direct two-bone HD2 chain')
     config=ModConfig(offsets,required_bone=required,distance_multipliers=dict(distances),rotate_multipliers=dict(rotates),rotation_compensations=rotations,ik_chains=copy.deepcopy(standard['chains']),finger_axis_policy=FINGER_AXIS_POLICY if any('finger' in n for n in bones.names) else None)
+    if units is not None:
+        model = next((u for _,u in units if set(bones.hashes).issubset(u.name_hashes)),None)
+        if model is None:raise ValueError('Missing actual model bind for single leg IK')
+        config.leg_ik_bind_axes = derive_leg_bind_axes(model,bones,config.ik_chains)
     return config,deltas
 
 
@@ -217,6 +221,9 @@ def _write_effective_config(path,config,deltas):
         for name,value in sorted(config.rotate_multipliers.items()):text+=json.dumps(name)+' = '+repr(value)+'\n'
     if config.finger_axis_policy is not None:
         text+='\n[single_skeleton_contract]\nfinger_axis_policy = '+json.dumps(config.finger_axis_policy)+'\n'
+    if config.leg_ik_bind_axes:
+        text+='\n[single_leg_ik_bind_axes]\n'
+        for name,axis in sorted(config.leg_ik_bind_axes.items()):text+=json.dumps(name)+' = '+json.dumps(axis)+'\n'
     path.write_text(text,encoding='utf-8')
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -228,7 +235,7 @@ def _chain_rows(config):
 def _standard_manifest(folder,certificate,units,bones,config,standard,config_sha):
     return dict(version=4,bindPolicy=BIND_POLICY,modelFingerprint='toc-and-referenced-payloads-v1',modelScale=certificate['modelScale'],
         bindSha256=hashlib.sha256((Path(folder)/'single-hd2-bind.json').read_bytes()).hexdigest(),modelFiles=_model_files(folder),
-        pipelineVersion=PIPELINE_VERSION,fingerSegmentPolicy=FINGER_AXIS_POLICY,processingProfile=PROCESSING_PROFILE,skeleton='hd2',sourceRigRetained=False,
+        pipelineVersion=PIPELINE_VERSION,fingerSegmentPolicy=FINGER_AXIS_POLICY,legIkRevision=LEG_IK_REVISION,legIkSoftReachRatio=LEG_IK_SOFT_RATIO,legIkBindAxes=config.leg_ik_bind_axes,processingProfile=PROCESSING_PROFILE,skeleton='hd2',sourceRigRetained=False,
         referenceUnit=f'0x{REFERENCE_UNIT:016x}',referenceArchive=REFERENCE_ARCHIVE,modelResources=[f'{i:016x}' for i,_ in units],
         boneCount=len(bones.names),config='single-config.toml',configSha256=config_sha,options=standard['options'],
         standardConfigPath=str(standard['path']),standardConfigSha256=standard['sha256'],ikChains=_chain_rows(config),
@@ -245,7 +252,7 @@ def prepare_model(folder,game_data,config_path=None):
     try:
         index.load_or_build();_,entry=index.resolve(REFERENCE_UNIT,UNIT_TYPE_ID);original=UnitData.parse(entry.toc_data)
         _,entry=index.resolve(original.bones_ref,BONE_TYPE_ID);bones=BonesData.parse(entry.toc_data)
-        config,deltas=_compose_config(_derive_calibration(units,original,bones),standard,original,bones)
+        config,deltas=_compose_config(_derive_calibration(units,original,bones),standard,original,bones,units)
         digest=_write_effective_config(folder/'single-config.toml',config,deltas)
         marker=_standard_manifest(folder,certificate,units,bones,config,standard,digest)
         (folder/'single-skeleton.json').write_text(json.dumps(marker,ensure_ascii=False,indent=2),encoding='utf-8')
@@ -294,7 +301,7 @@ def build_project(folder,game_data,output,sample_count=None,threads=2,config_pat
     output.mkdir(parents=True,exist_ok=True)
     store=PackageStore(Path(game_data));index=ResourceIndex(store,output/'resource-index.sqlite3',{UNIT_TYPE_ID,BONE_TYPE_ID,STATE_MACHINE_TYPE_ID,ANIMATION_TYPE_ID})
     playback=None
-    report=dict(status='building',pipelineVersion=PIPELINE_VERSION,fingerSegmentPolicy=FINGER_AXIS_POLICY,ikBendPlaneRevision=IK_BEND_PLANE_REVISION,processingProfile=PROCESSING_PROFILE,skeleton='hd2',processor='anim_batch_mod.batch.build_batch_entries',
+    report=dict(status='building',legIkRevision=LEG_IK_REVISION,legIkSoftReachRatio=LEG_IK_SOFT_RATIO,pipelineVersion=PIPELINE_VERSION,fingerSegmentPolicy=FINGER_AXIS_POLICY,ikBendPlaneRevision=IK_BEND_PLANE_REVISION,processingProfile=PROCESSING_PROFILE,skeleton='hd2',processor='anim_batch_mod.batch.build_batch_entries',
         standardConfigPath=str(standard['path']),standardConfigSha256=standard['sha256'],options=standard['options'],
         preserveHandBendFrame=False,preserveSourceKeyTimes=False,preserveUnchangedBytes=True,preserveUnmodifiedChannels=False,preservePlaybackTiming=False,preserveReferencePlayback=True,playbackRevision=PLAYBACK_REVISION,frameTimePolicy=FRAME_TIME_POLICY,controlMarkerPolicy="original-hd2-local-v1",attachmentLua=False,attachmentSwap=False,sourceRigRetained=False,
         inputModelManifestVersion=marker['version'],legacyModelConfigurationIgnored=marker['version']<4,animations=[],gameTested=False,progressProtocol='stderr-v1')
@@ -304,10 +311,10 @@ def build_project(folder,game_data,output,sample_count=None,threads=2,config_pat
         _progress('index',1,1,'游戏资源索引已就绪')
         _,entry=index.resolve(REFERENCE_UNIT,UNIT_TYPE_ID);original=UnitData.parse(entry.toc_data)
         _,entry=index.resolve(original.bones_ref,BONE_TYPE_ID);bones=BonesData.parse(entry.toc_data)
-        units=list(model_units(folder));config,deltas=_compose_config(_derive_calibration(units,original,bones),standard,original,bones)
+        units=list(model_units(folder));config,deltas=_compose_config(_derive_calibration(units,original,bones),standard,original,bones,units)
         effective=output/'effective-single-config.toml';digest=_write_effective_config(effective,config,deltas)
         config=ModConfig.load(effective)
-        report.update(configSha256=digest,ikChains=_chain_rows(config),boneCount=len(bones.names))
+        report.update(configSha256=digest,legIkBindAxes=config.leg_ik_bind_axes,ikChains=_chain_rows(config),boneCount=len(bones.names))
         _progress('discover',0,0,'正在收集原生单骨架动画')
         discovery=discover_batch_jobs(store,index,[REFERENCE_ARCHIVE],config,requested_unit_id=REFERENCE_UNIT,include_ik_bones=standard['options']['ik_correction'],
             progress=lambda phase,done,total,label:_progress('discover',0,0,f'正在收集单骨架动画：{label}'))
@@ -327,7 +334,7 @@ def build_project(folder,game_data,output,sample_count=None,threads=2,config_pat
         # clips. Keep them enabled for the accepted additive byte-passthrough path.
         build=build_batch_entries(index,jobs,config,allow_additive=o['allow_additive'],progress=progress,apply_rotate_multipliers=o['rotate_multipliers'],
             apply_rotation_compensations=o['rotation_compensation'],apply_ik_correction=o['ik_correction'],add_unit=False,threads=threads,use_processes=True,
-            preserve_hand_bend_frame=False,preserve_source_key_times=True,preserve_unmodified_channels=True,source_arm_constraints=o['source_arm_constraints'],preserve_playback_timing=True,preserve_unchanged_bytes=True,playback_reference_loader=playback.read)
+            preserve_hand_bend_frame=False,preserve_source_key_times=True,preserve_unmodified_channels=True,source_arm_constraints=o['source_arm_constraints'],preserve_playback_timing=True,preserve_unchanged_bytes=True,playback_reference_loader=playback.read,stabilize_leg_ik=True)
         if build.fatal_issues or len(build.animations)!=len(jobs):raise ValueError('Incomplete single batch build: '+repr(build.fatal_issues))
         compaction,compacted_rows=_compact_single_entries(build.entries,len(bones.names),_progress)
         if set(compacted_rows)!={r.animation_id for r in build.animations}:raise ValueError('Single compaction coverage differs from batch output')
@@ -346,7 +353,7 @@ def build_project(folder,game_data,output,sample_count=None,threads=2,config_pat
         runtime_marker.update(inputModelManifestVersion=marker['version'],inputModelConfigSha256=marker.get('configSha256'),legacyModelConfigurationIgnored=marker['version']<4)
         (staging/'single-skeleton.json').write_text(json.dumps(runtime_marker,ensure_ascii=False,indent=2),encoding='utf-8')
         staging.rename(output/'runtime')
-        report.update(status='complete',armTargetProjections=sum(r.modification.arm_target_projections for r in build.animations),
+        report.update(status='complete',legIkEvaluations=sum(r.modification.leg_ik_evaluations for r in build.animations),legIkMaxTargetDisplacement=max((r.modification.leg_ik_max_target_displacement for r in build.animations),default=0),armTargetProjections=sum(r.modification.arm_target_projections for r in build.animations),
             armRequestedTargetMaxDistance=max((r.modification.arm_requested_target_max_distance for r in build.animations),default=0),
             armTargetPolicy='source-angle-standard-ray-v1' if o['source_arm_constraints'] else 'legacy-world',ikEvaluations=sum(r.modification.ik_evaluations for r in build.animations),ikCorrections=sum(r.modification.ik_corrections for r in build.animations),
             ikMaxErrorBefore=max((r.modification.ik_max_error_before for r in build.animations),default=0),ikMaxErrorAfter=max((r.modification.ik_max_error_after for r in build.animations),default=0),

@@ -86,8 +86,22 @@ if ($Mode -eq 'Full') {
         if ($helperInfo.PSIsContainer -or ($helperInfo.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "Invalid packaging helper: $file" }
     }
     if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) { throw 'dotnet is required to export installed production physics.' }
-    & dotnet $helper physics-check $root
+    $physicsJson = & dotnet $helper physics-check $root
     if ($LASTEXITCODE -ne 0) { throw 'Installed production physics validation failed.' }
+    $physics = $physicsJson | ConvertFrom-Json
+    if ($physics.runtimeVersion -ne $manifest.physicsRuntimeVersion -or $physics.compatVersion -ne $manifest.physicsCompatVersion) {
+        throw 'Installed physics version differs from packaging metadata; synchronize the exact Core/manifest pair.'
+    }
+    Write-Host ($physicsJson -join [Environment]::NewLine)
+    $installedBuild = Get-Content -LiteralPath (Join-Path $root 'anim_batch_mod/build-info.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($installedBuild.skeletonRepairPhysicsRuntimeVersion -and
+        ($physics.runtimeVersion -ne $installedBuild.skeletonRepairPhysicsRuntimeVersion -or
+         $physics.compatVersion -ne $installedBuild.skeletonRepairPhysicsCompatVersion)) {
+        throw 'Skeleton repair build requires its explicit A21 physics source binding; legacy/default physics cannot be relabeled as repair 1.01.'
+    }
+    if ($manifest.skeletonRepairVersion -and $installedBuild.skeletonRepairVersion -ne $manifest.skeletonRepairVersion) {
+        throw 'Skeleton repair version differs from packaging metadata.'
+    }
     if ($seen.Contains('anim_batch_mod/runtime_companions.py')) {
         $b3Check = & dotnet $helper companion-check $root
         if ($LASTEXITCODE -ne 0) { throw 'Installed Core/Python production B3 validation failed.' }
@@ -117,8 +131,10 @@ while (-not [string]::IsNullOrWhiteSpace($ancestorPath)) {
     $ancestorPath = if ($null -eq $parent) { $null } else { $parent.FullName }
 }
 New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+$repairVersion = [string]$manifest.skeletonRepairVersion
+$repairDisplay = if ($repairVersion) { '骨架修复' + $repairVersion } else { '基于' + $managerVersion + ' 骨架测试' }
 $time = [TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTimeOffset]::UtcNow, 'China Standard Time').ToString('yyyyMMdd-HHmmss')
-$name = 'HD2ModManager-' + $managerVersion + '-skeleton-test-win-x64-' + $Mode.ToLowerInvariant() + '-' + $time + '-' + [Guid]::NewGuid().ToString('N').Substring(0,8)
+$name = 'HD2ModManager-' + $managerVersion + '-skeleton-test-' + $(if ($repairVersion) { $repairVersion + '-' } else { '' }) + 'win-x64-' + $Mode.ToLowerInvariant() + '-' + $time + '-' + [Guid]::NewGuid().ToString('N').Substring(0,8)
 $zipPath = Join-Path $outDir ($name + '.zip')
 $partial = $zipPath + '.partial'
 $folder = 'HD2ModManager/'
@@ -141,7 +157,7 @@ if ($Mode -eq 'Startup') { $settings.Language = 'en-US' }
 $readme = @"
 HD2ModManager skeleton-test portable package ($managerVersion / $Mode / win-x64)
 
-GUI display: 基于$managerVersion 骨架测试. Program self-update controls and
+GUI display: $repairDisplay. Program self-update controls and
 background update checks/downloads/installation are disabled in this build.
 Skeleton animation import prompts and the dual-skeleton option default off;
 enable them explicitly in Settings when needed.
@@ -254,7 +270,7 @@ if ($artifactWork) {
     if ((Get-Item -LiteralPath $resolved).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unsafe linked artifact workspace.' }
     Remove-Item -LiteralPath $resolved -Recurse -Force
 }
-$report = [ordered]@{managerVersion=$managerVersion;buildFlavor='skeleton-test';selfUpdatesEnabled=$false;mode=$Mode;platform='win-x64';fileCount=$entryRecords.Count;payloadCount=$relativeFiles.Count;generatedArtifactCount=$artifactRecords.Count;productionArtifacts=$artifactRecords;modelRuntimeCompanions=$b3Capabilities;uncompressedBytes=($entryRecords|Measure-Object size -Sum).Sum;zipBytes=(Get-Item -LiteralPath $zipPath).Length;sha256=$zipHash;entries=$entryRecords.ToArray()}
+$report = [ordered]@{managerVersion=$managerVersion;buildFlavor='skeleton-test';skeletonRepairVersion=$repairVersion;selfUpdatesEnabled=$false;mode=$Mode;platform='win-x64';fileCount=$entryRecords.Count;payloadCount=$relativeFiles.Count;generatedArtifactCount=$artifactRecords.Count;productionArtifacts=$artifactRecords;modelRuntimeCompanions=$b3Capabilities;uncompressedBytes=($entryRecords|Measure-Object size -Sum).Sum;zipBytes=(Get-Item -LiteralPath $zipPath).Length;sha256=$zipHash;entries=$entryRecords.ToArray()}
 $report | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath ($zipPath+'.manifest.json') -Encoding UTF8
 Write-Host ("SUCCESS: {0}" -f $zipPath)
 Write-Host ("{0} entries; {1:N2} MiB ZIP; SHA256 {2}" -f $entryRecords.Count,($report.zipBytes/1MB),$zipHash)

@@ -185,7 +185,11 @@ var assembly = context.LoadFromAssemblyPath(Path.Combine(root, "HD2ModCore.dll")
 var catalog = assembly.GetType("HD2ModCore.Infrastructure.LuaAddonCatalog", true)!;
 var feature = catalog.GetMethod("Physics", BindingFlags.Public | BindingFlags.Static)!.Invoke(null, null)!;
 string Value(string key) => (string)feature.GetType().GetProperty(key)!.GetValue(feature)!;
-var source = Value("Source").Replace("\r\n", "\n", StringComparison.Ordinal);
+var rawSource = Value("Source");
+var source = rawSource.Replace("\r\n", "\n", StringComparison.Ordinal);
+// The actual scanner caps TOC size, not compressed ZIP length or character count.
+if (Encoding.UTF8.GetByteCount(rawSource) > 4 * 1024 * 1024 - 8)
+    throw new InvalidDataException("Physics Lua resource exceeds Chef 4 MiB loading limit (including 8-byte envelope)");
 var owner = Value("AddonId");
 var guid = Value("ModGuid");
 if (owner != "mods/hd2modmanager/physbone" || guid != "7c1e2b90-5f3a-4d68-9a11-2b7c4e5f6a01") throw new InvalidDataException("Not the production physics feature");

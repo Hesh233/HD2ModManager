@@ -1,0 +1,90 @@
+
+-- TEST ONLY: exact test16 rig, exact resource identity, all 64 real spring binds.
+-- No node-name-only fallback, no test06/test01 profile borrowed for test16.
+local T16 = __PROFILE__
+local old16Attach, old16UpdateTip, old16Reset = M.attach, M.update_tip, M.reset_linear_state
+M.test16Revision = T16.revision
+local function is16Rig(r)
+ return type(r)=='table' and type(r.bones)=='table' and #r.bones==#T16.rig.bones
+  and type(r.drivers)=='table' and type(r.drivers.bones)=='table'
+  and #r.drivers.bones==#T16.rig.drivers.bones and sClose(r,T16.rig,1e-6)
+end
+function M.attach(S,unit,rig,options)
+ local result,reason=old16Attach(S,unit,rig,options)
+ if not is16Rig(rig) or result==nil or result.solver=='angle' then return result,reason end
+ local logger=result.logger or function()end
+ local rid,why=sResourceId(S,unit)
+ local expected=rid and T16.units[rid]
+ local function reject(text)
+  logger('[physbone][T16_BREAST] REJECTED resource=%s reason=%s (legacy solver unchanged)',tostring(rid or '?'),text)
+  return result,reason
+ end
+ if expected==nil then return reject(why or 'resource-not-in-test16-profile') end
+ local ok,count=pcall(S.Unit.num_scene_graph_items,unit)
+ if not ok or count~=expected.nodeCount then return reject('node-count') end
+ local roots,seen={},{}
+ for _,item in ipairs(result.sessions or {})do
+  for k,bone in ipairs(item.chain or {})do
+   local ref=expected.springs[bone.name]
+   local actual=item.basePoses and item.basePoses[k]
+   if ref==nil or actual==nil or item.nodes[k]~=ref.node or not sClose(actual,ref.bind,1e-5) then
+    return reject('bind-or-node-'..tostring(bone.name))
+   end
+   seen[bone.name]=true
+  end
+  local name=item.chain and item.chain[1] and item.chain[1].name
+  if name=='Breast_L' or name=='Breast_R' then
+   local g=item.tip and item.tip.bones[1].gains
+   if g==nil or not g.freeLength or g.axisLimits or not g.baseSpring
+    or g.limit<=0 or g.limit>=math.pi/2 or g.L<=0 then return reject('ineligible-breast-dofs') end
+   roots[#roots+1]=item
+  end
+ end
+ local n=0;for _ in pairs(seen)do n=n+1 end
+ if n~=#T16.rig.bones or #roots~=2 then return reject('incomplete-spring-layout') end
+ -- Only after the whole preflight succeeds may either root change behavior.
+ result.test16Resource=rid;result.test16Roots=roots
+ for _,item in ipairs(roots)do item.tip.bones[1].gains.test16StableAngular=true end
+ logger('[physbone][T16_BREAST] SELECTED revision=%s resource=%s nodes=%d springs=%d roots=2 identity=Unit.resource_name; authored gains preserved',T16.revision,rid,count,n)
+ return result,reason
+end
+function M.reset_linear_state(tip)
+ old16Reset(tip)
+ if tip~=nil then
+  for k,bone in ipairs(tip.bones or {})do
+   if bone.gains and bone.gains.test16StableAngular then tip.tips[k].signedAxialSpan=nil end
+  end
+ end
+end
+function M.update_tip(session,dt,maxWrite)
+ local written=old16UpdateTip(session,dt,maxWrite)
+ if session==nil or session.test16Roots==nil or session.dead or session.deadLogged then return written end
+ -- Pure numeric observations: no additional engine reads/writes or pose owners.
+ local logger=session.logger or function()end
+ for _,item in ipairs(session.test16Roots)do
+  local rot=item.lastRotations and item.lastRotations[1]
+  local state=item.tip.tips[1]
+  if rot and state.ready and (item.test16Diag==nil or item.test16Diag.samples<40) then
+   local d=item.test16Diag
+   if d==nil then d={samples=0,ticks=0,peakDelta=0};item.test16Diag=d end
+   local qx,qy,qz,qw=q_axis_angle(rot[1],rot[2],rot[3],rot[4])
+   local delta=0
+   if d.lastQ then
+    local dot=math.abs(qx*d.lastQ[1]+qy*d.lastQ[2]+qz*d.lastQ[3]+qw*d.lastQ[4])
+    delta=2*math.acos(math.min(1,dot))*180/math.pi
+   end
+   local last=d.lastQ;if last==nil then last={};d.lastQ=last end
+   last[1],last[2],last[3],last[4]=qx,qy,qz,qw;d.ticks=d.ticks+1
+   if delta>d.peakDelta then d.peakDelta=delta end
+   local anomaly=delta>5
+   local due=d.ticks==1 or d.ticks%240==0 or anomaly and d.ticks-(d.lastSample or -240)>=120
+   if due and d.samples<40 then
+    d.samples=d.samples+1;d.lastSample=d.ticks
+    local base=state.baseSpringState;local baseSpeed=base and math.sqrt(base.vx^2+base.vy^2+base.vz^2) or 0
+    logger('[physbone][T16_BREAST] SAMPLE resource=%s bone=%s frame=%d dt=%.6f angle=%.3f delta=%.3f intervalPeak=%.3f signedAxial=%.6f tipSpan=%.6f tipSpeed=%.6f baseOffset=%.6f baseSpeed=%.6f resync=%d anomaly=%s',session.test16Resource,item.chain[1].name,M.frame or 0,dt or 0,rot[4]*180/math.pi,delta,d.peakDelta,state.signedAxialSpan or 0,state.span or 0,math.sqrt(state.vx^2+state.vy^2+state.vz^2),item.tip.maxBaseOffset or 0,baseSpeed,item.jumps or 0,tostring(anomaly))
+    d.peakDelta=0
+   end
+  end
+ end
+ return written
+end

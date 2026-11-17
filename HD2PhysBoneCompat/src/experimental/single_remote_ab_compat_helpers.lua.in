@@ -1,0 +1,84 @@
+-- Optional session-scoped A/B gates. Nil/false preserves every accepted route.
+-- No rig, authored parameter, bind/profile, or shared driver-table mutation.
+local function remote_reset_numeric(session)
+ for _, item in ipairs(session.sessions or {}) do
+  M.reset_linear_state(item.tip)
+  item.lastWritten, item.lastRotations, item.disabled, item.staticFrames = nil, nil, nil, 0
+  item.previousPosition, item.previousVelocity, item.lastAccel = nil, {0,0,0}, {0,0,0}
+  for _, spring in ipairs(item.springs or {}) do spring.yaw, spring.pitch, spring.yawVelocity, spring.pitchVelocity = 0,0,0,0 end
+ end
+ local st = session.test1201Source
+ if st then
+  local records = {}
+  for source, row in pairs(st.records) do records[source] = {preQ = row.preQ, preP = row.preP} end
+  st.records, st.last, st.frame, st.time, st.frames = records, {}, nil, 0, 0
+  st.virtual, st.target, st.lastHipP = nil, nil, nil
+ end
+ session.pendingDt, session.engineCalls, session.skippedSame, session.driverWrittenFrame = 0, 0, 0, 0
+end
+local function remote_restore_driver_frames(session)
+ local st, frames, driverNodes = session.test1201Source, {}, {}
+ if st then
+  for _, rec in ipairs(st.profile.records) do if rec.kind == 2 and not rec.excludedWrist then driverNodes[rec.node] = true end end
+  for _, row in ipairs(st.saved) do
+   if driverNodes[row.node] and st.last[row.node] then frames[#frames+1] = {node = row.node, base = row.pose} end
+  end
+ else
+  for _, row in ipairs(session.drivers or {}) do
+   driverNodes[row.node] = true
+   if row.lastWritten then frames[#frames+1] = {node = row.node, base = row.base} end
+  end
+ end
+ session.singleRemoteDriverNodes = driverNodes
+ local restored = 0
+ if #frames > 0 and M.session_health(session, M.frame) == "ok" then
+  for _, row in ipairs(frames) do
+   local ok, wrote = pcall(function()
+    local pose = rebuild_pose(session.S, row.base)
+    if pose ~= nil and pose_sane(session.S, pose) then session.S.Unit.set_local_pose(session.unit, row.node, pose); return true end
+    return false
+   end)
+   if ok and wrote then restored = restored + 1 end
+  end
+  if restored > 0 and session.world then pcall(session.S.World.update_unit, session.world, session.unit) end
+ end
+ for _, row in ipairs(session.drivers or {}) do row.lastWritten, row.smoothedQ = nil, nil end
+ if st then for node in pairs(driverNodes) do st.last[node] = nil end end
+ return restored
+end
+function M.single_remote_policy_transition(session, physicsOff, vrdOff)
+ if not session or session.singleMainline ~= true then return 0 end
+ local wasPhysics, wasVrd = session.singleRemotePhysicsExcluded == true, session.singleRemoteVrdExcluded == true
+ local restored = 0
+ if physicsOff and not wasPhysics then
+  -- One-time ownership hand-back only if this session actually ran. The steady
+  -- excluded path performs NO Compat.update, VRD, pose writes, or dt catch-up.
+  if session.singleRemoteHadUpdate then
+   local st = session.test1201Source
+   session.singleRemoteVrdExcluded = false
+   restored = M.release(session) or 0
+   session.test1201Source = st
+  end
+  remote_reset_numeric(session)
+  session.singleRemoteHadUpdate = false
+ elseif not physicsOff and wasPhysics then
+  remote_reset_numeric(session)
+ end
+ if vrdOff and not wasVrd and not physicsOff then restored = restored + remote_restore_driver_frames(session) end
+ if not vrdOff and wasVrd then
+  for _, row in ipairs(session.drivers or {}) do row.lastWritten, row.smoothedQ = nil, nil end
+ end
+ session.singleRemotePhysicsExcluded, session.singleRemoteVrdExcluded = physicsOff, vrdOff
+ return restored
+end
+local remoteOriginalUpdate, remoteOriginalRelease = M.update, M.release
+function M.update(session, dt, maxWrite)
+ if session and session.singleRemotePhysicsExcluded == true then return 0 end
+ return remoteOriginalUpdate(session, dt, maxWrite)
+end
+function M.release(session)
+ -- Transition already returned the previously owned frames. Never write poses
+ -- on excluded remote actors again during prune/uninstall/preview cleanup.
+ if session and session.singleRemotePhysicsExcluded == true then return 0 end
+ return remoteOriginalRelease(session)
+end

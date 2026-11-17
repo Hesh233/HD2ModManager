@@ -72,7 +72,7 @@ public static class ArmorMappingModes
 		ArmorMappingMode.ExclusiveLuaEntry =>
 			"外观映射的运行时合并进管理器自己的启动补丁，由游戏自身的 Lua VM 加载，不需要第三方加载器。改动在游戏运行中即可生效。",
 		ArmorMappingMode.ExternalLuaEntry =>
-			"外观映射的运行时作为普通补丁投放，交给外置 Lua 加载器加载，管理器不占用 boot 入口。改动在游戏运行中即可生效。",
+			"兼容 Chef Shared Loader 和 Bingus：运行时作为独立补丁投放，不占用 boot；Chef 从沙箱允许的单层文件读取映射，保留 Bingus 原协议路径。",
 		ArmorMappingMode.Off =>
 			"不投放任何外观映射运行时，护甲保持原版外观。",
 		_ => string.Empty,

@@ -30,21 +30,31 @@ local MAX_BYTES = 4 * 1024 * 1024
 local SET_BUDGET_PER_TICK = 32
 local PROTOCOL_NAME = 'wardrobe.links'
 
+-- Chef's Bingus look-alike reports the Chef settings directory, not the
+-- Bingus Logs directory. Use a flat .dat projection and flat .log there;
+-- the manager retains the original wardrobe.links for real Bingus loaders.
+local loader = rawget(_G, 'CowboyBingusModLoader')
+local chef_loader = type(loader) == 'table' and type(loader.loader) == 'string'
+    and loader.loader:lower():find('chef shared loader', 1, true) ~= nil
 local function base_directory()
-	local loader = rawget(_G, 'CowboyBingusModLoader')
-	if type(loader) == 'table' and type(loader.log_directory) == 'string' then
-		return loader.log_directory:gsub('[/\\]Logs$', '')
-	end
-	local local_app_data = os.getenv('LOCALAPPDATA')
-	if type(local_app_data) == 'string' and local_app_data ~= '' then
-		return local_app_data .. '/CowboyBingus/Helldivers2'
-	end
-	return nil
+    if type(loader) == 'table' and type(loader.log_directory) == 'string' then
+        if chef_loader then return loader.log_directory:gsub('[/\\]+$', '') end
+        return loader.log_directory:gsub('[/\\]Logs$', '')
+    end
+    local local_app_data = os.getenv('LOCALAPPDATA')
+    if type(local_app_data) == 'string' and local_app_data ~= '' then
+        return local_app_data .. '/CowboyBingus/Helldivers2'
+    end
+    return nil
 end
 
 local base = base_directory()
-local protocol_path = base and (base .. '/ArmorRegistry/' .. PROTOCOL_NAME) or nil
-local log_path = base and (base .. '/Logs/ArmorOverrideRuntime.log') or nil
+local protocol_path = base and (chef_loader
+    and (base .. '/codex_runtime_armor_registry.links.dat')
+    or (base .. '/ArmorRegistry/' .. PROTOCOL_NAME)) or nil
+local log_path = base and (chef_loader
+    and (base .. '/codex_runtime_armor_registry.log')
+    or (base .. '/Logs/ArmorOverrideRuntime.log')) or nil
 
 local function log(text)
 	if log_path == nil or type(io) ~= 'table' or not io.open then return end
@@ -183,7 +193,7 @@ local function poll()
 	end
 end
 
-log('runtime loaded; protocol=' .. tostring(protocol_path))
+log('runtime loaded; transport=' .. (chef_loader and 'chef-flat-v1' or 'bingus') .. '; protocol=' .. tostring(protocol_path))
 update = function()
 	local okDrain, drainError = pcall(drain)
 	if not okDrain then log('drain error: ' .. tostring(drainError)) end
